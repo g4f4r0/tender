@@ -155,6 +155,21 @@ func parseFlags(fs *flag.FlagSet, args []string, out io.Writer) error {
 	return usageError(fs, "%s", msg)
 }
 
+// parseWithArgs parses flags and returns the other arguments, which may come before, between or
+// after the flags: "tender machines add web1 --hub URL" and "tender machines add --hub URL web1".
+func parseWithArgs(fs *flag.FlagSet, args []string, out io.Writer) ([]string, error) {
+	var rest []string
+	for {
+		if err := parseFlags(fs, args, out); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return rest, nil
+		}
+		rest, args = append(rest, fs.Arg(0)), fs.Args()[1:]
+	}
+}
+
 // usageError is an error about how a command was used. It says where the usage is.
 func usageError(fs *flag.FlagSet, format string, a ...any) error {
 	return fmt.Errorf("%s. Run %q for usage.", fmt.Sprintf(format, a...), helpCommand(fs.Name()))

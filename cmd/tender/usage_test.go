@@ -30,9 +30,9 @@ func TestEveryUsageFitsAndHasNoGoDefaults(t *testing.T) {
 	var out bytes.Buffer
 	_ = runUpdate([]string{"-h"}, "dev", &out)
 	all := []string{out.String()}
-	for _, command := range []string{"agent", "hub", "credential", "refresh"} {
+	for _, command := range []string{"agent", "hub", "refresh"} {
 		out.Reset()
-		if err := runInstall([]string{command, "-h"}, strings.NewReader(""), &out); !errors.Is(err, flag.ErrHelp) {
+		if err := runInstall([]string{command, "-h"}, strings.NewReader(""), session{out: &out}); !errors.Is(err, flag.ErrHelp) {
 			t.Errorf("install %s -h returned %v", command, err)
 		}
 		all = append(all, out.String())
@@ -62,7 +62,7 @@ func TestEveryUsageFitsAndHasNoGoDefaults(t *testing.T) {
 
 func TestInstallWithoutCommandPrintsUsage(t *testing.T) {
 	var out bytes.Buffer
-	if err := runInstall(nil, strings.NewReader(""), &out); !errors.Is(err, errUsageShown) {
+	if err := runInstall(nil, strings.NewReader(""), session{out: &out}); !errors.Is(err, errUsageShown) {
 		t.Errorf("err = %v, want errUsageShown", err)
 	}
 	if out.String() != installUsage {

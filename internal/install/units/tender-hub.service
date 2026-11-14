@@ -8,17 +8,16 @@ Wants=network-online.target
 Type=simple
 User=tender
 Group=tender
-ExecStart=/usr/local/bin/tender hub --config /etc/tender/hub.toml
+EnvironmentFile=/etc/tender/hub.env
+ExecStart=/usr/local/bin/tender hub
 Restart=always
 RestartSec=5
 
 StateDirectory=tender/hub
 StateDirectoryMode=0700
 ConfigurationDirectory=tender
-# "tender install hub" drops this line when the file does not exist: systemd fails the unit on a missing path.
-LoadCredential=smtp-password:/etc/tender/credentials/smtp-password
-# The hub never reads the credentials folder itself: on the same machine it holds the agent's
-# destination keys. systemd loads smtp-password above before the folder is hidden.
+# The hub's settings and secrets are in hub.env, which systemd reads as root before the hub starts.
+# The hub never reads the credentials folder: on the same machine it holds the agent's hub token.
 InaccessiblePaths=-/etc/tender/credentials
 
 # Listens on 127.0.0.1 only; `tailscale serve` is the only way in.

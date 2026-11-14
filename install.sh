@@ -2,7 +2,10 @@
 # Installs Tender and sets up this machine.
 #
 #   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- agent --hub URL --machine NAME
-#   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub
+#   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub [--smtp-host HOST --smtp-from SENDER --smtp-port PORT --smtp-username USER]
+#
+# Everything after agent or hub goes to "tender install agent" or "tender install hub", which the
+# installed tender explains with --help. The hub asks for the SMTP password on the terminal.
 #
 # TENDER_VERSION=v0.1.0 installs that release instead of the latest.
 # For tests only: TENDER_API_URL (the latest-release lookup), TENDER_RELEASES_URL (the downloads)
@@ -38,14 +41,14 @@ ask_token() {
 	stty "$saved" </dev/tty
 	trap 'rm -rf "$tmp"' EXIT
 	printf '\n' >/dev/tty
-	[ -n "$token" ] || fail "the hub token is empty. Create one on the hub with: tender hub add-machine NAME"
+	[ -n "$token" ] || fail "the hub token is empty. Create one with: tender machines add NAME"
 }
 
 main() {
 	case "${1:-}" in
 	agent | hub) ;;
 	*) fail "usage: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- agent --hub URL --machine NAME
-       or: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- hub" ;;
+       or: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- hub [--smtp-host HOST --smtp-from SENDER --smtp-port PORT --smtp-username USER]" ;;
 	esac
 	[ "$(id -u)" -eq 0 ] || fail "this needs root. Run it with sudo, for example: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- $*"
 	[ "$(uname -s)" = Linux ] || fail "Tender runs on Linux only. This machine runs $(uname -s)."
