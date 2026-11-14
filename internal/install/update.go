@@ -29,13 +29,13 @@ var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`
 func (in *Installer) latestTag(ctx context.Context) (string, error) {
 	body, err := get(ctx, in.LatestURL, maxSumsBytes)
 	if err != nil {
-		return "", fmt.Errorf("cannot look up the latest tender release. Check this machine's internet access, or pick a release with --version: %w", err)
+		return "", fmt.Errorf("cannot look up the latest Tender release. Check this machine's internet access, or pick a release with --version: %w", err)
 	}
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
 	if err := json.Unmarshal(body, &release); err != nil || !releaseTag.MatchString(release.TagName) {
-		return "", errors.New("GitHub did not name a tender release. Pick one with --version, such as v0.1.0")
+		return "", errors.New("GitHub did not name a Tender release. Pick one with --version, such as v0.1.0")
 	}
 	return release.TagName, nil
 }
@@ -45,18 +45,18 @@ func (in *Installer) fetchRelease(ctx context.Context, tag string) ([]byte, erro
 	base := in.DownloadURL + "/" + tag + "/"
 	sums, err := get(ctx, base+checksumsAsset, maxSumsBytes)
 	if err != nil {
-		return nil, fmt.Errorf("cannot download the checksums of tender %s, so nothing was changed. Check the version and this machine's internet access: %w", tag, err)
+		return nil, fmt.Errorf("cannot download the checksums of Tender %s, so nothing was changed. Check the version and this machine's internet access: %w", tag, err)
 	}
 	bin, err := get(ctx, base+releaseAsset, maxReleaseBytes)
 	if err != nil {
-		return nil, fmt.Errorf("cannot download tender %s, so nothing was changed. Check the version and this machine's internet access: %w", tag, err)
+		return nil, fmt.Errorf("cannot download Tender %s, so nothing was changed. Check the version and this machine's internet access: %w", tag, err)
 	}
 	want := checksumFor(sums, releaseAsset)
 	if want == "" {
-		return nil, fmt.Errorf("the checksums of tender %s do not list %s, so nothing was changed. Report it at %s", tag, releaseAsset, issuesURL)
+		return nil, fmt.Errorf("the checksums of Tender %s do not list %s, so nothing was changed. Report it at %s", tag, releaseAsset, issuesURL)
 	}
 	if got := sum(bin); got != want {
-		return nil, fmt.Errorf("the download of tender %s does not match its checksum (got %s, want %s), so nothing was changed. Try again, and report it at %s if it repeats", tag, got, want, issuesURL)
+		return nil, fmt.Errorf("the download of Tender %s does not match its checksum (got %s, want %s), so nothing was changed. Try again, and report it at %s if it repeats", tag, got, want, issuesURL)
 	}
 	return bin, nil
 }
@@ -84,7 +84,7 @@ func (in *Installer) Update(ctx context.Context, version string) error {
 		return err
 	}
 	if !in.installed(agentUnitPath) && !in.installed(hubUnitPath) {
-		return errors.New("tender is not installed on this machine yet. Run \"sudo tender install agent\" or \"sudo tender install hub\" first")
+		return errors.New("Tender is not installed on this machine yet. Run \"sudo tender install agent\" or \"sudo tender install hub\" first")
 	}
 	tag := version
 	if tag != "" && !strings.HasPrefix(tag, "v") {
@@ -100,25 +100,25 @@ func (in *Installer) Update(ctx context.Context, version string) error {
 		}
 	}
 	if strings.TrimPrefix(tag, "v") == in.Version {
-		in.say("tender %s is already installed. Nothing to update.", in.Version)
+		in.say("Tender %s is already installed. Nothing to update.", in.Version)
 		return nil
 	}
 
-	in.say("Updating tender %s to %s", in.Version, tag)
+	in.say("Updating Tender %s to %s", in.Version, tag)
 	bin, err := in.fetchRelease(ctx, tag)
 	if err != nil {
 		return err
 	}
-	in.say("Downloaded tender %s and checked it against the release checksums", tag)
-	if _, err := in.writeSaying(ctx, binaryPath, bin, 0o755, "", "Installed tender "+tag+" at "+in.path(binaryPath)); err != nil {
+	in.say("Downloaded Tender %s and checked it against the release checksums", tag)
+	if _, err := in.writeSaying(ctx, binaryPath, bin, 0o755, "", "Installed Tender "+tag+" at "+in.path(binaryPath)); err != nil {
 		return err
 	}
 	out, err := in.run(ctx, in.path(binaryPath), "install", "refresh")
 	_, _ = in.Out.Write(out)
 	if err != nil {
-		return fmt.Errorf("tender %s is installed, but restarting its services failed. Fix the cause, then run \"sudo tender install refresh\": %w", tag, err)
+		return fmt.Errorf("Tender %s is installed, but restarting its services failed. Fix the cause, then run \"sudo tender install refresh\": %w", tag, err)
 	}
-	in.say("\nUpdated to tender %s.", tag)
+	in.say("\nUpdated to Tender %s.", tag)
 	return nil
 }
 
@@ -127,7 +127,7 @@ func (in *Installer) Update(ctx context.Context, version string) error {
 func (in *Installer) Refresh(ctx context.Context) error {
 	agent, hub := in.installed(agentUnitPath), in.installed(hubUnitPath)
 	if !agent && !hub {
-		return errors.New("tender is not installed on this machine yet. Run \"sudo tender install agent\" or \"sudo tender install hub\" first")
+		return errors.New("Tender is not installed on this machine yet. Run \"sudo tender install agent\" or \"sudo tender install hub\" first")
 	}
 	in.Refreshing = true
 	if agent {

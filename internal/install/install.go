@@ -1,4 +1,4 @@
-// Package install sets up tender on a machine: the restic binary, the tender user, the config,
+// Package install sets up Tender on a machine: the restic binary, the tender user, the config,
 // the credentials and the systemd units. Every path goes through a root prefix and every command
 // through a runner, so tests run the whole install in a temporary directory.
 package install
@@ -100,7 +100,7 @@ func (in *Installer) preflight() error {
 		return fmt.Errorf("tender installs on linux/amd64 only, and this machine is %s. Run the install on a 64-bit x86 Linux server", in.Platform)
 	}
 	if fi, err := os.Stat(in.path("/run/systemd/system")); err != nil || !fi.IsDir() {
-		return errors.New("systemd is not running on this machine, and tender runs its services with it. Use a Linux server that boots with systemd")
+		return errors.New("systemd is not running on this machine, and Tender runs its services with it. Use a Linux server that boots with systemd")
 	}
 	return nil
 }
@@ -179,7 +179,7 @@ func (in *Installer) prepare(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := in.writeSaying(ctx, binaryPath, self, 0o755, "", "Installed tender at "+in.path(binaryPath)); err != nil {
+	if _, err := in.writeSaying(ctx, binaryPath, self, 0o755, "", "Installed Tender at "+in.path(binaryPath)); err != nil {
 		return err
 	}
 	if err := in.ensureDir(ctx, etcDir, 0o755, ""); err != nil {

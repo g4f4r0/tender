@@ -151,7 +151,7 @@ func TestSendEmails(t *testing.T) {
 		Since:   "2026-11-14 02:05 UTC", Duration: "3 hours 12 minutes", ResolvedAt: "2026-11-14 05:17 UTC",
 	}
 	for _, c := range []struct{ kind, subject, text string }{
-		{kindOpened, "code: backup failed", "You'll get one more email when this is resolved.\n\nSent by the tender hub on hub1.\n"},
+		{kindOpened, "code: backup failed", "You'll get one more email when this is resolved.\n\nSent by the Tender hub on hub1.\n"},
 		{kindEscalated, "code: backup failed, now critical", "This was a warning and is now critical. It has been open since 2026-11-14 02:05 UTC."},
 		{kindResolved, "code: backup failed, resolved", "This is resolved as of 2026-11-14 05:17 UTC. It was open for 3 hours 12 minutes."},
 	} {
@@ -205,7 +205,7 @@ func TestSendTestEmailAndHeaders(t *testing.T) {
 	}
 	got := <-s.got
 	subject, text, html := parseEmail(t, got)
-	if subject != "tender test email" || text != "This is a test from the tender hub on hub1. If you can read it, alert emails reach you.\n" ||
+	if subject != "Tender test email" || text != "This is a test from the Tender hub on hub1. If you can read it, alert emails reach you.\n" ||
 		!strings.Contains(html, "If you can read it, alert emails reach you.") {
 		t.Errorf("got %q, %q, %q", subject, text, html)
 	}

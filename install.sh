@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs tender and sets up this machine.
+# Installs Tender and sets up this machine.
 #
 #   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- agent --hub URL --machine NAME
 #   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub
@@ -23,7 +23,7 @@ fetch() {
 	elif command -v wget >/dev/null 2>&1; then
 		wget -q -O "$2" "$1" || fail "could not download $1. Check the version and this machine's internet access, then run the command again."
 	else
-		fail "curl or wget is needed to download tender. Install one (for example: apt install curl) and run the command again."
+		fail "curl or wget is needed to download Tender. Install one (for example: apt install curl) and run the command again."
 	fi
 }
 
@@ -48,10 +48,10 @@ main() {
        or: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- hub" ;;
 	esac
 	[ "$(id -u)" -eq 0 ] || fail "this needs root. Run it with sudo, for example: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- $*"
-	[ "$(uname -s)" = Linux ] || fail "tender runs on Linux only. This machine runs $(uname -s)."
+	[ "$(uname -s)" = Linux ] || fail "Tender runs on Linux only. This machine runs $(uname -s)."
 	case "$(uname -m)" in
 	x86_64 | amd64) ;;
-	*) fail "tender supports x86_64 machines only for now. This machine is $(uname -m)." ;;
+	*) fail "Tender supports x86_64 machines only for now. This machine is $(uname -m)." ;;
 	esac
 
 	api=${TENDER_API_URL:-https://api.github.com/repos/$repo}
@@ -79,18 +79,18 @@ main() {
 
 	tag=${TENDER_VERSION:-}
 	if [ -z "$tag" ]; then
-		say "Looking up the latest tender release..."
+		say "Looking up the latest Tender release..."
 		fetch "$api/releases/latest" "$tmp/latest.json"
 		tag=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/latest.json" | head -n 1)
 	fi
 	case "$tag" in v*) ;; *) tag=v$tag ;; esac
 	case "$tag" in
 	v[0-9]*.[0-9]*.[0-9]* | v[0-9]*.[0-9]*.[0-9]*[-.]*) ;;
-	*) fail "could not find a tender release (got \"$tag\"). Set one yourself, for example TENDER_VERSION=v0.1.0." ;;
+	*) fail "could not find a Tender release (got \"$tag\"). Set one yourself, for example TENDER_VERSION=v0.1.0." ;;
 	esac
 	case "$tag" in *[!A-Za-z0-9._-]*) fail "\"$tag\" is not a release name. Use one like v0.1.0." ;; esac
 
-	say "Installing tender $tag for Linux x86_64."
+	say "Installing Tender $tag for Linux x86_64."
 	say "  Downloading..."
 	fetch "$downloads/download/$tag/$asset" "$tmp/$asset"
 	fetch "$downloads/download/$tag/SHA256SUMS" "$tmp/SHA256SUMS"
@@ -107,7 +107,7 @@ main() {
 	say "  Installed $bin_dir/tender."
 	say ""
 
-	printf '%s\n' "$token" | "$bin_dir/tender" install "$@" || fail "tender is installed at $bin_dir/tender, but setting up this machine failed. Fix the problem above, then run the same command again."
+	printf '%s\n' "$token" | "$bin_dir/tender" install "$@" || fail "Tender is installed at $bin_dir/tender, but setting up this machine failed. Fix the problem above, then run the same command again."
 	say ""
 	say "Done. $("$bin_dir/tender" version) is installed. Run \"tender help\" to see what it can do."
 }

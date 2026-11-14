@@ -1,15 +1,15 @@
-# tender
+# Tender
 
 Whole-server backups for your Linux machines, one place to see how they're doing, and an MCP endpoint so your AI client can check on them for you.
 
 You run a small agent on each machine and one hub on any of them. Each night, every agent backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub collects the results and usage from every machine. It emails you when a backup fails, a machine goes quiet or a disk fills up. It also answers questions like "did last night's backups work?" from Claude Code or any other MCP client.
 
-tender is one static Go binary. It uses [restic](https://restic.net) underneath, so your backups are in a well-known, encrypted format you can read without tender.
+Tender is one static Go binary. It uses [restic](https://restic.net) underneath, so your backups are in a well-known, encrypted format you can read without Tender.
 
 ## What you get
 
 1. **Whole-server backups.** Every real filesystem on the machine, without caches, temp files, container images or `node_modules`. Snapshots are deduplicated and encrypted before they leave the machine.
-2. **Retention and checks.** Each machine keeps snapshots for the number of days you set. Once a week, tender reads back 5% of the stored data.
+2. **Retention and checks.** Each machine keeps snapshots for the number of days you set. Once a week, Tender reads back 5% of the stored data.
 3. **Usage.** CPU load, memory, disk and uptime from every machine, once a minute.
 4. **Email alerts.** One email when something goes wrong and one when it's fixed. No floods.
 5. **Read-only MCP.** Six tools for AI clients: `list_machines`, `get_machine_usage`, `get_backup_status`, `list_backup_snapshots`, `list_backup_history` and `list_notifications`.
@@ -19,7 +19,7 @@ tender is one static Go binary. It uses [restic](https://restic.net) underneath,
 
 1. Linux on x86_64 with systemd.
 2. [Tailscale](https://tailscale.com) on every machine. The hub is reachable only over your tailnet.
-3. An S3-compatible bucket, such as Cloudflare R2, Backblaze B2 or AWS S3, with an access key that can read and write it.
+3. A bucket on any S3-compatible storage, such as Cloudflare R2, AWS S3, Backblaze B2, Wasabi or MinIO, with an access key that can read and write it.
 
 ## Quick start
 
@@ -42,6 +42,8 @@ sudo tender hub add-destination r2 --type s3 \
 ```
 
 Each machine that uses this destination gets its own folder, `my-backups/tender/<machine>`.
+
+`--type s3` works with every S3-compatible service, and only the endpoint changes. AWS S3 uses one like `https://s3.us-east-1.amazonaws.com`, and Backblaze B2 one like `https://s3.us-west-004.backblazeb2.com`.
 
 ### 3. Add the machine and its schedule
 
@@ -83,7 +85,7 @@ The hub sends email through any SMTP server that accepts implicit TLS, usually o
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub --force \
-  --email-to you@example.com --email-from "tender <alerts@example.com>" \
+  --email-to you@example.com --email-from "Tender <alerts@example.com>" \
   --smtp-host smtp.example.com --smtp-port 465 --smtp-username alerts@example.com
 sudo tender install credential smtp-password < smtp-password.txt
 sudo tender hub test-email
@@ -118,7 +120,7 @@ On the hub machine, `sudo tender mcp --stdio` serves the same tools to local cli
 sudo tender update
 ```
 
-`update` checks and installs the latest release, then refreshes and restarts what tender runs on the machine. Add `--version v0.1.0` for a specific release. For a fresh install of a specific release, put `TENDER_VERSION=v0.1.0` before `sh` in the install command.
+`update` checks and installs the latest release, then refreshes and restarts what Tender runs on the machine. Add `--version v0.1.0` for a specific release. For a fresh install of a specific release, put `TENDER_VERSION=v0.1.0` before `sh` in the install command.
 
 ## Restoring
 
@@ -153,13 +155,13 @@ Every backup covers all real filesystems on the machine and leaves out:
 /home/*/.cache  /home/*/.local/share/docker  **/node_modules
 ```
 
-Docker volumes live under `/var/lib/docker`, so they're left out as well. Dump application databases with their own tools into a folder that tender backs up. You can change the paths and excludes in `/etc/tender/agent.toml`.
+Docker volumes live under `/var/lib/docker`, so they're left out as well. Dump application databases with their own tools into a folder that Tender backs up. You can change the paths and excludes in `/etc/tender/agent.toml`.
 
 ### Where things live
 
 | Path | What it holds |
 | --- | --- |
-| `/usr/local/bin/tender` | The tender binary |
+| `/usr/local/bin/tender` | The Tender binary |
 | `/usr/local/bin/restic` | restic 0.19.1, checked against its official SHA-256 |
 | `/etc/tender/agent.toml` | The agent's hub, machine name, backup paths and excludes |
 | `/etc/tender/hub.toml` | The hub's address, database and email settings |

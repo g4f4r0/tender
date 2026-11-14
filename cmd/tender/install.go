@@ -61,7 +61,7 @@ func runInstall(args []string, stdin io.Reader, out io.Writer) error {
 				"Then save the SMTP password with: sudo tender install credential smtp-password < FILE")
 		fs.BoolVar(&hub.Force, "force", false, "replace an existing /etc/tender/hub.toml")
 		fs.StringVar(&emailTo, "email-to", "", "`ADDRESSES` comma-separated addresses that get alerts")
-		fs.StringVar(&emailFrom, "email-from", "", "`SENDER` the sender, such as \"tender <alerts@example.net>\"")
+		fs.StringVar(&emailFrom, "email-from", "", "`SENDER` the sender, such as \"Tender <alerts@example.net>\"")
 		fs.StringVar(&smtpHost, "smtp-host", "", "`HOST` the SMTP server")
 		fs.IntVar(&smtpPort, "smtp-port", 0, "`PORT` the SMTP port, implicit TLS (usually 465)")
 		fs.StringVar(&smtpUsername, "smtp-username", "", "`USER` the SMTP user name")

@@ -23,7 +23,7 @@ type Server struct {
 func New(version string, log *slog.Logger) *Server {
 	impl := &sdk.Implementation{Name: "tender", Title: "Tender", Version: version}
 	opts := &sdk.ServerOptions{
-		Instructions: "Read-only state of the machines that run tender: usage, backups and notifications. " +
+		Instructions: "Read-only state of the machines that run Tender: usage, backups and notifications. " +
 			"Start with list_machines.",
 		// The tool list never changes, so don't offer list-change notifications. Offering them makes
 		// clients on the 2026-07-28 protocol hold a subscriptions/listen request open, which a

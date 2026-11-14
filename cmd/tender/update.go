@@ -11,7 +11,7 @@ import (
 
 // runUpdate runs "tender update". It needs root.
 func runUpdate(args []string, version string, out io.Writer) error {
-	fs := newFlagSet("update", "[--version vX.Y.Z]", "Update tender to the latest release and restart its services. Run as root.")
+	fs := newFlagSet("update", "[--version vX.Y.Z]", "Update Tender to the latest release and restart its services. Run as root.")
 	target := fs.String("version", "", "`vX.Y.Z` the release to install (default: the latest)")
 	if err := parseFlags(fs, args, out); err != nil {
 		return err
