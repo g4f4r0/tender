@@ -463,6 +463,17 @@ func TestFailedBackupIsReportedAndSkipsCleanup(t *testing.T) {
 	}
 }
 
+// stopDuringBackup stops the agent while restic is backing up, like a SIGTERM would.
+type stopDuringBackup struct {
+	*stubRunner
+	stop func()
+}
+
+func (s stopDuringBackup) Backup(ctx context.Context, paths, exclude []string) Outcome {
+	s.stop()
+	return s.stubRunner.Backup(ctx, paths, exclude)
+}
+
 func TestStoppedRunIsReportedAndRunsAgainOnNextStart(t *testing.T) {
 	h := newHub(t)
 	a, stub := testAgent(t, h)
@@ -470,7 +481,8 @@ func TestStoppedRunIsReportedAndRunsAgainOnNextStart(t *testing.T) {
 	a.refreshSettings(ctx)
 	h.seen()
 	stub.backup = Outcome{Status: StatusFailed, Error: "Fatal: unable to save snapshot: context canceled"}
-	a.newRunner = func(Settings) (Runner, error) { cancel(); return stub, nil } // SIGTERM arrives during the run
+	stopping := stopDuringBackup{stubRunner: stub, stop: cancel} // SIGTERM arrives during the run
+	a.newRunner = func(Settings) (Runner, error) { return stopping, nil }
 	a.runDue(ctx)
 
 	patched := false
