@@ -1,0 +1,31 @@
+{{define "head"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Subject}}</title>
+</head>
+<body style="margin:0;padding:16px;background:#ffffff;color:#111111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5">
+<div style="max-width:560px;margin:0 auto">
+{{end}}
+{{define "foot"}}<p style="margin:24px 0 0;color:#555555;font-size:14px">Sent by the tender hub on {{.Hub}}.</p>
+</div>
+</body>
+</html>
+{{end}}
+{{define "opened"}}{{template "head" .}}<p style="margin:0 0 16px;white-space:pre-wrap">{{.Content}}</p>
+<p style="margin:0 0 16px">This is <strong style="color:{{.Color}}">{{.Severity}}</strong> and has been open since {{.Since}}.</p>
+<p style="margin:0 0 16px">To look closer, ask your AI client to call <code>{{.Tool}}</code> for {{.Machine}}.</p>
+<p style="margin:0 0 16px">You'll get one more email when this is resolved.</p>
+{{template "foot" .}}{{end}}
+{{define "escalated"}}{{template "head" .}}<p style="margin:0 0 16px;white-space:pre-wrap">{{.Content}}</p>
+<p style="margin:0 0 16px">This was a warning and is now <strong style="color:{{.Color}}">critical</strong>. It has been open since {{.Since}}.</p>
+<p style="margin:0 0 16px">To look closer, ask your AI client to call <code>{{.Tool}}</code> for {{.Machine}}.</p>
+{{template "foot" .}}{{end}}
+{{define "resolved"}}{{template "head" .}}<p style="margin:0 0 16px">This is resolved as of {{.ResolvedAt}}. It was open for {{.Duration}}.</p>
+{{template "foot" .}}{{end}}
+{{define "test"}}{{template "head" .}}<p style="margin:0 0 16px">This is a test from the tender hub on {{.Hub}}. If you can read it, alert emails reach you.</p>
+</div>
+</body>
+</html>
+{{end}}

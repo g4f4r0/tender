@@ -19,7 +19,7 @@ import (
 var version = "dev"
 
 const usage = `Usage:
-  tender hub [--database PATH] [--listen ADDR]   run the hub
+  tender hub [--config PATH] [--database PATH] [--listen ADDR]   run the hub
   tender agent [--config PATH]                   run the agent
   tender mcp --stdio [--database PATH]           serve the MCP tools over stdio, on the hub machine
   tender version                                 print the version

@@ -1,9 +1,11 @@
 package notifications
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/db"
@@ -68,4 +70,67 @@ func (s *Store) Get(ctx context.Context, machineID, id int64) (Notification, err
 		return n, server.NotFound("Notification %d doesn't exist on this machine.", id)
 	}
 	return n, err
+}
+
+// key names a rule's notification: the type and the machine's name.
+type key struct{ typ, machine string }
+
+// open returns the unresolved notifications of the rules, by type and machine.
+func (s *Store) open(ctx context.Context) (map[key]Notification, error) {
+	rows, err := s.db.Read.QueryContext(ctx, selectNotifications+` WHERE n.status != 'resolved' AND m.id IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[key]Notification{}
+	for rows.Next() {
+		n, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := typeText[n.Type]; ok {
+			out[key{n.Type, *n.Machine}] = n
+		}
+	}
+	return out, rows.Err()
+}
+
+func sortedByID(m map[key]Notification) []Notification {
+	out := make([]Notification, 0, len(m))
+	for _, n := range m {
+		out = append(out, n)
+	}
+	slices.SortFunc(out, func(a, b Notification) int { return cmp.Compare(a.ID, b.ID) })
+	return out
+}
+
+// insert opens a pending notification. Its updated_at equals its created_at until it is emailed.
+func (s *Store) insert(ctx context.Context, machineID int64, f finding, now time.Time) error {
+	_, err := s.db.Write.ExecContext(ctx,
+		`INSERT INTO notifications (machine_id, type, severity, status, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		machineID, f.typ, f.severity, StatusPending, f.content, now.Unix(), now.Unix())
+	return err
+}
+
+// changeSeverity stores a new severity and content for an open notification. A rise sets a sent
+// notification back to pending, which owes an "escalated" email. A drop owes nothing: it also
+// settles a pending escalation, since the email that went out was at the lower severity.
+func (s *Store) changeSeverity(ctx context.Context, n Notification, f finding, now time.Time) error {
+	status, updated := n.Status, now
+	switch {
+	case neverEmailed(n):
+		updated = n.CreatedAt // stays "opened"
+	case severityRank(f.severity) > severityRank(n.Severity):
+		status = StatusPending
+	case n.Status == StatusPending:
+		status = StatusSent
+	}
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET severity = ?, status = ?, content = ?, updated_at = ? WHERE id = ?`,
+		f.severity, status, f.content, updated.Unix(), n.ID)
+	return err
+}
+
+func (s *Store) setStatus(ctx context.Context, id int64, status string, now time.Time) error {
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET status = ?, updated_at = ? WHERE id = ?`, status, now.Unix(), id)
+	return err
 }

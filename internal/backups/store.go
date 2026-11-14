@@ -499,3 +499,52 @@ func isNotFound(err error) bool {
 	var e *server.Error
 	return errors.As(err, &e) && e.Status == 404
 }
+
+// LastCompleted returns when each machine's newest completed backup started, by machine name.
+// Machines with none are missing. It reads the machines table for the names, like Summaries.
+func (s *Store) LastCompleted(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.Read.QueryContext(ctx,
+		`SELECT m.name, max(h.created_at) FROM backup_history h JOIN machines m ON m.id = h.machine_id
+		 WHERE h.type = ? AND h.status = ? GROUP BY m.id`, TypeBackup, StatusCompleted)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var name string
+		var created int64
+		if err := rows.Scan(&name, &created); err != nil {
+			return nil, err
+		}
+		out[name] = at(created)
+	}
+	return out, rows.Err()
+}
+
+// LastFinished returns each machine's newest backup run that ended, completed or failed, by
+// machine name. A run still in progress doesn't count, so a retry can't hide a failure early.
+func (s *Store) LastFinished(ctx context.Context) (map[string]History, error) {
+	rows, err := s.db.Read.QueryContext(ctx,
+		`SELECT m.name, r.id, r.snapshot_id, r.type, r.status, r.error, r.created_at, r.updated_at
+		 FROM machines m JOIN backup_history r ON r.id = (
+		   SELECT h.id FROM backup_history h WHERE h.machine_id = m.id AND h.type = ? AND h.status IN (?, ?)
+		   ORDER BY h.created_at DESC, h.id DESC LIMIT 1)`,
+		TypeBackup, StatusCompleted, StatusFailed)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]History{}
+	for rows.Next() {
+		var name string
+		var h History
+		var created, updated int64
+		if err := rows.Scan(&name, &h.ID, &h.SnapshotID, &h.Type, &h.Status, &h.Error, &created, &updated); err != nil {
+			return nil, err
+		}
+		h.CreatedAt, h.UpdatedAt = at(created), at(updated)
+		out[name] = h
+	}
+	return out, rows.Err()
+}

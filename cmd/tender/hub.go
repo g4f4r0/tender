@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/backups"
+	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/mcp"
@@ -22,17 +23,20 @@ import (
 	"github.com/g4f4r0/tender/internal/server"
 )
 
-const defaultDatabase = "/var/lib/tender/hub.db"
+const defaultDatabase = config.DefaultDatabase
 
 const hubUsage = `Usage:
-  tender hub [--database PATH] [--listen ADDR]    run the hub
+  tender hub [--config PATH] [--database PATH] [--listen ADDR]    run the hub
   tender hub add-machine NAME                     add a machine and print its token once
   tender hub rotate-token NAME                    replace a machine's token and print the new one
   tender hub add-destination NAME --type s3 --endpoint URL --bucket BUCKET [--path PATH]
   tender hub set-backup MACHINE --destination NAME --schedule "30 3 * * *" --retention-days 30
+  tender hub test-email [--config PATH]           send a test email
   tender hub help                                 print this help
 
-Every command takes --database PATH (default ` + defaultDatabase + `).
+Every command reads the hub config (--config PATH, default ` + config.DefaultHubPath + `; none is fine) and takes
+--database PATH, which overrides its database (default ` + defaultDatabase + `). Run also takes --listen ADDR
+(default ` + config.DefaultListen + `).
 `
 
 func runHub(args []string, log *slog.Logger) error {
@@ -84,16 +88,27 @@ func newTools(d *db.DB, log *slog.Logger) *mcp.Server {
 
 func serveHub(args []string, log *slog.Logger) error {
 	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
-	database := fs.String("database", defaultDatabase, "SQLite database file")
-	listen := fs.String("listen", "127.0.0.1:8080", "address to listen on")
+	configPath := fs.String("config", "", "hub config file (default "+config.DefaultHubPath+")")
+	database := fs.String("database", "", "SQLite database file (overrides the config)")
+	listen := fs.String("listen", "", "address to listen on (overrides the config)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	cfg, err := hubConfig(*configPath, *database, *listen)
+	if err != nil {
+		return err
+	}
+	var mailer *notifications.Mailer
+	if cfg.Email != nil {
+		if mailer, err = newMailer(*cfg.Email); err != nil {
+			return err
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	d, err := openHub(ctx, *database)
+	d, err := openHub(ctx, cfg.Database)
 	if err != nil {
 		return err
 	}
@@ -104,15 +119,25 @@ func serveHub(args []string, log *slog.Logger) error {
 	}()
 
 	hub := newHub(d, log)
+	ms := machines.NewStore(d)
 	go hub.PruneKeys(ctx)
+	go ms.PruneUsage(ctx, log)
+	var sender notifications.Sender // stays nil when email is off
+	if mailer != nil {
+		sender = mailer
+	} else {
+		log.Info("email is off: the config has no [email] table, so notifications stay pending")
+	}
+	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
+	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d)))
 	srv := &http.Server{
-		Addr:              *listen,
+		Addr:              cfg.Listen,
 		Handler:           hub,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("hub listening", "address", *listen, "database", *database, "version", version)
+	log.Info("hub listening", "address", cfg.Listen, "database", cfg.Database, "version", version)
 
 	select {
 	case err := <-errc:
@@ -128,14 +153,33 @@ func serveHub(args []string, log *slog.Logger) error {
 	return nil
 }
 
+// hubConfig loads the hub config and applies the flags, which win over the file. An empty flag is not set.
+func hubConfig(path, database, listen string) (config.Hub, error) {
+	cfg, err := config.LoadHub(path)
+	if err != nil {
+		return cfg, err
+	}
+	if database != "" {
+		cfg.Database = database
+	}
+	if listen != "" {
+		cfg.Listen = listen
+	}
+	return cfg, nil
+}
+
 // hubCommand runs one of the hub's administration commands, writing its result to out.
 func hubCommand(name string, args []string, out io.Writer) error {
 	if name == "help" {
 		_, err := io.WriteString(out, hubUsage)
 		return err
 	}
+	if name == "test-email" {
+		return testEmail(args, out)
+	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	database := fs.String("database", defaultDatabase, "SQLite database file")
+	configPath := fs.String("config", "", "hub config file (default "+config.DefaultHubPath+")")
+	database := fs.String("database", "", "SQLite database file (overrides the config)")
 	var run func(ctx context.Context, d *db.DB, arg string) error
 
 	switch name {
@@ -193,8 +237,12 @@ func hubCommand(name string, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	cfg, err := hubConfig(*configPath, *database, "")
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
-	d, err := openHub(ctx, *database)
+	d, err := openHub(ctx, cfg.Database)
 	if err != nil {
 		return err
 	}

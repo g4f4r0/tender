@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/db"
@@ -227,4 +228,32 @@ func (in UsageInput) validate() error {
 		return server.Invalid("uptime_seconds can't be negative.")
 	}
 	return nil
+}
+
+const usageLifetime = 14 * 24 * time.Hour
+
+// PruneUsage deletes usage readings older than 14 days, now and then every day until ctx ends.
+// Each machine's newest reading is kept, so a long-silent machine still has a last seen.
+func (s *Store) PruneUsage(ctx context.Context, log *slog.Logger) {
+	tick := time.NewTicker(24 * time.Hour)
+	defer tick.Stop()
+	for {
+		if err := s.pruneUsage(ctx, time.Now()); err != nil && ctx.Err() == nil {
+			log.Error("prune machine usage", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func (s *Store) pruneUsage(ctx context.Context, now time.Time) error {
+	_, err := s.db.Write.ExecContext(ctx,
+		`DELETE FROM machine_usage WHERE created_at < ? AND id NOT IN (
+		   SELECT (SELECT id FROM machine_usage u WHERE u.machine_id = m.id ORDER BY created_at DESC, id DESC LIMIT 1)
+		   FROM machines m)`,
+		now.Add(-usageLifetime).Unix())
+	return err
 }
