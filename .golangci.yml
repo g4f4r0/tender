@@ -37,6 +37,7 @@ linters:
             - "**/internal/config/**"
             - "**/internal/server/**"
             - "**/internal/mcp/**"
+            - "**/internal/secret/**"
             - "**/internal/client/**"
             - "**/internal/install/**"
           deny:

@@ -156,9 +156,10 @@ func (r *Restic) outcome(code int, p *stderrParser, partialOK bool) Outcome {
 	case code == 0:
 		return Outcome{Status: StatusCompleted}
 	case code == 3 && partialOK:
-		return Outcome{Status: StatusCompleted, Error: r.scrub(p.partialMessage())}
+		return Outcome{Status: StatusCompleted, Error: truncate(r.scrub(p.partialMessage()))}
 	}
-	return Outcome{Status: StatusFailed, Error: r.scrub(p.failureMessage(code))}
+	// Scrub before truncating: a secret cut in half by the limit would no longer match.
+	return Outcome{Status: StatusFailed, Error: truncate(r.scrub(p.failureMessage(code)))}
 }
 
 // scrub hides the child's secret values in text that came from restic.
@@ -296,7 +297,7 @@ func (p *stderrParser) partialMessage() string {
 	if len(p.seen) > len(p.items) {
 		msg += fmt.Sprintf(" and %d more", len(p.seen)-len(p.items))
 	}
-	return truncate(msg)
+	return msg
 }
 
 func (p *stderrParser) failureMessage(code int) string {
@@ -312,7 +313,7 @@ func (p *stderrParser) failureMessage(code int) string {
 	if msg == "" {
 		msg = "restic exited with code " + strconv.Itoa(code)
 	}
-	return truncate(strings.TrimSpace(msg))
+	return strings.TrimSpace(msg)
 }
 
 func truncate(s string) string {

@@ -78,21 +78,21 @@ func CredentialsDir() string {
 }
 
 // ReadCredential returns the content of dir/name without its trailing newline.
-// Errors name the file and say how to save it, never show its content.
+// Errors name the file and say how to save it again, never show its content.
 func ReadCredential(dir, name string) (string, error) {
 	if name == "" || name != filepath.Base(name) {
 		return "", fmt.Errorf("credential name %q must be a plain file name. Use letters, digits, dots and dashes", name)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("credential %s is not saved on this machine. Save it with \"sudo tender install credential %s < FILE\": %w", name, name, err)
+		return "", fmt.Errorf("credential %s is not saved on this machine. Install the agent again with \"sudo tender install agent\" to save it: %w", name, err)
 	}
 	if err != nil {
 		return "", fmt.Errorf("cannot read credential %s. Check that the tender user can read it: %w", name, err)
 	}
 	v := strings.TrimRight(string(b), "\r\n")
 	if v == "" {
-		return "", fmt.Errorf("credential %s is empty. Save it again with \"sudo tender install credential %s < FILE\"", name, name)
+		return "", fmt.Errorf("credential %s is empty. Install the agent again with \"sudo tender install agent\" to save it", name)
 	}
 	return v, nil
 }

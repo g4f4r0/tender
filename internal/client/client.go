@@ -1,4 +1,4 @@
-// Package client is the agent's HTTP client for the hub's REST API.
+// Package client is the HTTP client for the hub's REST API, used by the agent and the tender command.
 package client
 
 import (
@@ -15,14 +15,15 @@ import (
 	"time"
 )
 
-// Client sends JSON requests to the hub with a bearer token.
+// Client sends JSON requests to the hub, with a bearer token when it has one.
 type Client struct {
 	base  string
 	token string
 	http  *http.Client
 }
 
-// New returns a client for the hub at base, such as https://apps.example.ts.net.
+// New returns a client for the hub at base, such as https://apps.example.ts.net. An empty token
+// sends no Authorization header, which is what the people routes (the tender command) take.
 func New(base, token string) *Client {
 	return &Client{
 		base:  strings.TrimRight(base, "/"),
@@ -36,6 +37,7 @@ type Error struct {
 	Status int
 	Title  string
 	Detail string
+	Type   string // the problem's type URI; about:blank for most
 }
 
 func (e *Error) Error() string {
@@ -82,7 +84,9 @@ func (c *Client) Do(ctx context.Context, method, path, key string, in, out any) 
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -113,13 +117,14 @@ func problem(method, path string, resp *http.Response) error {
 	var p struct {
 		Title  string `json:"title"`
 		Detail string `json:"detail"`
+		Type   string `json:"type"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if json.Unmarshal(raw, &p) == nil {
 		if p.Title != "" {
 			e.Title = p.Title
 		}
-		e.Detail = p.Detail
+		e.Detail, e.Type = p.Detail, p.Type
 	}
 	return fmt.Errorf("%s %s: %w", method, path, e)
 }

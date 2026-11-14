@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -230,9 +232,12 @@ func TestAgentFreshInstall(t *testing.T) {
 	e.noSecret(t, testToken)
 
 	// Each step a person cares about gets one line, then the numbered next steps.
+	if strings.Contains(e.out.String(), "install credential") {
+		t.Error("the next steps still send the person to the removed credential command")
+	}
 	for _, want := range []string{"Installing restic 0.19.1\n", "Created the tender user\n", "Saved the hub token\n", "Started tender-agent\n",
-		"The agent is running. Next:", "sudo tender install credential r2.password < password.txt",
-		"sudo tender install credential r2.access-key-id < access-key-id.txt", "sudo tender install credential r2.secret-access-key < secret-access-key.txt"} {
+		"The agent is running. It gets its destination, schedule and keys from the hub. Next:",
+		`tender backups set code --destination DESTINATION --schedule "30 3 * * *" --retention-days 30`} {
 		if !strings.Contains(e.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, e.out.String())
 		}
@@ -424,49 +429,6 @@ func TestRefusesOtherPlatformsAndNoSystemd(t *testing.T) {
 	}
 }
 
-func TestCredential(t *testing.T) {
-	e := newEnv(t)
-	ctx := context.Background()
-	for _, bad := range []string{"", "R2", "../etc", "a/b", ".", "..", "-x", "a b", "a_b"} {
-		if err := e.in.Credential(ctx, bad, "value"); err == nil {
-			t.Errorf("name %q was accepted", bad)
-		}
-	}
-	if err := e.in.Credential(ctx, "r2.password", ""); err == nil {
-		t.Error("empty value accepted")
-	}
-	if len(e.fake.commands) != 0 || len(e.tree(t)) != 3 {
-		t.Errorf("a rejected credential changed something: %v", e.fake.commands)
-	}
-
-	if err := e.in.Credential(ctx, "r2.password", "the-repository-password"); err != nil {
-		t.Fatal(err)
-	}
-	const p = "/etc/tender/credentials/r2.password"
-	if e.read(t, p) != "the-repository-password" || e.mode(t, p) != 0o640 || e.mode(t, "/etc/tender/credentials") != 0o750 {
-		t.Error("wrong content or modes")
-	}
-	want := []string{"chown root:tender " + e.path("/etc/tender/credentials"), "chown root:tender " + e.path(p)}
-	if got := e.commands(); !reflect.DeepEqual(got, want) {
-		t.Errorf("commands = %v, want %v", got, want)
-	}
-	if !strings.Contains(e.out.String(), "Saved credential r2.password\n") {
-		t.Errorf("output = %q", e.out.String())
-	}
-	// Saving the same value again does nothing; a new value replaces it.
-	e.out.Reset()
-	if err := e.in.Credential(ctx, "r2.password", "the-repository-password"); err != nil || len(e.commands()) != 0 {
-		t.Errorf("repeat changed something: %v", err)
-	}
-	if !strings.Contains(e.out.String(), "already has this value") {
-		t.Errorf("output = %q", e.out.String())
-	}
-	if err := e.in.Credential(ctx, "r2.password", "new"); err != nil || e.read(t, p) != "new" {
-		t.Errorf("replace failed: %v", err)
-	}
-	e.noSecret(t, "the-repository-password")
-}
-
 func TestHubFreshInstall(t *testing.T) {
 	e := newEnv(t)
 	if err := e.in.Hub(context.Background(), HubOptions{}); err != nil {
@@ -486,23 +448,31 @@ func TestHubFreshInstall(t *testing.T) {
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if e.mode(t, "/etc/tender/hub.toml") != 0o644 || e.mode(t, "/etc/systemd/system/tender-hub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
+	if e.mode(t, "/etc/tender/hub.env") != 0o600 || e.mode(t, "/etc/systemd/system/tender-hub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
 		t.Error("wrong modes")
+	}
+	if _, err := os.Stat(e.path("/etc/tender/hub.toml")); err == nil {
+		t.Error("the hub wrote a hub.toml")
 	}
 	if _, err := os.Stat(e.path("/usr/local/bin/restic")); err == nil {
 		t.Error("the hub installed restic")
 	}
-	h, err := config.LoadHub(e.path("/etc/tender/hub.toml"))
-	if err != nil || h.Listen != "127.0.0.1:8080" || h.Database != "/var/lib/tender/hub/hub.db" || h.Email != nil {
-		t.Errorf("hub.toml = %+v, %v", h, err)
+	hubEnvText := e.read(t, "/etc/tender/hub.env")
+	key := envValue([]byte(hubEnvText), "TENDER_ENCRYPTION_KEY")
+	if raw, err := base64.StdEncoding.DecodeString(key); err != nil || len(raw) != 32 {
+		t.Errorf("TENDER_ENCRYPTION_KEY = %q is not 32 bytes of base64 (%v)", key, err)
 	}
-	if strings.Contains(e.read(t, "/etc/tender/hub.toml"), "email") {
-		t.Error("hub.toml has an email table without email flags")
+	if strings.Contains(hubEnvText, "SMTP") {
+		t.Errorf("hub.env has SMTP settings without flags:\n%s", hubEnvText)
 	}
-	if strings.Contains(e.read(t, "/etc/systemd/system/tender-hub.service"), "LoadCredential") {
-		t.Error("the unit loads smtp-password, which does not exist")
+	if unit := e.read(t, "/etc/systemd/system/tender-hub.service"); strings.Contains(unit, "LoadCredential") ||
+		!strings.Contains(unit, "EnvironmentFile=/etc/tender/hub.env\n") || !strings.Contains(unit, "InaccessiblePaths=-/etc/tender/credentials\n") {
+		t.Errorf("hub unit:\n%s", unit)
 	}
-	for _, want := range []string{"Published the hub with Tailscale Serve at https://apps.example.ts.net\n", "The hub is running. Next:", "agent --hub https://apps.example.ts.net --machine NAME"} {
+	e.noSecret(t, key)
+	for _, want := range []string{"Published the hub with Tailscale Serve at https://apps.example.ts.net\n", "The hub is running at https://apps.example.ts.net.", "tender destinations add NAME --endpoint URL --bucket BUCKET",
+		"tender machines add NAME", "tender backups set NAME --destination NAME", "tender recipients add you@example.com",
+		"agent --hub https://apps.example.ts.net --machine NAME", "Alert emails are off until the hub has an SMTP server"} {
 		if !strings.Contains(e.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, e.out.String())
 		}
@@ -524,71 +494,100 @@ func TestHubFreshInstall(t *testing.T) {
 	}
 }
 
-func TestHubEmailAndSMTPCredential(t *testing.T) {
-	e := newEnv(t)
-	ctx := context.Background()
-	if err := e.in.Credential(ctx, "smtp-password", "smtp-secret"); err != nil {
-		t.Fatal(err)
-	}
-	mail := &config.Email{Host: "smtp.example.net", Port: 465, Username: "api", From: "tender <noreply@example.net>", To: []string{"a@example.net", "b@example.net"}}
-	if err := e.in.Hub(ctx, HubOptions{Email: mail}); err != nil {
-		t.Fatal(err)
-	}
-	h, err := config.LoadHub(e.path("/etc/tender/hub.toml"))
-	if err != nil || !reflect.DeepEqual(h.Email, mail) {
-		t.Errorf("email = %+v, %v", h.Email, err)
-	}
-	if !strings.Contains(e.read(t, "/etc/systemd/system/tender-hub.service"), "LoadCredential=smtp-password:/etc/tender/credentials/smtp-password\n") {
-		t.Error("the unit does not load the existing smtp-password")
-	}
-	e.noSecret(t, "smtp-secret")
-
-	// A bad address stops the install before it writes.
-	bad := newEnv(t)
-	bad.in.Run = e.fake.run
-	m := *mail
-	m.From = "not an address"
-	if err := bad.in.Hub(ctx, HubOptions{Email: &m}); err == nil {
-		t.Error("bad email accepted")
-	}
-	if _, err := os.Stat(bad.path("/etc/tender/hub.toml")); err == nil {
-		t.Error("hub.toml was written")
-	}
-}
-
-// smtp-password added after the hub is installed goes into the hub's unit, and the hub restarts.
-func TestSMTPCredentialAfterHub(t *testing.T) {
+// The encryption key is made once. Every later run keeps it, and a damaged one stops the install.
+func TestHubKeepsItsEncryptionKey(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	if err := e.in.Hub(ctx, HubOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	unit := "/etc/systemd/system/tender-hub.service"
-	if strings.Contains(e.read(t, unit), "LoadCredential") || !strings.Contains(e.read(t, unit), "InaccessiblePaths=-/etc/tender/credentials\n") {
-		t.Fatalf("unit before:\n%s", e.read(t, unit))
+	first := e.read(t, "/etc/tender/hub.env")
+	if !strings.Contains(e.out.String(), "with a new encryption key. Back this file up") {
+		t.Errorf("output does not say to back up the key:\n%s", e.out.String())
 	}
-	e.commands() // reset the recorded commands
-	if err := e.in.Credential(ctx, "smtp-password", "smtp-secret"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(e.read(t, unit), "LoadCredential=smtp-password:/etc/tender/credentials/smtp-password\n") {
-		t.Error("the unit does not load the new smtp-password")
-	}
-	chown := "chown root:tender " + e.path("/etc/tender/credentials/smtp-password")
-	want := []string{chown, "systemctl daemon-reload", "systemctl enable --now tender-hub", "systemctl restart tender-hub"}
-	if got := e.commands(); !reflect.DeepEqual(got, want) {
-		t.Errorf("commands = %q, want %q", got, want)
-	}
-	e.noSecret(t, "smtp-secret")
 
-	// Another credential doesn't touch the hub.
-	if err := e.in.Credential(ctx, "r2.password", "x"); err != nil {
+	e.out.Reset()
+	if err := e.in.Hub(ctx, HubOptions{SMTPHost: "smtp.example.net", SMTPFrom: "Tender <alerts@example.net>", SMTPPort: 587, SMTPUsername: "api", SMTPPassword: `p"a\ss $word`}); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range e.commands() {
-		if strings.HasPrefix(c, "systemctl") {
-			t.Errorf("an agent credential ran %q", c)
+	second := e.read(t, "/etc/tender/hub.env")
+	if envValue([]byte(first), "TENDER_ENCRYPTION_KEY") != envValue([]byte(second), "TENDER_ENCRYPTION_KEY") {
+		t.Error("the encryption key changed on the second run")
+	}
+	for name, want := range map[string]string{"TENDER_SMTP_HOST": "smtp.example.net", "TENDER_SMTP_FROM": "Tender <alerts@example.net>",
+		"TENDER_SMTP_PORT": "587", "TENDER_SMTP_USERNAME": "api", "TENDER_SMTP_PASSWORD": `p"a\ss $word`} {
+		if got := envValue([]byte(second), name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
 		}
+	}
+	if !strings.Contains(second, "TENDER_SMTP_FROM=\"Tender <alerts@example.net>\"\n") {
+		t.Errorf("a value with spaces is not quoted for systemd:\n%s", second)
+	}
+	if e.mode(t, "/etc/tender/hub.env") != 0o600 {
+		t.Error("hub.env is not 0600")
+	}
+	if strings.Contains(e.out.String(), "new encryption key") || !strings.Contains(e.out.String(), "Updated") {
+		t.Errorf("output = %q", e.out.String())
+	}
+	e.noSecret(t, "ss $word")
+	e.noSecret(t, envValue([]byte(second), "TENDER_ENCRYPTION_KEY"))
+
+	// A run without flags keeps the SMTP settings and a line the owner added.
+	edited := second + "TENDER_LISTEN=127.0.0.1:9090\n"
+	if err := os.WriteFile(e.path("/etc/tender/hub.env"), []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.in.Hub(ctx, HubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.read(t, "/etc/tender/hub.env"); got != edited {
+		t.Errorf("a run without flags changed hub.env:\n%s", got)
+	}
+	// A damaged key is never replaced: the secrets in the database need it.
+	bad := strings.Replace(second, envValue([]byte(second), "TENDER_ENCRYPTION_KEY"), "short", 1)
+	if err := os.WriteFile(e.path("/etc/tender/hub.env"), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := e.in.Hub(ctx, HubOptions{})
+	if err == nil || !strings.Contains(err.Error(), "TENDER_ENCRYPTION_KEY") || e.read(t, "/etc/tender/hub.env") != bad {
+		t.Errorf("a damaged key: err = %v", err)
+	}
+}
+
+// The hub is published at the address hub.env sets.
+func TestHubServesAtTheConfiguredAddress(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(e.path("/etc/tender"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := newEncryptionKey()
+	if err := os.WriteFile(e.path("/etc/tender/hub.env"), []byte("TENDER_ENCRYPTION_KEY="+key+"\nTENDER_LISTEN=127.0.0.1:9090\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.in.Hub(context.Background(), HubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(e.commands(), "tailscale serve --bg --https=443 http://127.0.0.1:9090") {
+		t.Error("the hub was not published at TENDER_LISTEN")
+	}
+}
+
+func TestHubRejectsHalfAnEmailSetupBeforeChangingAnything(t *testing.T) {
+	for name, o := range map[string]HubOptions{
+		"host without sender": {SMTPHost: "smtp.example.net"},
+		"sender without host": {SMTPFrom: "alerts@example.net"},
+		"line break":          {SMTPHost: "smtp.example.net", SMTPFrom: "a@example.net", SMTPPassword: "x\ny"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			before := e.tree(t)
+			if err := e.in.Hub(context.Background(), o); err == nil {
+				t.Fatal("no error")
+			}
+			if !reflect.DeepEqual(before, e.tree(t)) || len(e.fake.commands) != 0 {
+				t.Errorf("the install changed something: %v", e.fake.commands)
+			}
+		})
 	}
 }
 
@@ -600,7 +599,7 @@ func TestHubServeCases(t *testing.T) {
 		wantMessage string
 	}{
 		"free":     {serve: noServe, wantServe: true, wantURL: true, wantMessage: "Published the hub with Tailscale Serve at https://apps.example.ts.net\n"},
-		"ours":     {serve: ownServe, wantURL: true, wantMessage: "The hub is running. Next:"},
+		"ours":     {serve: ownServe, wantURL: true, wantMessage: "The hub is running at https://apps.example.ts.net.\n"},
 		"busy":     {serve: oldServe, wantMessage: "left it alone. To publish the hub there, run: tailscale serve --bg --https=443 http://127.0.0.1:8080\n"},
 		"no serve": {serve: "not json", wantMessage: "Tailscale did not answer"},
 	} {
@@ -641,10 +640,14 @@ func TestUnitsFollowTheDecisions(t *testing.T) {
 		t.Error("agent unit still loads credentials")
 	}
 	for _, want := range []string{"User=tender", "CapabilityBoundingSet=", "StateDirectory=tender/hub", "Restart=always",
-		"ExecStart=/usr/local/bin/tender hub --config /etc/tender/hub.toml"} {
+		"EnvironmentFile=/etc/tender/hub.env", "ExecStart=/usr/local/bin/tender hub",
+		"InaccessiblePaths=-/etc/tender/credentials"} {
 		if !strings.Contains(string(hub), want+"\n") {
 			t.Errorf("hub unit lacks %s", want)
 		}
+	}
+	if strings.Contains(string(hub), "hub.toml") || strings.Contains(string(hub), "LoadCredential") {
+		t.Error("hub unit still uses hub.toml or LoadCredential")
 	}
 	if strings.Contains(string(hub), "DynamicUser") || strings.Contains(string(hub), "webhook") || strings.Contains(string(hub), "deadman") {
 		t.Error("hub unit keeps stale settings")

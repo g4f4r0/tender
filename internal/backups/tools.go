@@ -25,7 +25,43 @@ type historyInput struct {
 	Cursor  string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
 }
 
-// RegisterTools adds the backups tools to s. They read through the same store methods as the REST
+type addDestinationInput struct {
+	Name            string `json:"name" jsonschema:"new destination name: lowercase letters, digits and hyphens, up to 63 characters"`
+	Type            string `json:"type,omitempty" jsonschema:"kind of destination; only s3 (any S3-compatible bucket, such as Cloudflare R2), the default"`
+	Endpoint        string `json:"endpoint" jsonschema:"S3 endpoint URL, such as https://ACCOUNT.r2.cloudflarestorage.com"`
+	Bucket          string `json:"bucket" jsonschema:"bucket name"`
+	Path            string `json:"path,omitempty" jsonschema:"folder inside the bucket; leave out for the bucket's top"`
+	AccessKeyID     string `json:"access_key_id" jsonschema:"S3 access key id"`
+	SecretAccessKey string `json:"secret_access_key" jsonschema:"S3 secret access key"`
+	Password        string `json:"password,omitempty" jsonschema:"restic repository password for every machine at this destination; leave out and the hub makes one and returns it once"`
+}
+
+type updateDestinationInput struct {
+	Destination     string  `json:"destination" jsonschema:"destination name, as list_destinations shows it"`
+	Endpoint        *string `json:"endpoint,omitempty" jsonschema:"new S3 endpoint URL; leave out to keep it"`
+	Bucket          *string `json:"bucket,omitempty" jsonschema:"new bucket name; leave out to keep it"`
+	Path            *string `json:"path,omitempty" jsonschema:"new folder inside the bucket; leave out to keep it"`
+	AccessKeyID     *string `json:"access_key_id,omitempty" jsonschema:"new S3 access key id; leave out to keep it"`
+	SecretAccessKey *string `json:"secret_access_key,omitempty" jsonschema:"new S3 secret access key; leave out to keep it"`
+	Password        *string `json:"password,omitempty" jsonschema:"not accepted: the password can't change, because every repository is encrypted with it"`
+}
+
+type removeDestinationInput struct {
+	Destination string `json:"destination" jsonschema:"destination name"`
+}
+
+type setBackupInput struct {
+	Machine       string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
+	Destination   string `json:"destination" jsonschema:"destination name"`
+	Schedule      string `json:"schedule" jsonschema:"standard 5-field cron expression in UTC, such as 30 3 * * *"`
+	RetentionDays int    `json:"retention_days" jsonschema:"days to keep snapshots, at least 1"`
+}
+
+type unsetBackupInput struct {
+	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
+}
+
+// RegisterTools adds the backups tools to s. They use the same store methods as the REST
 // routes. lookup resolves machine names to ids.
 func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 	mcp.AddReadOnly(m, "get_backup_status", "Get backup status",
@@ -80,6 +116,76 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			}
 			runs, err := s.ListHistory(ctx, id, in.Type, in.Status, page)
 			return server.NewList(runs, page, historyCursor), err
+		})
+
+	mcp.AddReadOnly(m, "list_destinations", "List backup destinations",
+		"List the places backups go, by name. Each has type (s3), endpoint, bucket and path (the folder inside the bucket, "+
+			"empty for its top); each machine's repository is a folder named after the machine under it. Keys and passwords are "+
+			"never shown. Use a name here as the destination of set_backup.",
+		func(ctx context.Context, _ struct{}) (server.List[Destination], error) {
+			list, err := s.Destinations(ctx)
+			return server.List[Destination]{Data: list}, err
+		})
+
+	const secrets = " Keys and passwords you pass here go through this conversation; for real keys, the owner is safer typing them " +
+		"into \"tender destinations add\", which hides them as they are typed. They are stored encrypted and no tool, route or log ever shows them again."
+
+	mcp.AddWrite(m, "add_destination", "Add a backup destination",
+		"Add a place to send backups: an S3-compatible bucket, such as Cloudflare R2. Each machine gets its own folder in it. "+
+			"Without a password, the hub makes one and returns it in the result, shown only this once: tell the owner to save it "+
+			"somewhere safe, because the backups can't be restored without it. A password you pass is not returned."+secrets,
+		mcp.WriteOptions{},
+		func(ctx context.Context, in addDestinationInput) (DestinationCreated, error) {
+			return s.AddDestination(ctx, DestinationInput(in))
+		})
+
+	mcp.AddWrite(m, "update_destination", "Update a backup destination",
+		"Change a destination's endpoint, bucket, path or keys; anything left out stays as it is. The password can't change, "+
+			"because the repositories are encrypted with it."+secrets,
+		mcp.WriteOptions{Idempotent: true},
+		func(ctx context.Context, in updateDestinationInput) (Destination, error) {
+			if in.Password != nil {
+				return Destination{}, errPasswordFixed
+			}
+			return s.PatchDestination(ctx, in.Destination, DestinationPatch{Endpoint: in.Endpoint, Bucket: in.Bucket, Path: in.Path,
+				AccessKeyID: in.AccessKeyID, SecretAccessKey: in.SecretAccessKey})
+		})
+
+	mcp.AddWrite(m, "remove_destination", "Remove a backup destination",
+		"Remove a destination that no machine uses; it is refused while one does, and the error names them. "+
+			"The backups already in the bucket stay there.",
+		mcp.WriteOptions{Destructive: true, Idempotent: true},
+		func(ctx context.Context, in removeDestinationInput) (mcp.Removed, error) {
+			if err := s.DeleteDestination(ctx, in.Destination); err != nil {
+				return mcp.Removed{}, err
+			}
+			return mcp.Removed{Removed: in.Destination}, nil
+		})
+
+	mcp.AddWrite(m, "set_backup", "Set a machine's backups",
+		"Set where, when and for how long a machine's backups are kept: a destination, a cron schedule in UTC and the days to keep "+
+			"snapshots. It replaces any earlier settings, and the machine's agent picks them up on its next check.",
+		mcp.WriteOptions{Idempotent: true},
+		func(ctx context.Context, in setBackupInput) (Settings, error) {
+			id, err := mcp.Machine(ctx, lookup, in.Machine)
+			if err != nil {
+				return Settings{}, err
+			}
+			return s.SetSettings(ctx, id, in.Destination, in.Schedule, in.RetentionDays)
+		})
+
+	mcp.AddWrite(m, "unset_backup", "Stop a machine's backups",
+		"Remove a machine's backup settings, so it stops backing up. Its snapshots and history stay. Call set_backup to start again.",
+		mcp.WriteOptions{Destructive: true, Idempotent: true},
+		func(ctx context.Context, in unsetBackupInput) (mcp.Removed, error) {
+			id, err := mcp.Machine(ctx, lookup, in.Machine)
+			if err != nil {
+				return mcp.Removed{}, err
+			}
+			if err := s.DeleteSettings(ctx, id); err != nil {
+				return mcp.Removed{}, err
+			}
+			return mcp.Removed{Removed: "backup settings of " + in.Machine}, nil
 		})
 }
 

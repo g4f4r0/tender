@@ -1,5 +1,5 @@
 // Package install sets up Tender on a machine: the restic binary, the tender user, the config,
-// the credentials and the systemd units. Every path goes through a root prefix and every command
+// the hub token, the hub's settings and the systemd units. Every path goes through a root prefix and every command
 // through a runner, so tests run the whole install in a temporary directory.
 package install
 
@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 
@@ -29,7 +28,7 @@ const (
 	userName      = "tender"
 	binaryPath    = "/usr/local/bin/tender"
 	etcDir        = "/etc/tender"
-	credentialDir = "/etc/tender/credentials"
+	credentialDir = "/etc/tender/credentials" // holds the agent's hub-token only
 	unitDir       = "/etc/systemd/system"
 	stateParent   = "/var/lib/tender"
 )
@@ -243,66 +242,10 @@ func (in *Installer) enable(ctx context.Context, unit string, unitChanged, exist
 	return nil
 }
 
-var credentialName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
-
-// Credential writes /etc/tender/credentials/name. The agent reads these files directly. The hub
-// can't (its unit hides the folder) and gets only smtp-password through LoadCredential, so adding
-// smtp-password to an installed hub rewrites its unit and restarts it.
-func (in *Installer) Credential(ctx context.Context, name, value string) error {
-	if !credentialName.MatchString(name) {
-		return fmt.Errorf("credential name %q is not valid. Use lower-case letters, digits, dots and dashes, starting with a letter or digit", name)
-	}
-	if value == "" {
-		return errors.New("the credential value is empty. Pipe it in, for example: sudo tender install credential NAME < FILE")
-	}
-	if err := in.ensureDir(ctx, etcDir, 0o755, ""); err != nil {
-		return err
-	}
-	if err := in.ensureDir(ctx, credentialDir, 0o750, userName); err != nil {
-		return err
-	}
-	in.changed = false
-	if changed, err := in.write(ctx, filepath.Join(credentialDir, name), []byte(value), 0o640, userName); err != nil {
-		return err
-	} else if changed {
-		in.say("Saved credential %s", name)
-	} else {
-		in.say("Credential %s already has this value. Nothing to change.", name)
-	}
-	if name != "smtp-password" {
-		return nil
-	}
-	if _, err := os.Stat(in.path(hubUnitPath)); err != nil {
-		return nil // no hub here; "tender install hub" adds the line when it runs
-	}
-	unit, err := in.hubUnit()
-	if err != nil {
-		return err
-	}
-	unitChanged, err := in.write(ctx, hubUnitPath, unit, 0o644, "")
-	if err != nil {
-		return err
-	}
-	return in.enable(ctx, "tender-hub", unitChanged, true)
-}
-
 const (
 	agentUnitPath = unitDir + "/tender-agent.service"
 	hubUnitPath   = unitDir + "/tender-hub.service"
 )
-
-// hubUnit is the hub's unit file. systemd fails a unit whose LoadCredential path is missing, so
-// the smtp-password line goes in only when the file exists.
-func (in *Installer) hubUnit() ([]byte, error) {
-	unit, err := units.ReadFile("units/tender-hub.service")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(in.path(filepath.Join(credentialDir, "smtp-password"))); err != nil {
-		unit = dropLine(unit, "LoadCredential=smtp-password:")
-	}
-	return unit, nil
-}
 
 // AgentOptions are the settings of "tender install agent".
 type AgentOptions struct {
@@ -318,7 +261,7 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	}
 	tokenPath := filepath.Join(credentialDir, "hub-token")
 	if _, err := os.Stat(in.path(tokenPath)); o.Token == "" && err != nil {
-		return errors.New("this machine has no hub token yet. Create one with \"tender hub add-machine NAME\" on the hub, then pass it with --token-file PATH or pipe it in on stdin")
+		return errors.New("this machine has no hub token yet. Create one with \"tender machines add NAME\", then pass it with --token-file PATH or pipe it in on stdin")
 	}
 	const configPath = etcDir + "/agent.toml"
 	var cfg []byte
@@ -370,105 +313,121 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	}
 	switch {
 	case !existed:
-		in.say(agentNext)
+		in.say(agentNext(o.Machine))
 	case !in.changed && !in.Refreshing:
 		in.say("tender-agent is already installed and up to date. Nothing to change.")
 	}
 	return nil
 }
 
-const agentNext = `
-The agent is running. Next:
-  1. Save the repository password and the S3 keys of the destination this machine backs up to,
-     named after it (here r2):
-       sudo tender install credential r2.password < password.txt
-       sudo tender install credential r2.access-key-id < access-key-id.txt
-       sudo tender install credential r2.secret-access-key < secret-access-key.txt
+// agentNext says what to do after a first agent install.
+func agentNext(machine string) string {
+	if machine == "" {
+		machine = "MACHINE"
+	}
+	return `
+The agent is running. It gets its destination, schedule and keys from the hub. Next:
+  1. Set when this machine backs up, from any machine that can reach the hub:
+       tender backups set ` + machine + ` --destination DESTINATION --schedule "30 3 * * *" --retention-days 30
   2. Watch the agent: journalctl -u tender-agent -f`
+}
 
-// hubNext says what to do after a first hub install. url is empty when the hub is not published.
-func hubNext(url string) string {
+// hubNext says what to do after a first hub install. url is empty when the hub is not published,
+// listen is where the hub listens, and email says whether alert emails are set up.
+func hubNext(url, listen string, email bool) string {
+	hub := "http://" + listen
+	where := "The tender command on this machine finds it by itself."
+	if url != "" {
+		hub = url
+		where += "\nAnywhere else, set TENDER_HUB=" + url + " or pass --hub " + url + "."
+	}
 	if url == "" {
 		url = "HUB_URL"
 	}
-	return `
-The hub is running. Next:
-  1. Add a machine and keep the token it prints once:
-       sudo tender hub add-machine NAME
-  2. Add a destination and set when that machine backs up:
-       sudo tender hub add-destination r2 --type s3 --endpoint URL --bucket BUCKET
-       sudo tender hub set-backup NAME --destination r2 --schedule "30 3 * * *" --retention-days 30
-  3. Install the agent on that machine, with the token when it asks:
+	next := `
+The hub is running at ` + hub + `.
+` + where + `
+
+Next:
+  1. Add a destination for the backups; it asks for the S3 keys and makes the repository password:
+       tender destinations add NAME --endpoint URL --bucket BUCKET
+  2. Add a machine and keep the token it prints once:
+       tender machines add NAME
+  3. Set when that machine backs up:
+       tender backups set NAME --destination NAME --schedule "30 3 * * *" --retention-days 30
+  4. Choose who gets alerts, then check that the email arrives:
+       tender recipients add you@example.com
+       tender email test
+  5. Install the agent on that machine, with the token when it asks:
        curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh \
          | sudo sh -s -- agent --hub ` + url + ` --machine NAME`
+	if !email {
+		next += `
+
+Alert emails are off until the hub has an SMTP server. Run this again with the settings:
+  sudo tender install hub --smtp-host HOST --smtp-from "Tender <alerts@example.com>" --smtp-username USER`
+	}
+	return next
 }
 
-// HubOptions are the settings of "tender install hub".
+// HubOptions are the settings of "tender install hub". Empty options leave what hub.env has.
 type HubOptions struct {
-	Email *config.Email // nil writes no [email] table
-	Force bool          // replace an existing hub.toml
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
 }
 
-// Hub installs and starts the hub, then publishes it with Tailscale Serve.
+// Hub installs and starts the hub, then publishes it with Tailscale Serve. The hub's settings
+// live in /etc/tender/hub.env, which keeps its encryption key on every run.
 func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	if err := in.preflight(); err != nil {
 		return err
 	}
-	const configPath = etcDir + "/hub.toml"
-	var cfg []byte
-	if _, err := os.Stat(in.path(configPath)); err != nil || o.Force {
-		var err error
-		h := config.Hub{Listen: config.DefaultListen, Database: config.DefaultDatabase, Email: o.Email}
-		if cfg, err = encode(h); err != nil {
-			return err
-		}
-		if err := checkConfig(cfg, func(p string) error { _, err := config.LoadHub(p); return err }); err != nil {
-			return err
-		}
+	old, err := os.ReadFile(in.path(hubEnvPath))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	unit, err := in.hubUnit()
+	env, newKey, err := hubEnv(old, o)
 	if err != nil {
 		return err
 	}
-	unitPath := hubUnitPath
-	_, statErr := os.Stat(in.path(unitPath))
+	unit, err := units.ReadFile("units/tender-hub.service")
+	if err != nil {
+		return err
+	}
+	_, statErr := os.Stat(in.path(hubUnitPath))
 	existed := statErr == nil
 
 	in.changed = false
 	if err := in.prepare(ctx); err != nil {
 		return err
 	}
-	if err := in.writeConfig(ctx, configPath, cfg, o.Email != nil); err != nil {
+	what := "Updated " + in.path(hubEnvPath)
+	if newKey {
+		what = "Saved " + in.path(hubEnvPath) + " with a new encryption key. Back this file up: without the key, the hub cannot read the secrets it stores."
+	}
+	if _, err := in.writeSaying(ctx, hubEnvPath, env, 0o600, "", what); err != nil {
 		return err
 	}
-	unitChanged, err := in.writeSaying(ctx, unitPath, unit, 0o644, "", "Wrote "+in.path(unitPath))
+	unitChanged, err := in.writeSaying(ctx, hubUnitPath, unit, 0o644, "", "Wrote "+in.path(hubUnitPath))
 	if err != nil {
 		return err
 	}
 	if err := in.enable(ctx, "tender-hub", unitChanged, existed); err != nil {
 		return err
 	}
-	listen := config.DefaultListen
-	if h, err := config.LoadHub(in.path(configPath)); err == nil {
-		listen = h.Listen
+	listen := envValue(env, "TENDER_LISTEN")
+	if listen == "" {
+		listen = defaultListen
 	}
 	url, published := in.serve(ctx, "http://"+listen)
 	switch {
 	case !existed:
-		in.say(hubNext(url))
+		in.say(hubNext(url, listen, envValue(env, "TENDER_SMTP_HOST") != ""))
 	case !in.changed && !published && !in.Refreshing:
 		in.say("tender-hub is already installed and up to date. Nothing to change.")
 	}
 	return nil
-}
-
-// dropLine removes the lines that start with prefix.
-func dropLine(text []byte, prefix string) []byte {
-	var out [][]byte
-	for _, l := range bytes.Split(text, []byte("\n")) {
-		if !bytes.HasPrefix(l, []byte(prefix)) {
-			out = append(out, l)
-		}
-	}
-	return bytes.Join(out, []byte("\n"))
 }

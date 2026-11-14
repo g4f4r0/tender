@@ -122,6 +122,14 @@ func TestErrorTextHidesSecretsAndIsCapped(t *testing.T) {
 	if len(o.Error) > maxErrorBytes+3 {
 		t.Errorf("error is %d bytes, want at most %d", len(o.Error), maxErrorBytes+3)
 	}
+
+	// A secret that the size limit cuts in half is still hidden.
+	msg = strings.Repeat("x", maxErrorBytes-10) + secret + " tail"
+	r = fakeRunner(t, "AWS_ACCESS_KEY_ID="+secret, "FAKE_CODE=1",
+		`FAKE_STDERR={"message_type":"exit_error","code":1,"message":"`+msg+`"}`)
+	if o := r.Backup(context.Background(), []string{"/src"}, nil); strings.Contains(o.Error, secret[:10]) {
+		t.Errorf("error keeps the start of a secret cut by the limit: %q", o.Error[len(o.Error)-20:])
+	}
 }
 
 func TestCleanupRejectsBadRetention(t *testing.T) {
@@ -141,16 +149,7 @@ func TestMissingBinaryFails(t *testing.T) {
 
 // TestResticIntegration runs the real restic against a local repository.
 func TestResticIntegration(t *testing.T) {
-	bin, err := exec.LookPath("restic")
-	if err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			bin = filepath.Join(home, ".local", "bin", "restic")
-			_, err = os.Stat(bin)
-		}
-	}
-	if err != nil {
-		t.Skip("restic is not installed")
-	}
+	bin := lookRestic(t)
 	ctx := context.Background()
 
 	src := filepath.Join(t.TempDir(), "src")
@@ -248,4 +247,20 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// lookRestic finds the real restic, on PATH or in ~/.local/bin, or skips the test.
+func lookRestic(t *testing.T) string {
+	t.Helper()
+	bin, err := exec.LookPath("restic")
+	if err != nil {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			bin = filepath.Join(home, ".local", "bin", "restic")
+			_, err = os.Stat(bin)
+		}
+	}
+	if err != nil {
+		t.Skip("restic is not installed")
+	}
+	return bin
 }

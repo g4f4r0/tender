@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
+	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/machines"
 )
 
 // The real schema: every domain's migrations together, as the hub applies them.
@@ -52,11 +56,11 @@ func rows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 func TestSchemaAppliesTwice(t *testing.T) {
 	d := schema(t)
-	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 4 {
-		t.Fatalf("migrations rows = %d, want 4 (machines, backups, notifications, server)", n)
+	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 6 {
+		t.Fatalf("migrations rows = %d, want 6 (machines, backups twice, notifications twice, server)", n)
 	}
 	for _, table := range []string{"machines", "machine_usage", "backup_destinations", "backup_settings",
-		"backup_snapshots", "backup_history", "notifications", "idempotency_keys"} {
+		"backup_snapshots", "backup_history", "notifications", "notification_recipients", "idempotency_keys"} {
 		if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table); n != 1 {
 			t.Errorf("table %s missing", table)
 		}
@@ -92,14 +96,15 @@ func TestEveryTableHasIDAndTimestamps(t *testing.T) {
 func TestSchemaConstraints(t *testing.T) {
 	d := schema(t)
 	must(t, d, `INSERT INTO machines (id, name, token_hash, created_at, updated_at) VALUES (1, 'g4f4r0-apps', x'00', 1, 1)`)
-	must(t, d, `INSERT INTO backup_destinations (id, name, type, endpoint, bucket, created_at, updated_at)
-	            VALUES (1, 'r2', 's3', 'https://example.r2.cloudflarestorage.com', 'g4f4r0-backups-apps', 1, 1)`)
+	must(t, d, `INSERT INTO backup_destinations (id, name, type, endpoint, bucket, access_key_id, secret_access_key, password, created_at, updated_at)
+	            VALUES (1, 'r2', 's3', 'https://example.r2.cloudflarestorage.com', 'g4f4r0-backups-apps', x'01', x'02', x'03', 1, 1)`)
 
 	bad := map[string]string{
 		"STRICT rejects text in an integer column": `INSERT INTO machine_usage (machine_id, uptime_seconds, created_at, updated_at) VALUES (1, 'soon', 1, 1)`,
 		"history status must be a known word":      `INSERT INTO backup_history (machine_id, type, status, created_at, updated_at) VALUES (1, 'backup', 'done', 1, 1)`,
 		"history type must be a known word":        `INSERT INTO backup_history (machine_id, type, status, created_at, updated_at) VALUES (1, 'prune', 'pending', 1, 1)`,
-		"destination type must be s3":              `INSERT INTO backup_destinations (name, type, endpoint, bucket, created_at, updated_at) VALUES ('x', 'ftp', 'e', 'b', 1, 1)`,
+		"destination type must be s3":              `INSERT INTO backup_destinations (name, type, endpoint, bucket, access_key_id, secret_access_key, password, created_at, updated_at) VALUES ('x', 'ftp', 'e', 'b', x'01', x'02', x'03', 1, 1)`,
+		"destinations need their credentials":      `INSERT INTO backup_destinations (name, type, endpoint, bucket, created_at, updated_at) VALUES ('y', 's3', 'e2', 'b', 1, 1)`,
 		"retention must be positive":               `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 1, '30 3 * * *', 0, 1, 1)`,
 		"settings need an existing destination":    `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 99, '30 3 * * *', 30, 1, 1)`,
 		"severity must be a known word":            `INSERT INTO notifications (type, severity, status, content, created_at, updated_at) VALUES ('disk_full', 'high', 'pending', 'c', 1, 1)`,
@@ -114,6 +119,47 @@ func TestSchemaConstraints(t *testing.T) {
 	must(t, d, `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 1, '30 3 * * *', 30, 1, 1)`)
 	if err := exec(t, d, `DELETE FROM backup_destinations WHERE id = 1`); err == nil {
 		t.Error("a destination in use was deleted")
+	}
+}
+
+func TestRecipientEmailsAreUniqueInAnyCase(t *testing.T) {
+	d := schema(t)
+	must(t, d, `INSERT INTO notification_recipients (email, created_at, updated_at) VALUES ('johan@example.com', 1, 1)`)
+	if err := exec(t, d, `INSERT INTO notification_recipients (email, created_at, updated_at) VALUES ('Johan@Example.com', 1, 1)`); err == nil {
+		t.Error("the same address in another case was accepted")
+	}
+}
+
+// Migration 002 rebuilds backup_destinations. A database from before it keeps its destinations,
+// with empty credentials, and the link from backup_settings still holds.
+func TestDestinationSecretsMigrationKeepsRows(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	init, err := fs.ReadFile(backups.Migrations.Files, "migrations/001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := db.Migrations{Domain: "backups", Files: fstest.MapFS{"migrations/001_init.sql": {Data: init}}, Dir: "migrations"}
+	ctx := context.Background()
+	if err := d.Migrate(ctx, machines.Migrations, before); err != nil {
+		t.Fatal(err)
+	}
+	must(t, d, `INSERT INTO backup_destinations (id, name, type, endpoint, bucket, created_at, updated_at)
+	            VALUES (1, 'old', 's3', 'https://example.r2.cloudflarestorage.com', 'b', 5, 6)`)
+
+	if err := d.Migrate(ctx, migrations()...); err != nil {
+		t.Fatal(err)
+	}
+	if n := rows(t, d, `SELECT count(*) FROM backup_destinations WHERE id = 1 AND name = 'old' AND created_at = 5 AND updated_at = 6 AND length(password) = 0`); n != 1 {
+		t.Errorf("the old destination did not survive the rebuild")
+	}
+	must(t, d, `INSERT INTO machines (id, name, token_hash, created_at, updated_at) VALUES (1, 'a', x'00', 1, 1)`)
+	must(t, d, `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 1, '30 3 * * *', 30, 1, 1)`)
+	if err := exec(t, d, `DELETE FROM backup_destinations WHERE id = 1`); err == nil {
+		t.Error("a destination in use was deleted after the rebuild")
 	}
 }
 

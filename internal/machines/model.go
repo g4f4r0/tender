@@ -10,6 +10,22 @@ type Machine struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// MachineInput is the body of POST /v1/machines.
+type MachineInput struct {
+	Name string `json:"name"`
+}
+
+// MachineCreated is the 201 response of POST /v1/machines. It is the only time the token is shown.
+type MachineCreated struct {
+	Machine
+	Token string `json:"token"`
+}
+
+// Token is the response of POST /v1/machines/{machine}/token, which replaces the machine's token.
+type Token struct {
+	Token string `json:"token"`
+}
+
 // Usage is one reading, as GET /v1/machines/{machine}/usage lists it.
 type Usage struct {
 	ID                int64     `json:"id"`

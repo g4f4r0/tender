@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -34,9 +35,11 @@ func runAgent(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	token, err := config.ReadCredential(config.CredentialsDir(), "hub-token")
+	dir := config.CredentialsDir()
+	token, err := config.ReadCredential(dir, "hub-token")
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot read the hub token in %s. Run \"sudo tender install agent --token-file PATH\" to save it, "+
+			"and check that the tender user can read it.", dir)
 	}
 	hub := client.New(cfg.Hub, token)
 

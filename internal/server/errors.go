@@ -11,28 +11,29 @@ import (
 type Error struct {
 	Status int
 	Detail string
+	Type   string // the problem's type URI, for a client that must tell this problem apart; empty means about:blank
 }
 
 func (e *Error) Error() string { return e.Detail }
 
 // BadRequest is a 400: the request is malformed.
 func BadRequest(format string, a ...any) error {
-	return &Error{http.StatusBadRequest, fmt.Sprintf(format, a...)}
+	return &Error{Status: http.StatusBadRequest, Detail: fmt.Sprintf(format, a...)}
 }
 
 // NotFound is a 404.
 func NotFound(format string, a ...any) error {
-	return &Error{http.StatusNotFound, fmt.Sprintf(format, a...)}
+	return &Error{Status: http.StatusNotFound, Detail: fmt.Sprintf(format, a...)}
 }
 
 // Conflict is a 409: the request clashes with the current state.
 func Conflict(format string, a ...any) error {
-	return &Error{http.StatusConflict, fmt.Sprintf(format, a...)}
+	return &Error{Status: http.StatusConflict, Detail: fmt.Sprintf(format, a...)}
 }
 
 // Invalid is a 422: the request is well formed but its values are not acceptable.
 func Invalid(format string, a ...any) error {
-	return &Error{http.StatusUnprocessableEntity, fmt.Sprintf(format, a...)}
+	return &Error{Status: http.StatusUnprocessableEntity, Detail: fmt.Sprintf(format, a...)}
 }
 
 func isNotFound(err error) bool {
@@ -44,7 +45,13 @@ func isNotFound(err error) bool {
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var e *Error
 	if errors.As(err, &e) {
-		WriteProblem(w, e.Status, http.StatusText(e.Status), e.Detail)
+		typ := e.Type
+		if typ == "" {
+			typ = "about:blank"
+		}
+		write(w, e.Status, "application/problem+json", map[string]any{
+			"type": typ, "title": http.StatusText(e.Status), "status": e.Status, "detail": e.Detail,
+		})
 		return
 	}
 	s.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
