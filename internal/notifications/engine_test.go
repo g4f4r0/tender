@@ -1,10 +1,10 @@
 package notifications
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -20,15 +20,17 @@ import (
 type fakeSender struct {
 	subjects []string
 	texts    []string
+	to       [][]string
 	calls    int
 	fail     bool
 }
 
-func (f *fakeSender) Send(_ context.Context, m Message) error {
+func (f *fakeSender) Send(_ context.Context, to []string, m Message) error {
 	f.calls++
 	if f.fail {
 		return errors.New("smtp down")
 	}
+	f.to = append(f.to, to)
 	f.subjects = append(f.subjects, m.Subject)
 	f.texts = append(f.texts, m.Text)
 	return nil
@@ -39,9 +41,11 @@ type rig struct {
 	db     *db.DB
 	engine *Engine
 	sender *fakeSender
+	logs   *bytes.Buffer
 }
 
-// newRig has machine a (id 1) and an engine that emails through a fake sender.
+// newRig has machine a (id 1), the recipients one@example.com and two@example.com, and an engine
+// that emails through a fake sender.
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
@@ -63,8 +67,14 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	sender := &fakeSender{}
-	e := NewEngine(NewStore(d), sender, "hub1", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &rig{t: t, db: d, engine: e, sender: sender}
+	_, err = d.Write.Exec(`INSERT INTO notification_recipients (email, created_at, updated_at) VALUES
+		('one@example.com', 1, 1), ('two@example.com', 1, 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &bytes.Buffer{}
+	e := NewEngine(NewStore(d), sender, "hub1", slog.New(slog.NewTextHandler(logs, nil)))
+	return &rig{t: t, db: d, engine: e, sender: sender, logs: logs}
 }
 
 // tick runs the rules at t0 plus after.
@@ -120,6 +130,9 @@ func TestOpenSendResolve(t *testing.T) {
 	r := newRig(t)
 	r.tick(0, silent())
 	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
+	if want := []string{"one@example.com", "two@example.com"}; !slices.Equal(r.sender.to[0], want) {
+		t.Errorf("the opened email went to %q, want every recipient %q", r.sender.to[0], want)
+	}
 	if !strings.Contains(r.sender.texts[0], "a has never reported to the hub.") || !strings.Contains(r.sender.texts[0], "on hub1.") {
 		t.Errorf("opened text:\n%s", r.sender.texts[0])
 	}
@@ -269,6 +282,57 @@ func TestEmailOff(t *testing.T) {
 	r.want([]string{"machine_silent critical pending"})
 	r.tick(2*time.Minute, quiet(2*time.Minute))
 	r.want([]string{"machine_silent critical resolved"})
+}
+
+const nobody = "nobody gets alert emails"
+
+func TestEmailOffSaysSoOnce(t *testing.T) {
+	r := newRig(t)
+	r.engine.sender = nil
+	for i := range 3 {
+		r.tick(time.Duration(i)*time.Minute, silent())
+	}
+	if n := strings.Count(r.logs.String(), nobody); n != 1 {
+		t.Errorf("the hub said nobody gets email %d times, want once:\n%s", n, r.logs)
+	}
+}
+
+func TestNoRecipients(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.db.Write.Exec(`DELETE FROM notification_recipients`); err != nil {
+		t.Fatal(err)
+	}
+	// Alerts are recorded and stay pending; nothing is sent; the log says so once.
+	for i := range 3 {
+		r.tick(time.Duration(i)*time.Minute, silent())
+	}
+	r.want([]string{"machine_silent critical pending"})
+	if r.sender.calls != 0 {
+		t.Errorf("sent %d emails to nobody", r.sender.calls)
+	}
+	if n := strings.Count(r.logs.String(), nobody); n != 1 {
+		t.Errorf("the hub said nobody gets email %d times, want once:\n%s", n, r.logs)
+	}
+
+	// The first recipient gets the email that was owed.
+	if _, err := r.db.Write.Exec(`INSERT INTO notification_recipients (email, created_at, updated_at) VALUES ('late@example.com', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	r.tick(3*time.Minute, silent())
+	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
+	if want := []string{"late@example.com"}; !slices.Equal(r.sender.to[0], want) {
+		t.Errorf("sent to %q, want %q", r.sender.to[0], want)
+	}
+
+	// With the last recipient gone, a resolving alert resolves without an email, and the log speaks again.
+	if _, err := r.db.Write.Exec(`DELETE FROM notification_recipients`); err != nil {
+		t.Fatal(err)
+	}
+	r.tick(4*time.Minute, quiet(4*time.Minute))
+	r.want([]string{"machine_silent critical resolved"}, "a: not reporting")
+	if n := strings.Count(r.logs.String(), nobody); n != 2 {
+		t.Errorf("the hub said nobody gets email %d times, want 2", n)
+	}
 }
 
 func TestIgnoresOtherRows(t *testing.T) {

@@ -46,10 +46,11 @@ func (fakeMachines) Lookup(_ context.Context, name string) (int64, error) {
 //	PATCH /v1/machines/{machine}/things   agent, counts calls
 //	POST  /v1/machines/{machine}/boom     agent, fails with a plain error
 //	POST  /v1/machines/{machine}/echo     agent, decodes {"a": int}
-//	GET   /v1/machines/{machine}/either   agent or reader
-//	GET   /v1/machines/{machine}/read     reader
-//	GET   /v1/everything                  reader, no machine
-//	GET   /v1/machines/{machine}/numbers  reader, 1..5 newest first, paged
+//	GET   /v1/machines/{machine}/either   agent or people, says which
+//	GET   /v1/machines/{machine}/read     people
+//	GET   /v1/everything                  people, no machine
+//	POST  /v1/everything                  people, counts calls
+//	GET   /v1/machines/{machine}/numbers  people, 1..5 newest first, paged
 func routes(t *testing.T) (*Server, *httptest.Server, *atomic.Int64) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
@@ -100,10 +101,17 @@ func routes(t *testing.T) (*Server, *httptest.Server, *atomic.Int64) {
 		WriteJSON(w, http.StatusOK, map[string]int64{"machine": MachineID(r.Context())})
 		return nil
 	}
-	s.Handle("GET /v1/machines/{machine}/either", s.AgentOrReader(ok))
-	s.Handle("GET /v1/machines/{machine}/read", s.Reader(ok))
-	s.Handle("GET /v1/everything", s.Reader(ok))
-	s.Handle("GET /v1/machines/{machine}/numbers", s.Reader(func(w http.ResponseWriter, r *http.Request) error {
+	s.Handle("GET /v1/machines/{machine}/either", s.AgentOrPeople(func(w http.ResponseWriter, r *http.Request) error {
+		WriteJSON(w, http.StatusOK, map[string]any{"machine": MachineID(r.Context()), "agent": IsAgent(r.Context())})
+		return nil
+	}))
+	s.Handle("GET /v1/machines/{machine}/read", s.People(ok))
+	s.Handle("GET /v1/everything", s.People(ok))
+	s.Handle("POST /v1/everything", s.People(func(w http.ResponseWriter, r *http.Request) error {
+		WriteJSON(w, http.StatusCreated, map[string]int64{"n": calls.Add(1)})
+		return nil
+	}))
+	s.Handle("GET /v1/machines/{machine}/numbers", s.People(func(w http.ResponseWriter, r *http.Request) error {
 		p, err := ParsePage(r)
 		if err != nil {
 			return err
@@ -160,20 +168,20 @@ func TestAuth(t *testing.T) {
 		{"agent without token", "POST", "/v1/machines/a/things", nil, 401},
 		{"agent with unknown token", "POST", "/v1/machines/a/things", []string{"Authorization", "Bearer nope"}, 401},
 		{"agent with a non-bearer scheme", "POST", "/v1/machines/a/things", []string{"Authorization", "Basic tok-a"}, 401},
-		{"agent route with only the reader header", "POST", "/v1/machines/a/things", reader, 401},
+		{"agent route with only the Tailscale header", "POST", "/v1/machines/a/things", reader, 401},
 		{"agent with its own token", "POST", "/v1/machines/a/things", agentA, 201},
 		{"agent with another machine's token", "POST", "/v1/machines/b/things", agentA, 403},
 		{"agent with a token on an unknown machine", "POST", "/v1/machines/zzz/things", agentA, 404},
-		{"reader without header", "GET", "/v1/machines/a/read", nil, 401},
-		{"reader with header", "GET", "/v1/machines/a/read", reader, 200},
-		{"reader on an unknown machine", "GET", "/v1/machines/zzz/read", reader, 404},
-		{"reader on a route without machine", "GET", "/v1/everything", reader, 200},
-		{"reader route with only a token", "GET", "/v1/machines/a/read", agentA, 401},
+		{"people without a header", "GET", "/v1/machines/a/read", nil, 200},
+		{"people with the Tailscale header", "GET", "/v1/machines/a/read", reader, 200},
+		{"people on an unknown machine", "GET", "/v1/machines/zzz/read", reader, 404},
+		{"people on a route without machine", "GET", "/v1/everything", reader, 200},
+		{"people route ignores a token", "GET", "/v1/machines/a/read", agentA, 200},
 		{"either as agent", "GET", "/v1/machines/a/either", agentA, 200},
-		{"either as reader", "GET", "/v1/machines/a/either", reader, 200},
-		{"either with nothing", "GET", "/v1/machines/a/either", nil, 401},
+		{"either as people", "GET", "/v1/machines/a/either", reader, 200},
+		{"either with nothing", "GET", "/v1/machines/a/either", nil, 200},
 		{"either with another machine's token", "GET", "/v1/machines/b/either", agentA, 403},
-		{"either with a bad token and the reader header", "GET", "/v1/machines/a/either", append([]string{"Authorization", "Bearer nope"}, reader...), 401},
+		{"either with a bad token and the Tailscale header", "GET", "/v1/machines/a/either", append([]string{"Authorization", "Bearer nope"}, reader...), 401},
 	} {
 		res, body := send(t, srv, c.method, c.path, "{}", c.headers...)
 		if res.StatusCode != c.want {
@@ -187,6 +195,29 @@ func TestAuth(t *testing.T) {
 	_, body := send(t, srv, "GET", "/v1/machines/b/read", "", reader...)
 	if body != "{\"machine\":2}\n" {
 		t.Errorf("handler saw machine %q, want id 2", body)
+	}
+
+	// The handler learns whether the agent or people called.
+	_, body = send(t, srv, "GET", "/v1/machines/a/either", "", agentA...)
+	if body != "{\"agent\":true,\"machine\":1}\n" {
+		t.Errorf("agent call: %q", body)
+	}
+	_, body = send(t, srv, "GET", "/v1/machines/a/either", "")
+	if body != "{\"agent\":false,\"machine\":1}\n" {
+		t.Errorf("people call: %q", body)
+	}
+}
+
+func TestPeopleRoutesIgnoreIdempotencyKeys(t *testing.T) {
+	_, srv, calls := routes(t)
+	for range 2 {
+		res, body := send(t, srv, "POST", "/v1/everything", "{}", "Idempotency-Key", "k", "Authorization", "Bearer tok-a")
+		if res.StatusCode != 201 {
+			t.Fatalf("people POST: %d %s", res.StatusCode, body)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Errorf("a people POST with a key ran %d times, want 2: keys are for agents", calls.Load())
 	}
 }
 

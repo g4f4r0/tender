@@ -9,17 +9,22 @@ import (
 
 // Routes registers the backups REST routes on srv.
 func (s *Store) Routes(srv *server.Server) {
-	srv.Handle("GET /v1/backups", srv.Reader(s.summaries))
-	srv.Handle("GET /v1/backups/destinations", srv.Reader(s.listDestinations))
-	srv.Handle("GET /v1/backups/destinations/{destination}", srv.Reader(s.getDestination))
-	srv.Handle("GET /v1/machines/{machine}/backups", srv.Reader(s.summary))
-	srv.Handle("GET /v1/machines/{machine}/backups/settings", srv.AgentOrReader(s.settings))
-	srv.Handle("GET /v1/machines/{machine}/backups/snapshots", srv.Reader(s.listSnapshots))
+	srv.Handle("GET /v1/backups", srv.People(s.summaries))
+	srv.Handle("GET /v1/backups/destinations", srv.People(s.listDestinations))
+	srv.Handle("POST /v1/backups/destinations", srv.People(s.addDestination))
+	srv.Handle("GET /v1/backups/destinations/{destination}", srv.People(s.getDestination))
+	srv.Handle("PATCH /v1/backups/destinations/{destination}", srv.People(s.patchDestination))
+	srv.Handle("DELETE /v1/backups/destinations/{destination}", srv.People(s.removeDestination))
+	srv.Handle("GET /v1/machines/{machine}/backups", srv.People(s.summary))
+	srv.Handle("GET /v1/machines/{machine}/backups/settings", srv.AgentOrPeople(s.settings))
+	srv.Handle("PUT /v1/machines/{machine}/backups/settings", srv.People(s.setSettings))
+	srv.Handle("DELETE /v1/machines/{machine}/backups/settings", srv.People(s.unsetSettings))
+	srv.Handle("GET /v1/machines/{machine}/backups/snapshots", srv.People(s.listSnapshots))
 	srv.Handle("PUT /v1/machines/{machine}/backups/snapshots", srv.Agent(s.replaceSnapshots))
-	srv.Handle("GET /v1/machines/{machine}/backups/snapshots/{id}", srv.Reader(s.getSnapshot))
-	srv.Handle("GET /v1/machines/{machine}/backups/history", srv.Reader(s.listHistory))
+	srv.Handle("GET /v1/machines/{machine}/backups/snapshots/{id}", srv.People(s.getSnapshot))
+	srv.Handle("GET /v1/machines/{machine}/backups/history", srv.People(s.listHistory))
 	srv.Handle("POST /v1/machines/{machine}/backups/history", srv.Agent(s.createHistory))
-	srv.Handle("GET /v1/machines/{machine}/backups/history/{id}", srv.Reader(s.getHistory))
+	srv.Handle("GET /v1/machines/{machine}/backups/history/{id}", srv.People(s.getHistory))
 	srv.Handle("PATCH /v1/machines/{machine}/backups/history/{id}", srv.Agent(s.patchHistory))
 }
 
@@ -59,12 +64,85 @@ func (s *Store) getDestination(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (s *Store) addDestination(w http.ResponseWriter, r *http.Request) error {
+	var in DestinationInput
+	if err := server.Decode(w, r, &in); err != nil {
+		return err
+	}
+	d, err := s.AddDestination(r.Context(), in)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Location", "/v1/backups/destinations/"+d.Name)
+	server.WriteJSON(w, http.StatusCreated, d)
+	return nil
+}
+
+func (s *Store) patchDestination(w http.ResponseWriter, r *http.Request) error {
+	// The password isn't in DestinationPatch; it is read here only to refuse it with a sentence.
+	var in struct {
+		DestinationPatch
+		Password *string `json:"password"`
+	}
+	if err := server.Decode(w, r, &in); err != nil {
+		return err
+	}
+	if in.Password != nil {
+		return errPasswordFixed
+	}
+	d, err := s.PatchDestination(r.Context(), r.PathValue("destination"), in.DestinationPatch)
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, d)
+	return nil
+}
+
+func (s *Store) removeDestination(w http.ResponseWriter, r *http.Request) error {
+	if err := s.DeleteDestination(r.Context(), r.PathValue("destination")); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// settings serves a machine's settings. Its own agent, with its token, also gets the credentials
+// of the destination; nobody else ever does.
 func (s *Store) settings(w http.ResponseWriter, r *http.Request) error {
-	st, err := s.Settings(r.Context(), server.MachineID(r.Context()))
+	id := server.MachineID(r.Context())
+	st, err := s.Settings(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	if server.IsAgent(r.Context()) {
+		c, err := s.Credentials(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		st.Credentials = &c
+	}
+	server.WriteJSON(w, http.StatusOK, st)
+	return nil
+}
+
+func (s *Store) setSettings(w http.ResponseWriter, r *http.Request) error {
+	var in SettingsInput
+	if err := server.Decode(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.SetSettings(r.Context(), server.MachineID(r.Context()), in.Destination, in.Schedule, in.RetentionDays)
 	if err != nil {
 		return err
 	}
 	server.WriteJSON(w, http.StatusOK, st)
+	return nil
+}
+
+func (s *Store) unsetSettings(w http.ResponseWriter, r *http.Request) error {
+	if err := s.DeleteSettings(r.Context(), server.MachineID(r.Context())); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 

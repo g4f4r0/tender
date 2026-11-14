@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// Sender delivers an email. A nil Sender means email is off.
+// Sender delivers an email to bare addresses. A nil Sender means email is off.
 type Sender interface {
-	Send(ctx context.Context, msg Message) error
+	Send(ctx context.Context, to []string, msg Message) error
 }
 
 // Engine runs the rules and delivers their notifications.
@@ -30,6 +30,7 @@ type Engine struct {
 	log    *slog.Logger
 
 	failures map[attempt]failure // in memory: a restart starts the backoff over
+	silent   bool                // the "nobody gets email" line was logged and nothing has changed since
 }
 
 type attempt struct {
@@ -68,9 +69,25 @@ func (e *Engine) Run(ctx context.Context, load func(context.Context) ([]Machine,
 	}
 }
 
-// Tick opens, updates and resolves notifications for ms as of now, then delivers what's owed.
-// It returns database errors; a failed email is logged and retried on a later tick.
+// Tick opens, updates and resolves notifications for ms as of now, then delivers what's owed to
+// every recipient. Without email or recipients, notifications are still recorded and stay pending,
+// and the first tick that finds nobody to email says so in the log. It returns database errors; a
+// failed email is logged and retried on a later tick.
 func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
+	to, err := e.store.emails(ctx)
+	if err != nil {
+		return err
+	}
+	if e.sender == nil || len(to) == 0 {
+		to = nil
+		if !e.silent {
+			e.log.Info("nobody gets alert emails: email is off or there are no recipients, so alerts are only recorded. " +
+				"Set TENDER_SMTP_HOST and TENDER_SMTP_FROM and add a recipient to get them by email")
+			e.silent = true
+		}
+	} else {
+		e.silent = false
+	}
 	open, err := e.store.open(ctx)
 	if err != nil {
 		return err
@@ -103,9 +120,9 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 		k := key{n.Type, *n.Machine}
 		switch {
 		case !holds[k]:
-			err = e.resolve(ctx, now, n)
-		case n.Status == StatusPending && e.sender != nil:
-			err = e.sendPending(ctx, now, n)
+			err = e.resolve(ctx, now, n, to)
+		case n.Status == StatusPending && to != nil:
+			err = e.sendPending(ctx, now, n, to)
 		}
 		if err != nil {
 			return err
@@ -115,20 +132,21 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 }
 
 // sendPending emails an open notification that is pending.
-func (e *Engine) sendPending(ctx context.Context, now time.Time, n Notification) error {
+func (e *Engine) sendPending(ctx context.Context, now time.Time, n Notification, to []string) error {
 	kind := kindOpened
 	if n.UpdatedAt.After(n.CreatedAt) {
 		kind = kindEscalated
 	}
-	if !e.send(ctx, now, n, kind) {
+	if !e.send(ctx, now, n, kind, to) {
 		return nil
 	}
 	return e.store.setStatus(ctx, n.ID, StatusSent, now)
 }
 
-// resolve closes a notification whose condition cleared. It emails first when an email was owed.
-func (e *Engine) resolve(ctx context.Context, now time.Time, n Notification) error {
-	if e.sender != nil && !neverEmailed(n) && !e.send(ctx, now, n, kindResolved) {
+// resolve closes a notification whose condition cleared. It emails first when an email was owed
+// and there is someone to send it to.
+func (e *Engine) resolve(ctx context.Context, now time.Time, n Notification, to []string) error {
+	if to != nil && !neverEmailed(n) && !e.send(ctx, now, n, kindResolved, to) {
 		return nil
 	}
 	if err := e.store.setStatus(ctx, n.ID, StatusResolved, now); err != nil {
@@ -148,7 +166,7 @@ func neverEmailed(n Notification) bool {
 
 // send emails one notification and reports whether it went out. A failure is logged and the
 // next try waits: none on the next tick, then 2, 4 and 8 minutes, then 10 minutes at most.
-func (e *Engine) send(ctx context.Context, now time.Time, n Notification, kind string) bool {
+func (e *Engine) send(ctx context.Context, now time.Time, n Notification, kind string, to []string) bool {
 	a := attempt{n.ID, kind}
 	f := e.failures[a]
 	if now.Before(f.next) {
@@ -165,7 +183,7 @@ func (e *Engine) send(ctx context.Context, now time.Time, n Notification, kind s
 	}
 	msg, err := render(kind, data)
 	if err == nil {
-		err = e.sender.Send(ctx, msg)
+		err = e.sender.Send(ctx, to, msg)
 	}
 	if err != nil {
 		f.count++

@@ -21,6 +21,15 @@ import (
 
 var base = time.Date(2026, 11, 14, 3, 30, 0, 0, time.UTC)
 
+// testKey is the hub's encryption key in these tests: 32 bytes, 0 to 31.
+var testKey = func() []byte {
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = byte(i)
+	}
+	return k
+}()
+
 // identity knows machines a (id 1, token tok-a) and b (id 2, token tok-b); backups can't import machines.
 type identity struct{ d *db.DB }
 
@@ -70,7 +79,7 @@ func newHub(t *testing.T) *hub {
 	if err := d.Migrate(context.Background(), backups.Migrations, server.Migrations); err != nil {
 		t.Fatal(err)
 	}
-	store := backups.NewStore(d)
+	store := backups.NewStore(d, testKey)
 	s := server.New(d, slog.New(slog.NewTextHandler(io.Discard, nil)), identity{d})
 	store.Routes(s)
 	srv := httptest.NewServer(s)
@@ -127,13 +136,19 @@ func (h *hub) status(want int, method, path, token string, body any) {
 func (h *hub) setup() {
 	h.t.Helper()
 	ctx := context.Background()
-	_, err := h.store.AddDestination(ctx, backups.Destination{Name: "r2-code", Type: "s3", Endpoint: "https://x.r2.cloudflarestorage.com", Bucket: "code"})
+	_, err := h.store.AddDestination(ctx, input("r2-code", "https://x.r2.cloudflarestorage.com", "code", ""))
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	if _, err := h.store.SetSettings(ctx, 1, "r2-code", "30 3 * * *", 30); err != nil {
 		h.t.Fatal(err)
 	}
+}
+
+// input is a destination with keys and a password.
+func input(name, endpoint, bucket, path string) backups.DestinationInput {
+	return backups.DestinationInput{Name: name, Type: "s3", Endpoint: endpoint, Bucket: bucket, Path: path,
+		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}
 }
 
 func snap(id string, minutes int, size int64) backups.SnapshotInput {
@@ -165,29 +180,37 @@ func TestDestinations(t *testing.T) {
 	ctx := context.Background()
 	var e *server.Error
 
-	d, err := h.store.AddDestination(ctx, backups.Destination{Name: "r2-code", Type: "s3", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "code", Path: "/hosts/"})
-	if err != nil || d.Path != "hosts" || d.Repository("apps") != "s3:https://acct.r2.cloudflarestorage.com/code/hosts/apps" {
-		t.Fatalf("AddDestination = %+v, %v", d, err)
+	created, err := h.store.AddDestination(ctx, input("r2-code", "https://acct.r2.cloudflarestorage.com", "code", "/hosts/"))
+	d := created.Destination
+	if err != nil || d.Path != "hosts" || d.Type != "s3" || d.Repository("apps") != "s3:https://acct.r2.cloudflarestorage.com/code/hosts/apps" {
+		t.Fatalf("AddDestination = %+v, %v", created, err)
 	}
-	for name, bad := range map[string]backups.Destination{
-		"same name":     {Name: "r2-code", Type: "s3", Endpoint: "https://other.example.com", Bucket: "b"},
-		"same location": {Name: "other", Type: "s3", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "code", Path: "hosts"},
+	if created.Password != "" {
+		t.Errorf("a password the owner gave came back: %q", created.Password)
+	}
+	for name, bad := range map[string]backups.DestinationInput{
+		"same name":     input("r2-code", "https://other.example.com", "b", ""),
+		"same location": input("other", "https://acct.r2.cloudflarestorage.com", "code", "hosts"),
 	} {
 		if _, err := h.store.AddDestination(ctx, bad); !errors.As(err, &e) || e.Status != 409 {
 			t.Errorf("%s: %v, want 409", name, err)
 		}
 	}
-	for name, bad := range map[string]backups.Destination{
-		"bad name":     {Name: "R2", Type: "s3", Endpoint: "https://x.example.com", Bucket: "b"},
-		"bad type":     {Name: "x", Type: "gcs", Endpoint: "https://x.example.com", Bucket: "b"},
-		"bad endpoint": {Name: "x", Type: "s3", Endpoint: "x.example.com", Bucket: "b"},
-		"no bucket":    {Name: "x", Type: "s3", Endpoint: "https://x.example.com"},
+	noKeyID, noSecret := input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", "")
+	noKeyID.AccessKeyID, noSecret.SecretAccessKey = "", ""
+	for name, bad := range map[string]backups.DestinationInput{
+		"bad name":      input("R2", "https://x.example.com", "b", ""),
+		"bad type":      {Name: "x", Type: "gcs", Endpoint: "https://x.example.com", Bucket: "b", AccessKeyID: "a", SecretAccessKey: "b"},
+		"bad endpoint":  input("x", "x.example.com", "b", ""),
+		"no bucket":     input("x", "https://x.example.com", "", ""),
+		"no key id":     noKeyID,
+		"no secret key": noSecret,
 	} {
 		if _, err := h.store.AddDestination(ctx, bad); !errors.As(err, &e) || e.Status != 422 {
 			t.Errorf("%s: %v, want 422", name, err)
 		}
 	}
-	if _, err := h.store.AddDestination(ctx, backups.Destination{Name: "b-two", Type: "s3", Endpoint: "https://x.example.com", Bucket: "b"}); err != nil {
+	if _, err := h.store.AddDestination(ctx, input("b-two", "https://x.example.com", "b", "")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +225,8 @@ func TestDestinations(t *testing.T) {
 		t.Errorf("destination by name = %+v", got)
 	}
 	h.status(404, "GET", "/v1/backups/destinations/nope", "", nil)
-	h.status(401, "GET", "/v1/backups/destinations", "tok-a", nil)
+	// People routes need no login, and a token on them is not an identity.
+	h.status(200, "GET", "/v1/backups/destinations", "tok-a", nil)
 }
 
 func TestSettings(t *testing.T) {
@@ -349,7 +373,7 @@ func TestSnapshotReads(t *testing.T) {
 	}
 	h.status(404, "GET", "/v1/machines/a/backups/snapshots/"+strconv.FormatInt(one.ID, 10), "", nil) // b's id on a
 	h.status(404, "GET", "/v1/machines/a/backups/snapshots/abc", "", nil)
-	h.status(401, "GET", "/v1/machines/a/backups/snapshots", "tok-a", nil)
+	h.status(200, "GET", "/v1/machines/a/backups/snapshots", "tok-a", nil)
 }
 
 func TestHistoryCreate(t *testing.T) {
@@ -583,7 +607,7 @@ func TestSummary(t *testing.T) {
 		t.Errorf("all summaries = %+v", all.Data)
 	}
 	h.status(404, "GET", "/v1/machines/zzz/backups", "", nil)
-	h.status(401, "GET", "/v1/backups", "tok-a", nil)
+	h.status(200, "GET", "/v1/backups", "tok-a", nil)
 }
 
 func TestLastCompleted(t *testing.T) {

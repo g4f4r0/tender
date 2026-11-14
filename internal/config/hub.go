@@ -13,13 +13,8 @@ import (
 // DefaultHubPath is where the hub reads its config when --config isn't given.
 const DefaultHubPath = "/etc/tender/hub.toml"
 
-// DefaultDatabase and DefaultListen are the hub's settings when neither the file nor a flag sets them.
-const (
-	DefaultDatabase = "/var/lib/tender/hub/hub.db"
-	DefaultListen   = "127.0.0.1:8080"
-)
-
-// Hub is /etc/tender/hub.toml.
+// Hub is /etc/tender/hub.toml, which v0.2 replaces with hub.env (see LoadHubEnv). Only the install package
+// still reads it; it goes with that package's move to hub.env.
 type Hub struct {
 	Listen   string `toml:"listen"`
 	Database string `toml:"database"`

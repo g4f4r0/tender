@@ -87,29 +87,24 @@ func render(kind string, d emailData) (Message, error) {
 	return Message{Subject: d.Subject, Text: text.String(), HTML: page.String()}, nil
 }
 
-// TestMessage is the email "tender hub test-email" sends.
+// TestMessage is the email POST /v1/notifications/test and the send_test_email tool send.
 func TestMessage(hub string) (Message, error) { return render(kindTest, emailData{Hub: hub}) }
 
 // Mailer sends email over SMTP with TLS from the first byte (port 465).
 type Mailer struct {
-	cfg      config.Email
-	password string
-	tls      *tls.Config // nil means the system's roots; tests trust their own certificate
+	cfg config.SMTP
+	tls *tls.Config // nil means the system's roots; tests trust their own certificate
 }
 
 // NewMailer returns a mailer for cfg. The password is never logged or returned in errors.
-func NewMailer(cfg config.Email, password string) *Mailer {
-	return &Mailer{cfg: cfg, password: password}
-}
-
-// To lists the recipients.
-func (m *Mailer) To() []string { return m.cfg.To }
+func NewMailer(cfg config.SMTP) *Mailer { return &Mailer{cfg: cfg} }
 
 const smtpTimeout = 30 * time.Second
 
-// Send delivers msg to every recipient. The whole exchange takes at most 30 seconds.
-func (m *Mailer) Send(ctx context.Context, msg Message) (err error) {
-	body, err := m.build(msg, time.Now())
+// Send delivers msg to every address in to, which are bare addresses. The whole exchange takes at
+// most 30 seconds. It logs in only when the config has a username.
+func (m *Mailer) Send(ctx context.Context, to []string, msg Message) (err error) {
+	body, err := m.build(msg, to, time.Now())
 	if err != nil {
 		return err
 	}
@@ -137,16 +132,17 @@ func (m *Mailer) Send(ctx context.Context, msg Message) (err error) {
 		}
 	}()
 
-	if err := c.Auth(smtp.PlainAuth("", m.cfg.Username, m.password, m.cfg.Host)); err != nil {
-		return fmt.Errorf("smtp login: %w", err)
+	if m.cfg.Username != "" {
+		if err := c.Auth(smtp.PlainAuth("", m.cfg.Username, m.cfg.Password, m.cfg.Host)); err != nil {
+			return fmt.Errorf("smtp login: %w", err)
+		}
 	}
 	if err := c.Mail(from.Address); err != nil {
 		return fmt.Errorf("smtp sender: %w", err)
 	}
-	for _, to := range m.cfg.To {
-		addr, _ := mail.ParseAddress(to)
-		if err := c.Rcpt(addr.Address); err != nil {
-			return fmt.Errorf("smtp recipient %s: %w", addr.Address, err)
+	for _, addr := range to {
+		if err := c.Rcpt(addr); err != nil {
+			return fmt.Errorf("smtp recipient %s: %w", addr, err)
 		}
 	}
 	w, err := c.Data()
@@ -164,13 +160,13 @@ func (m *Mailer) Send(ctx context.Context, msg Message) (err error) {
 
 // build returns the whole message: headers, then a multipart/alternative body with a text part
 // and an HTML part, both quoted-printable.
-func (m *Mailer) build(msg Message, now time.Time) ([]byte, error) {
+func (m *Mailer) build(msg Message, recipients []string, now time.Time) ([]byte, error) {
 	from, err := mail.ParseAddress(m.cfg.From)
 	if err != nil {
 		return nil, err
 	}
-	to := make([]string, len(m.cfg.To))
-	for i, t := range m.cfg.To {
+	to := make([]string, len(recipients))
+	for i, t := range recipients {
 		a, err := mail.ParseAddress(t)
 		if err != nil {
 			return nil, err

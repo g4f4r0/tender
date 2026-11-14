@@ -145,3 +145,52 @@ func TestMachine(t *testing.T) {
 		t.Errorf("broken: %v, want the lookup's own error", err)
 	}
 }
+
+func TestWriteToolAnnotations(t *testing.T) {
+	s := mcp.New("test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := func(_ context.Context, in in) (mcp.Removed, error) {
+		if in.Name == "missing" {
+			return mcp.Removed{}, server.NotFound("Thing %q doesn't exist. Check the name.", in.Name)
+		}
+		return mcp.Removed{Removed: in.Name}, nil
+	}
+	mcp.AddWrite(s, "add", "Add", "Add it.", mcp.WriteOptions{}, h)
+	mcp.AddWrite(s, "set", "Set", "Set it.", mcp.WriteOptions{Idempotent: true}, h)
+	mcp.AddWrite(s, "remove", "Remove", "Remove it.", mcp.WriteOptions{Destructive: true, Idempotent: true}, h)
+
+	ctx := context.Background()
+	st, ct := sdk.NewInMemoryTransports()
+	go func() { _ = s.Run(ctx, st) }()
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	list, err := cs.ListTools(ctx, nil)
+	if err != nil || len(list.Tools) != 3 {
+		t.Fatalf("ListTools = %v, %v", list, err)
+	}
+	want := map[string]struct{ destructive, idempotent bool }{
+		"add": {false, false}, "set": {false, true}, "remove": {true, true},
+	}
+	for _, tool := range list.Tools {
+		a, w := tool.Annotations, want[tool.Name]
+		if a == nil || a.ReadOnlyHint || a.DestructiveHint == nil || *a.DestructiveHint != w.destructive ||
+			a.IdempotentHint != w.idempotent || a.OpenWorldHint == nil || *a.OpenWorldHint {
+			t.Errorf("%s annotations = %+v, want not read-only, destructive %v, idempotent %v, not open world", tool.Name, a, w.destructive, w.idempotent)
+		}
+	}
+
+	res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "add", Arguments: map[string]any{"name": "x"}})
+	if err != nil || res.IsError || !strings.Contains(text(res), `"removed":"x"`) {
+		t.Errorf("add = %v %v", res, err)
+	}
+	res, err = cs.CallTool(ctx, &sdk.CallToolParams{Name: "add", Arguments: map[string]any{"name": "missing"}})
+	if err != nil || !res.IsError || !strings.Contains(text(res), "Check the name.") {
+		t.Errorf("failing add = %v %v, want an isError result with the sentence", res, err)
+	}
+	if init := cs.InitializeResult(); init == nil || strings.Contains(init.Instructions, "Read-only") {
+		t.Errorf("instructions = %v, want no claim of being read-only", init)
+	}
+}

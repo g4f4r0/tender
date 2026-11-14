@@ -132,13 +132,16 @@ func (s *fakeSMTP) serve(c net.Conn) {
 }
 
 func (s *fakeSMTP) mailer(password string) *Mailer {
-	m := NewMailer(config.Email{
-		Host: "127.0.0.1", Port: s.port, Username: "api_token",
-		From: "tender <noreply@example.net>", To: []string{"one@example.com", "two@example.com"},
-	}, password)
+	m := NewMailer(config.SMTP{
+		Host: "127.0.0.1", Port: s.port, Username: "api_token", Password: password,
+		From: "tender <noreply@example.net>",
+	})
 	m.tls = &tls.Config{RootCAs: s.pool}
 	return m
 }
+
+// testTo are the recipients of the mail the tests send.
+var testTo = []string{"one@example.com", "two@example.com"}
 
 var placeholder = regexp.MustCompile(`\{[a-z_]+\}|\{\{|<no value>`)
 
@@ -160,7 +163,7 @@ func TestSendEmails(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := m.Send(context.Background(), msg); err != nil {
+			if err := m.Send(context.Background(), testTo, msg); err != nil {
 				t.Fatal(err)
 			}
 			got := <-s.got
@@ -200,7 +203,7 @@ func TestSendTestEmailAndHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.mailer("right").Send(context.Background(), msg); err != nil {
+	if err := s.mailer("right").Send(context.Background(), testTo, msg); err != nil {
 		t.Fatal(err)
 	}
 	got := <-s.got
@@ -236,7 +239,7 @@ func TestSendTestEmailAndHeaders(t *testing.T) {
 
 func TestSubjectIsEncodedWhenNotASCII(t *testing.T) {
 	s := newFakeSMTP(t)
-	if err := s.mailer("right").Send(context.Background(), Message{Subject: "café: not reporting", Text: "naïve café\n", HTML: "<p>naïve café</p>\n"}); err != nil {
+	if err := s.mailer("right").Send(context.Background(), testTo, Message{Subject: "café: not reporting", Text: "naïve café\n", HTML: "<p>naïve café</p>\n"}); err != nil {
 		t.Fatal(err)
 	}
 	got := <-s.got
@@ -257,7 +260,7 @@ func TestSendFailures(t *testing.T) {
 	s := newFakeSMTP(t)
 	msg := Message{Subject: "s", Text: "t", HTML: "h"}
 
-	err := s.mailer("wrong-password-123").Send(context.Background(), msg)
+	err := s.mailer("wrong-password-123").Send(context.Background(), testTo, msg)
 	if err == nil || !strings.Contains(err.Error(), "smtp login") {
 		t.Errorf("wrong password: %v", err)
 	} else if strings.Contains(err.Error(), "wrong-password-123") {
@@ -266,13 +269,13 @@ func TestSendFailures(t *testing.T) {
 
 	untrusting := s.mailer("right")
 	untrusting.tls = nil // the system roots don't know the test certificate
-	if err := untrusting.Send(context.Background(), msg); err == nil {
+	if err := untrusting.Send(context.Background(), testTo, msg); err == nil {
 		t.Error("an untrusted certificate was accepted")
 	}
 
 	closed := s.mailer("right")
 	closed.cfg.Port = 1
-	if err := closed.Send(context.Background(), msg); err == nil || !strings.Contains(err.Error(), "connect to 127.0.0.1:"+strconv.Itoa(1)) {
+	if err := closed.Send(context.Background(), testTo, msg); err == nil || !strings.Contains(err.Error(), "connect to 127.0.0.1:"+strconv.Itoa(1)) {
 		t.Errorf("closed port: %v", err)
 	}
 	select {
@@ -338,4 +341,24 @@ func parseEmail(t *testing.T, r received) (subject, text, html string) {
 		t.Fatalf("parts = %v, want text/plain then text/html", types)
 	}
 	return subject, text, html
+}
+
+func TestSendWithoutLogin(t *testing.T) {
+	s := newFakeSMTP(t)
+	m := s.mailer("")
+	m.cfg.Username = ""
+	msg, err := TestMessage("hub1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Send(context.Background(), []string{"solo@example.com"}, msg); err != nil {
+		t.Fatal(err)
+	}
+	got := <-s.got
+	if got.auth != "" {
+		t.Errorf("sent AUTH %q although the username is empty", got.auth)
+	}
+	if len(got.rcpts) != 1 || got.rcpts[0] != "TO:<solo@example.com>" {
+		t.Errorf("recipients = %q, want only solo@example.com", got.rcpts)
+	}
 }

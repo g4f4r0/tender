@@ -37,13 +37,6 @@ func TestEveryUsageFitsAndHasNoGoDefaults(t *testing.T) {
 		}
 		all = append(all, out.String())
 	}
-	for _, name := range []string{"add-machine", "rotate-token", "add-destination", "set-backup", "test-email"} {
-		var out bytes.Buffer
-		if err := hubCommand(name, []string{"--help"}, &out); !errors.Is(err, flag.ErrHelp) {
-			t.Errorf("hub %s --help returned %v", name, err)
-		}
-		all = append(all, out.String())
-	}
 	all = append(all, usage, hubUsage, installUsage)
 	for _, text := range all {
 		if strings.Contains(text, "Usage of") || strings.Contains(text, "-config string") {
@@ -83,21 +76,16 @@ func TestOptionErrorsSayWhatToDo(t *testing.T) {
 	}
 }
 
-func TestHubCommandErrors(t *testing.T) {
-	for name, tc := range map[string]struct {
-		args []string
-		want string
-	}{
-		"no name":        {[]string{"add-machine"}, `add-machine needs a machine name. Run "tender hub help" for usage.`},
-		"two names":      {[]string{"add-machine", "a", "b"}, `add-machine takes one name, got 2: a b. Run "tender hub help" for usage.`},
-		"unknown":        {[]string{"nope"}, `unknown hub command "nope". Run "tender hub help" for the commands.`},
-		"unknown option": {[]string{"add-machine", "--nope"}, `unknown option --nope. Run "tender hub help" for usage.`},
+func TestHubOptionErrors(t *testing.T) {
+	for args, want := range map[string]string{
+		"--nope":   `unknown option --nope. Run "tender hub --help" for usage.`,
+		"--listen": `--listen needs a value. Run "tender hub --help" for usage.`,
+		"extra":    `hub takes no arguments, got "extra". Run "tender hub --help" for usage.`,
+		"--config": `unknown option --config. Run "tender hub --help" for usage.`,
 	} {
-		t.Run(name, func(t *testing.T) {
-			err := hubCommand(tc.args[0], tc.args[1:], &bytes.Buffer{})
-			if err == nil || err.Error() != tc.want {
-				t.Errorf("err = %v, want %q", err, tc.want)
-			}
-		})
+		err := serveHub(strings.Fields(args), quiet)
+		if err == nil || err.Error() != want {
+			t.Errorf("hub %s: %v, want %q", args, err, want)
+		}
 	}
 }
