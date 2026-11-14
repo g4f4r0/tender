@@ -209,7 +209,7 @@ func hubCommand(name string, args []string, out io.Writer) error {
 			in.Name = destination
 			added, err := backups.NewStore(d).AddDestination(ctx, in)
 			if err == nil {
-				_, err = fmt.Fprintf(out, "Added destination %s (%s)\n", added.Name, added.Repository())
+				_, err = fmt.Fprintf(out, "Added destination %s; each machine backs up to %s\n", added.Name, added.Repository("<machine>"))
 			}
 			return err
 		}

@@ -337,7 +337,7 @@ func (a *Agent) newRestic(s Settings) (Runner, error) {
 	}
 	return &Restic{
 		Bin:          a.ResticBin,
-		Repository:   s.Destination.Repository(),
+		Repository:   s.Destination.Repository(a.Machine),
 		PasswordFile: filepath.Join(a.CredentialsDir, password),
 		Host:         a.Machine,
 		Env:          []string{"AWS_ACCESS_KEY_ID=" + keys[0], "AWS_SECRET_ACCESS_KEY=" + keys[1]},

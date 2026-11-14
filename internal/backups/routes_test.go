@@ -166,7 +166,7 @@ func TestDestinations(t *testing.T) {
 	var e *server.Error
 
 	d, err := h.store.AddDestination(ctx, backups.Destination{Name: "r2-code", Type: "s3", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "code", Path: "/hosts/"})
-	if err != nil || d.Path != "hosts" || d.Repository() != "s3:https://acct.r2.cloudflarestorage.com/code/hosts" {
+	if err != nil || d.Path != "hosts" || d.Repository("apps") != "s3:https://acct.r2.cloudflarestorage.com/code/hosts/apps" {
 		t.Fatalf("AddDestination = %+v, %v", d, err)
 	}
 	for name, bad := range map[string]backups.Destination{
