@@ -15,7 +15,7 @@ const DefaultHubPath = "/etc/tender/hub.toml"
 
 // DefaultDatabase and DefaultListen are the hub's settings when neither the file nor a flag sets them.
 const (
-	DefaultDatabase = "/var/lib/tender/hub.db"
+	DefaultDatabase = "/var/lib/tender/hub/hub.db"
 	DefaultListen   = "127.0.0.1:8080"
 )
 

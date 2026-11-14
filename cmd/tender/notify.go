@@ -95,6 +95,9 @@ func testEmail(args []string, out io.Writer) error {
 	if cfg.Email == nil {
 		return fmt.Errorf("the hub config has no [email] table: nothing to test")
 	}
+	if err := dropToDatabaseOwner(cfg.Database); err != nil {
+		return err
+	}
 	mailer, err := newMailer(*cfg.Email)
 	if err != nil {
 		return err

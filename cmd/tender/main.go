@@ -22,9 +22,10 @@ const usage = `Usage:
   tender hub [--config PATH] [--database PATH] [--listen ADDR]   run the hub
   tender agent [--config PATH]                   run the agent
   tender mcp --stdio [--database PATH]           serve the MCP tools over stdio, on the hub machine
+  tender install agent|hub|credential            set up this machine, as root
   tender version                                 print the version
 
-Run "tender hub help" for the hub's other commands.
+Run "tender hub help" for the hub's other commands and "tender install" for the install options.
 `
 
 // migrations lists every domain's migrations in dependency order: machines first.
@@ -47,6 +48,8 @@ func main() {
 		err = runAgent(os.Args[2:], log)
 	case "mcp":
 		err = runMCP(os.Args[2:], log)
+	case "install":
+		err = runInstall(os.Args[2:], os.Stdin, os.Stdout)
 	case "version":
 		fmt.Println(version)
 	default:
