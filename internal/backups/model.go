@@ -75,10 +75,15 @@ type History struct {
 }
 
 // HistoryInput is the body of POST /v1/machines/{machine}/backups/history.
+// Online, the agent posts status in_progress when a run starts and PATCHes it when it ends.
+// When the hub was unreachable during the run, the agent posts the finished run once, later,
+// with its final status, error and snapshot. Error and SnapshotID are only accepted then.
 type HistoryInput struct {
-	Type      string    `json:"type"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	Type       string    `json:"type"`
+	Status     string    `json:"status"`
+	Error      *string   `json:"error,omitempty"`
+	SnapshotID *int64    `json:"snapshot_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // HistoryPatch is the JSON Merge Patch body of PATCH /v1/machines/{machine}/backups/history/{id}.
