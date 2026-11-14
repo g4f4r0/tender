@@ -93,3 +93,14 @@ type HistoryPatch struct {
 	Error      *string `json:"error,omitempty"`
 	SnapshotID *int64  `json:"snapshot_id,omitempty"`
 }
+
+// Summary is one machine's backup state, as GET /v1/machines/{machine}/backups and each
+// element of GET /v1/backups return it. A part that doesn't exist yet is null.
+type Summary struct {
+	Machine        string    `json:"machine"`
+	Settings       *Settings `json:"settings"`
+	LatestSnapshot *Snapshot `json:"latest_snapshot"`
+	LastBackup     *History  `json:"last_backup"` // the newest run of type backup
+	LastCheck      *History  `json:"last_check"`  // the newest run of type check
+	SnapshotCount  int       `json:"snapshot_count"`
+}
