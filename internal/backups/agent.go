@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -50,6 +51,7 @@ type Agent struct {
 	settings   *Settings
 	schedule   cron.Schedule
 	settingsAt time.Time // last time the hub was asked for settings
+	waiting    bool      // a backup is due but the destination's credentials aren't saved yet
 }
 
 // NewAgent returns an agent that keeps its state under stateDir.
@@ -180,6 +182,16 @@ func (a *Agent) runDue(ctx context.Context) {
 	if !isDue(a.schedule, st.LastBackup, a.now()) {
 		return
 	}
+	// Keys not saved yet, as right after "tender install agent", mean the machine isn't ready,
+	// not that a backup failed: wait for them, and back up as soon as they're there.
+	if _, err := a.newRunner(*a.settings); errors.Is(err, fs.ErrNotExist) {
+		if !a.waiting {
+			a.Log.Warn("backup due, waiting for the destination's credentials", "error", err)
+			a.waiting = true
+		}
+		return
+	}
+	a.waiting = false
 
 	a.Log.Info("backup due", "schedule", a.settings.Schedule)
 	o := a.do(ctx, TypeBackup, func(r Runner) Outcome { return r.Backup(ctx, a.Paths, a.Exclude) })

@@ -32,7 +32,7 @@ type Backups struct {
 // DefaultExclude is used when the config has no exclude key.
 var DefaultExclude = []string{
 	"/var/lib/docker", "/var/lib/containerd", "/var/cache", "/tmp", "/var/tmp",
-	"/home/*/.cache", "/home/*/.local/share/tug/docker", "**/node_modules",
+	"/home/*/.cache", "/home/*/.local/share/docker", "**/node_modules",
 }
 
 // LoadAgent reads and validates the agent config. Unknown keys are errors, so a typo
