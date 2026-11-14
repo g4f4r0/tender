@@ -73,7 +73,11 @@ func TestMachines(t *testing.T) {
 		!strings.Contains(out, "sudo tender install agent --token-file PATH") {
 		t.Errorf("rotate output:\n%s", out)
 	}
-	if out := mustRun(t, h, a, "machines", "remove", "db-1"); !strings.Contains(out, "Removed machine db-1 and its history.") {
+	mustFail(t, h, a, `this removes db-1 and its history from the hub, with no undo. Run "tender machines remove db-1 --yes" to confirm`, "machines", "remove", "db-1")
+	if h.machines["db-1"] == nil {
+		t.Fatal("remove without --yes removed the machine")
+	}
+	if out := mustRun(t, h, a, "machines", "remove", "db-1", "--yes"); !strings.Contains(out, "Removed machine db-1 and its history.") {
 		t.Errorf("remove output = %q", out)
 	}
 	if h.machines["db-1"] != nil {
@@ -82,7 +86,7 @@ func TestMachines(t *testing.T) {
 
 	// The hub's sentence is the error, as it came.
 	mustFail(t, h, a, `Machine "web-1" already exists. Choose another name.`, "machines", "add", "web-1")
-	mustFail(t, h, a, `Machine "nope" doesn't exist. List the machines with "tender machines list".`, "machines", "remove", "nope")
+	mustFail(t, h, a, `Machine "nope" doesn't exist. List the machines with "tender machines list".`, "machines", "remove", "nope", "--yes")
 	mustFail(t, h, a, `Machine "nope" doesn't exist. List the machines with "tender machines list".`, "machines", "rotate-token", "nope")
 	mustFail(t, h, a, `machines add needs a machine name. Run "tender machines add --help" for usage.`, "machines", "add")
 	mustFail(t, h, a, `machines add takes one argument, got 2: a b. Run "tender machines add --help" for usage.`, "machines", "add", "a", "b")

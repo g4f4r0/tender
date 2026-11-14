@@ -15,7 +15,7 @@ const (
 )
 
 // Destination is a named place backups go, as GET /v1/backups/destinations/{destination} returns it.
-// It never holds credentials; each machine keeps the keys for its own destination.
+// Its keys and password stay in the hub, encrypted, and are never part of this response.
 type Destination struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`

@@ -167,6 +167,7 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		{"list_backup_history", map[string]any{"machine": "g4f4r0-code"}},
 		{"list_notifications", nil},
 		{"list_recipients", nil},
+		{"list_destinations", nil},
 		{"add_destination", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
 			"access_key_id": keyID, "secret_access_key": secretKey, "password": password}}, // 409
 		{"add_destination", map[string]any{"name": "tool-made", "endpoint": "https://other.r2.cloudflarestorage.com", "bucket": "tool",

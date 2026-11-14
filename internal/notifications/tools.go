@@ -79,7 +79,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Se
 	mcp.AddWrite(m, "send_test_email", "Send a test email",
 		"Send the test email to every recipient, to check that alert emails arrive. It is refused when email is off on the hub "+
 			"or when there are no recipients, and the error says what to set.",
-		mcp.WriteOptions{},
+		mcp.WriteOptions{OpenWorld: true},
 		func(ctx context.Context, _ noInput) (TestResult, error) {
 			return s.SendTest(ctx, sender, hub)
 		})

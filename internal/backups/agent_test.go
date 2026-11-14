@@ -78,7 +78,9 @@ func (h *hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/backups/settings"):
 		if h.settings == nil {
-			server.WriteProblem(w, 404, "Not Found", "no backup settings for this machine")
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"type":"`+NoSettingsType+`","title":"Not Found","status":404,"detail":"This machine has no backup settings yet."}`)
 			return
 		}
 		server.WriteJSON(w, 200, h.settings)
@@ -534,6 +536,65 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	if b.settings.RetentionDays != 14 {
 		t.Errorf("bad settings replaced the good ones: %+v", b.settings)
 	}
+}
+
+// The hub's "no backup settings" answer stops the backups and deletes the saved keys and password,
+// also for a restart. A token the hub no longer takes (401) stops the backups but keeps the files,
+// which may hold the only copy of the password. Any other 404 or error changes nothing.
+func TestSettingsRemovedOnHubStopBackups(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T) (*hub, *Agent) {
+		h := newHub(t)
+		a, _ := testAgent(t, h)
+		a.refreshSettings(ctx)
+		if _, err := a.newRestic(*a.settings); err != nil { // writes the password file, as a backup does
+			t.Fatal(err)
+		}
+		return h, a
+	}
+	saved := func(a *Agent) (n int) {
+		for _, p := range []string{a.settingsFile(), a.passwordFile()} {
+			if _, err := os.Stat(p); err == nil {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("other errors keep the settings", func(t *testing.T) {
+		h, a := setup(t)
+		for _, status := range []int{503, 404, 403} { // 404 here is not the hub's no-settings answer: a wrong machine name, a proxy
+			h.failNext("GET "+m1+"settings", status, 1)
+			a.refreshSettings(ctx)
+			if a.settings == nil || saved(a) != 2 {
+				t.Errorf("after %d: settings %v, saved files %d; want both kept", status, a.settings != nil, saved(a))
+			}
+		}
+	})
+	t.Run("no settings deletes them", func(t *testing.T) {
+		h, a := setup(t)
+		h.mu.Lock()
+		h.settings = nil
+		h.mu.Unlock()
+		a.refreshSettings(ctx)
+		if a.settings != nil || a.schedule != nil || saved(a) != 0 {
+			t.Errorf("settings %v, saved files %d; want none", a.settings != nil, saved(a))
+		}
+		h.setDown(true)
+		b := NewAgent(h.client(), "m1", a.StateDir, a.Log)
+		b.loadSavedSettings()
+		if b.settings != nil {
+			t.Error("a restart brought the settings back")
+		}
+	})
+	t.Run("a refused token stops but keeps the files", func(t *testing.T) {
+		h, a := setup(t)
+		h.failNext("GET "+m1+"settings", 401, 1)
+		a.refreshSettings(ctx)
+		if a.settings != nil || saved(a) != 2 {
+			t.Errorf("settings %v, saved files %d; want stopped with both files kept", a.settings != nil, saved(a))
+		}
+	})
 }
 
 func TestFailedBackupIsReportedAndSkipsCleanup(t *testing.T) {

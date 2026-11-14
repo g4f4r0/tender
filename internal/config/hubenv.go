@@ -20,6 +20,7 @@ const (
 	EnvSMTPUsername  = "TENDER_SMTP_USERNAME"
 	EnvSMTPPassword  = "TENDER_SMTP_PASSWORD"
 	EnvSMTPFrom      = "TENDER_SMTP_FROM"
+	EnvHosts         = "TENDER_HOSTS"
 )
 
 // The hub's settings when neither the environment nor a flag sets them.
@@ -34,7 +35,8 @@ type HubEnv struct {
 	EncryptionKey []byte
 	Listen        string
 	Database      string
-	SMTP          *SMTP // nil when TENDER_SMTP_HOST is not set: email is off
+	SMTP          *SMTP    // nil when TENDER_SMTP_HOST is not set: email is off
+	Hosts         []string // more names the hub answers to, lowercase, from TENDER_HOSTS
 }
 
 // SMTP says how the hub sends email: over TLS from the first byte, as on port 465.
@@ -64,6 +66,16 @@ func LoadHubEnv(getenv func(string) string) (HubEnv, error) {
 	}
 	if h.SMTP, err = LoadSMTP(getenv); err != nil {
 		return HubEnv{}, err
+	}
+	for _, name := range strings.Split(getenv(EnvHosts), ",") {
+		name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+		if name == "" {
+			continue
+		}
+		if strings.ContainsAny(name, ":/ ") {
+			return HubEnv{}, fmt.Errorf("%s has %q. List host names only, separated by commas, such as tender.example.com", EnvHosts, name)
+		}
+		h.Hosts = append(h.Hosts, name)
 	}
 	return h, nil
 }

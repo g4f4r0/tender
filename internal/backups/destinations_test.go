@@ -315,7 +315,13 @@ func TestSettingsRoutes(t *testing.T) {
 
 	// An agent can't set its own settings: that is for people.
 	h.status(204, "DELETE", "/v1/machines/a/backups/settings", "", nil)
-	h.status(404, "GET", "/v1/machines/a/backups/settings", "tok-a", nil)
+	// The agent deletes its saved keys only on this problem type, so it must not be about:blank.
+	var noSettings struct {
+		Type string `json:"type"`
+	}
+	if res := h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &noSettings); res.StatusCode != 404 || noSettings.Type != backups.NoSettingsType {
+		t.Errorf("settings after unset: %d, type %q; want 404 with %s", res.StatusCode, noSettings.Type, backups.NoSettingsType)
+	}
 	h.status(404, "DELETE", "/v1/machines/a/backups/settings", "", nil)
 	h.status(404, "DELETE", "/v1/machines/zzz/backups/settings", "", nil)
 	// The machine's other data stays; the summary shows no settings.

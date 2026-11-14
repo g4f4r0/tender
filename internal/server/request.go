@@ -33,7 +33,7 @@ func Decode(w http.ResponseWriter, r *http.Request, v any) error {
 		var wrongType *json.UnmarshalTypeError
 		switch {
 		case errors.As(err, &tooBig):
-			return &Error{http.StatusRequestEntityTooLarge, "The body is larger than 1 MiB."}
+			return &Error{Status: http.StatusRequestEntityTooLarge, Detail: "The body is larger than 1 MiB."}
 		case errors.As(err, &wrongType):
 			return Invalid("Field %q must be %s.", wrongType.Field, wrongType.Type)
 		}

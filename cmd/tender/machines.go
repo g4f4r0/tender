@@ -12,7 +12,7 @@ import (
 var machinesUsage = groupUsage("machines", "Add the machines that back up, and manage their tokens.", []row{
 	{"list", "List the machines and when each last reported"},
 	{"add NAME", "Add a machine and print its token once"},
-	{"remove NAME", "Remove a machine and its history from the hub"},
+	{"remove NAME --yes", "Remove a machine and its history from the hub"},
 	{"rotate-token NAME", "Replace a machine's token and print the new one"},
 })
 
@@ -120,9 +120,11 @@ func machinesRotate(args []string, s session) error {
 }
 
 func machinesRemove(args []string, s session) error {
-	fs := newFlagSet("machines remove", "NAME [--hub URL]",
-		"Remove a machine and its history from the hub. Its backups stay where they are, in the destination.")
+	fs := newFlagSet("machines remove", "NAME --yes [--hub URL]",
+		"Remove a machine and its history from the hub. Its token stops working. Its backups stay where they are, "+
+			"in the destination. There is no undo, so the command needs --yes.")
 	hubURL := hubFlag(fs)
+	yes := fs.Bool("yes", false, "confirm the removal")
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
 		return err
@@ -130,6 +132,9 @@ func machinesRemove(args []string, s session) error {
 	name, err := oneArg(fs, rest, "a machine name")
 	if err != nil {
 		return err
+	}
+	if !*yes {
+		return fmt.Errorf("this removes %s and its history from the hub, with no undo. Run \"tender machines remove %s --yes\" to confirm", name, name)
 	}
 	hub, err := newHubAPI(fs, *hubURL)
 	if err != nil {

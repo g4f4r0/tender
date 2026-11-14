@@ -122,6 +122,14 @@ func TestErrorTextHidesSecretsAndIsCapped(t *testing.T) {
 	if len(o.Error) > maxErrorBytes+3 {
 		t.Errorf("error is %d bytes, want at most %d", len(o.Error), maxErrorBytes+3)
 	}
+
+	// A secret that the size limit cuts in half is still hidden.
+	msg = strings.Repeat("x", maxErrorBytes-10) + secret + " tail"
+	r = fakeRunner(t, "AWS_ACCESS_KEY_ID="+secret, "FAKE_CODE=1",
+		`FAKE_STDERR={"message_type":"exit_error","code":1,"message":"`+msg+`"}`)
+	if o := r.Backup(context.Background(), []string{"/src"}, nil); strings.Contains(o.Error, secret[:10]) {
+		t.Errorf("error keeps the start of a secret cut by the limit: %q", o.Error[len(o.Error)-20:])
+	}
 }
 
 func TestCleanupRejectsBadRetention(t *testing.T) {

@@ -76,3 +76,17 @@ func TestLoadHubEnvRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestHubHosts(t *testing.T) {
+	h, err := LoadHubEnv(env(map[string]string{EnvEncryptionKey: testKey, EnvHosts: " Tender.Example.com., ,hub.internal "}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.Hosts, ",") != "tender.example.com,hub.internal" {
+		t.Errorf("hosts = %q", h.Hosts)
+	}
+	if _, err := LoadHubEnv(env(map[string]string{EnvEncryptionKey: testKey, EnvHosts: "https://tender.example.com"})); err == nil ||
+		!strings.Contains(err.Error(), "host names only") {
+		t.Errorf("a URL in TENDER_HOSTS: %v", err)
+	}
+}

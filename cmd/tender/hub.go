@@ -101,6 +101,15 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	return s
 }
 
+// checkKey is an error unless key opens every secret stored in the database at path.
+func checkKey(ctx context.Context, d *db.DB, key []byte, path string) error {
+	if err := backups.NewStore(d, key).CheckKey(ctx); err != nil {
+		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
+			"without it they can't be read, and each destination needs its keys saved again", config.EnvEncryptionKey, path, err)
+	}
+	return nil
+}
+
 // mailSender returns the sender for smtp, or a nil Sender when email is off.
 func mailSender(smtp *config.SMTP) notifications.Sender {
 	if smtp == nil {
@@ -138,9 +147,8 @@ func serveHub(args []string, log *slog.Logger) error {
 			log.Error("close database", "error", err)
 		}
 	}()
-	if err := backups.NewStore(d, cfg.EncryptionKey).CheckKey(ctx); err != nil {
-		return fmt.Errorf("%s does not open the secrets in %s: %w. Start the hub with the key it stored them with; "+
-			"without it they can't be read, and each destination needs its keys saved again", config.EnvEncryptionKey, cfg.Database, err)
+	if err := checkKey(ctx, d, cfg.EncryptionKey, cfg.Database); err != nil {
+		return err
 	}
 
 	hub := newHub(d, cfg.EncryptionKey, sender, log)
@@ -151,7 +159,7 @@ func serveHub(args []string, log *slog.Logger) error {
 	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil)))
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           hub,
+		Handler:           server.Guard(hub, cfg.Hosts, log),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)

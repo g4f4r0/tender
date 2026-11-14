@@ -83,11 +83,11 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, h HandlerFunc) {
 func (s *Server) agent(r *http.Request) (int64, bool, error) {
 	auth := r.Header.Get("Authorization")
 	if len(auth) <= 7 || !strings.EqualFold(auth[:7], "bearer ") {
-		return 0, false, &Error{http.StatusUnauthorized, "Send the machine token as \"Authorization: Bearer <token>\"."}
+		return 0, false, &Error{Status: http.StatusUnauthorized, Detail: "Send the machine token as \"Authorization: Bearer <token>\"."}
 	}
 	id, name, err := s.machines.Authenticate(r.Context(), auth[7:])
 	if isNotFound(err) {
-		return 0, false, &Error{http.StatusUnauthorized, "The token is not valid."}
+		return 0, false, &Error{Status: http.StatusUnauthorized, Detail: "The token is not valid."}
 	}
 	if err != nil {
 		return 0, false, err
@@ -96,7 +96,7 @@ func (s *Server) agent(r *http.Request) (int64, bool, error) {
 		if _, err := s.machines.Lookup(r.Context(), want); err != nil {
 			return 0, false, err
 		}
-		return 0, false, &Error{http.StatusForbidden, "This token belongs to another machine."}
+		return 0, false, &Error{Status: http.StatusForbidden, Detail: "This token belongs to another machine."}
 	}
 	return id, true, nil
 }

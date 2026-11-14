@@ -111,6 +111,33 @@ func (a *Agent) path(rest string) string {
 
 func (a *Agent) settingsFile() string { return filepath.Join(a.StateDir, "settings.json") }
 
+func (a *Agent) passwordFile() string { return filepath.Join(a.StateDir, "repository-password") }
+
+// stopSettings stops backups until the hub sends settings again. With deleteSaved, it also
+// deletes the saved settings, which hold the keys, and the repository password. It logs why once,
+// when there was something to stop or delete, and quietly after that.
+func (a *Agent) stopSettings(why string, err error, deleteSaved bool) {
+	had := a.settings != nil
+	a.settings, a.schedule, a.waiting = nil, nil, false
+	if deleteSaved {
+		for _, p := range []string{a.settingsFile(), a.passwordFile()} {
+			if rerr := os.Remove(p); rerr == nil {
+				had = true
+			} else if !errors.Is(rerr, os.ErrNotExist) {
+				a.Log.Error("delete the saved backup settings", "error", rerr)
+			}
+		}
+	}
+	switch {
+	case had && deleteSaved:
+		a.Log.Warn(why+"; stopped backing up and deleted the saved settings", "error", err)
+	case had:
+		a.Log.Error(why+"; stopped backing up", "error", err)
+	default:
+		a.Log.Debug(why, "error", err)
+	}
+}
+
 func (a *Agent) loadSavedSettings() {
 	b, err := os.ReadFile(a.settingsFile())
 	if errors.Is(err, os.ErrNotExist) {
@@ -143,7 +170,13 @@ func (a *Agent) apply(s Settings) error {
 
 // refreshSettings asks the hub for the settings and saves the last good copy, which holds the
 // destination's credentials, at 0600. Settings without credentials are used but not saved over
-// a good copy. When the hub is down or has none, the agent keeps the settings it has.
+// a good copy. When the hub can't be reached, or answers another error, the agent keeps the
+// settings it has.
+//
+// When the hub says the machine has no backup settings, the agent stops backing up and deletes
+// its saved settings and password, so the keys don't stay behind. When the hub no longer takes
+// the token (401: the machine was removed, its token replaced, or the hub reinstalled), the agent
+// stops backing up but keeps its files: they may hold the only copy of the repository password.
 func (a *Agent) refreshSettings(ctx context.Context) {
 	a.settingsAt = a.now()
 	var s Settings
@@ -151,8 +184,11 @@ func (a *Agent) refreshSettings(ctx context.Context) {
 	var he *client.Error
 	switch {
 	case err == nil:
-	case errors.As(err, &he) && he.Status == http.StatusNotFound:
-		a.Log.Warn("the hub has no backup settings for this machine yet", "error", err)
+	case errors.As(err, &he) && he.Status == http.StatusNotFound && he.Type == NoSettingsType:
+		a.stopSettings("the hub has no backup settings for this machine", err, true)
+		return
+	case errors.As(err, &he) && he.Status == http.StatusUnauthorized:
+		a.stopSettings("the hub no longer accepts this machine's token; install the agent again with a new one", err, false)
 		return
 	default:
 		a.Log.Warn("could not fetch backup settings, using the last ones", "error", err)
@@ -340,7 +376,7 @@ func (a *Agent) newRestic(s Settings) (Runner, error) {
 	if c == nil || c.AccessKeyID == "" || c.SecretAccessKey == "" || c.Password == "" {
 		return nil, errNoCredentials
 	}
-	password := filepath.Join(a.StateDir, "repository-password")
+	password := a.passwordFile()
 	if err := writeFileAtomic(password, []byte(c.Password)); err != nil {
 		return nil, fmt.Errorf("save the repository password: %w", err)
 	}

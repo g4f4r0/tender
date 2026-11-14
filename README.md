@@ -1,60 +1,81 @@
 # Tender
 
-Whole-server backups for your Linux machines, one place to see how they're doing, and an MCP endpoint so your AI client can check on them for you.
+Whole-server backups for your Linux machines, one place to see how they're doing, and an MCP endpoint so your AI client can run it all for you.
 
-You run a small agent on each machine and one hub on any of them. Each night, every agent backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub collects the results and usage from every machine. It emails you when a backup fails, a machine goes quiet or a disk fills up. It also answers questions like "did last night's backups work?" from Claude Code or any other MCP client.
+You install a small agent on each machine and one hub on any of them. Each night, every agent backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects results and usage from every machine, and emails you when a backup fails, a machine goes quiet or a disk fills up.
+
+You set everything up with the `tender` command or from an AI client such as Claude Code. Root is needed only to install.
 
 Tender is one static Go binary. It uses [restic](https://restic.net) underneath, so your backups are in a well-known, encrypted format you can read without Tender.
 
 ## What you get
 
-1. **Whole-server backups.** Every real filesystem on the machine, without caches, temp files, container images or `node_modules`. Snapshots are deduplicated and encrypted before they leave the machine.
-2. **Retention and checks.** Each machine keeps snapshots for the number of days you set. Once a week, Tender reads back 5% of the stored data.
-3. **Usage.** CPU load, memory, disk and uptime from every machine, once a minute.
-4. **Email alerts.** One email when something goes wrong and one when it's fixed. No floods.
-5. **Read-only MCP.** Six tools for AI clients: `list_machines`, `get_machine_usage`, `get_backup_status`, `list_backup_snapshots`, `list_backup_history` and `list_notifications`.
-6. **Keeps going when the hub is down.** Agents back up on their last known schedule and send their reports once the hub is back.
+1. Whole-server backups of every real filesystem, without caches, temp files, container images or `node_modules`. Snapshots are deduplicated and encrypted before they leave the machine.
+2. Retention by days, and a weekly check that reads back 5% of the stored data.
+3. CPU load, memory, disk and uptime from every machine, once a minute.
+4. Email alerts to as many people as you like: one email when something goes wrong, one if it gets worse and one when it's fixed.
+5. MCP tools for AI clients that can do everything the `tender` command does, from "did last night's backups work?" to adding a machine.
+6. Backups keep running when the hub is down. Agents use their last known settings and send their reports once the hub is back.
 
 ## Requirements
 
 1. Linux on x86_64 with systemd.
-2. [Tailscale](https://tailscale.com) on every machine. The hub is reachable only over your tailnet.
-3. A bucket on any S3-compatible storage, such as Cloudflare R2, AWS S3, Backblaze B2, Wasabi or MinIO, with an access key that can read and write it.
+2. A bucket on any S3-compatible storage, such as Cloudflare R2, AWS S3, Backblaze B2, Wasabi or MinIO, with an access key that can read and write it.
+3. [Tailscale](https://tailscale.com) on every machine is recommended. The installer uses it to publish the hub privately on your tailnet. Without it, put your own proxy and access control in front of the hub.
+
+> [!WARNING]
+> The hub has no login in this version. Anyone who can reach it can add, change and remove machines, destinations and alert recipients. It never shows bucket keys or passwords to anyone. Keep it on your tailnet or behind your own access control, and never expose it to the internet.
+>
+> Web pages can't use the hub through your browser: it refuses requests from other websites, and it answers only to its IP addresses, its Tailscale name and the names in `TENDER_HOSTS`.
 
 ## Quick start
 
-This sets up a hub and backs up the same machine. The machine is called `web-1` and the bucket `my-backups`.
+This sets up a hub on `web-1` and backs up the same machine to a bucket called `my-backups`.
 
 ### 1. Install the hub
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub
+curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub \
+  --smtp-host smtp.example.com --smtp-from "Tender <alerts@example.com>" --smtp-username alerts@example.com
 ```
 
-The installer downloads the latest release, checks it against the release's `SHA256SUMS`, installs `/usr/local/bin/tender` and starts the `tender-hub` service. It then publishes the hub on your tailnet with Tailscale Serve and prints its address, such as `https://web-1.your-tailnet.ts.net`.
+The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. Then it writes `/etc/tender/hub.env` with a new encryption key, starts the `tender-hub` service and publishes the hub on your tailnet, such as `https://web-1.your-tailnet.ts.net`.
+
+Leave out the `--smtp-` options to start without email, and run the command again with them later. Running it again keeps the key and any setting you don't pass.
+
+Back up `/etc/tender/hub.env`. Its key decrypts the bucket keys and passwords the hub stores, and the hub won't start without the same key.
 
 ### 2. Tell the hub where backups go
 
 ```sh
-sudo tender hub add-destination r2 --type s3 \
-  --endpoint https://<account-id>.r2.cloudflarestorage.com \
-  --bucket my-backups --path tender
+tender destinations add r2 --endpoint https://<account-id>.r2.cloudflarestorage.com --bucket my-backups --path tender
 ```
 
-Each machine that uses this destination gets its own folder, `my-backups/tender/<machine>`.
+It asks for the access key ID and the secret access key, with typing hidden. It also asks for a repository password; leave it empty and the hub makes a strong one and shows it once.
 
-`--type s3` works with every S3-compatible service, and only the endpoint changes. AWS S3 uses one like `https://s3.us-east-1.amazonaws.com`, and Backblaze B2 one like `https://s3.us-west-004.backblazeb2.com`.
+**Save that password in a password manager.** Every machine's backups at this destination are encrypted with it, and without it nobody can restore them, including you. It can't change later.
+
+Each machine gets its own folder, such as `my-backups/tender/web-1`. Only the endpoint changes between providers. AWS S3 uses one like `https://s3.us-east-1.amazonaws.com`, and Backblaze B2 one like `https://s3.us-west-004.backblazeb2.com`.
 
 ### 3. Add the machine and its schedule
 
 ```sh
-sudo tender hub add-machine web-1
-sudo tender hub set-backup web-1 --destination r2 --schedule "30 3 * * *" --retention-days 30
+tender machines add web-1
+tender backups set web-1 --destination r2 --schedule "30 3 * * *" --retention-days 30
 ```
 
-`add-machine` prints the machine's token once. Keep it for the next step. The schedule is standard cron, in UTC.
+`machines add` prints the machine's token once. Keep it for step 5. The schedule is standard cron, in UTC.
 
-### 4. Install the agent
+### 4. Choose who gets alerts
+
+```sh
+tender recipients add you@example.com
+tender email test
+```
+
+Add as many recipients as you need. `email test` sends a test email to each of them.
+
+### 5. Install the agent
 
 On the machine you're backing up:
 
@@ -63,35 +84,47 @@ curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sud
   --hub https://web-1.your-tailnet.ts.net --machine web-1
 ```
 
-The installer asks for the token and hides what you type. It installs restic, creates the `tender` user, finds the filesystems to back up and starts the `tender-agent` service.
+The installer asks for the token with typing hidden. It installs restic, creates the `tender` user, finds the filesystems to back up and starts the `tender-agent` service. The agent gets its destination, keys and schedule from the hub, so there's nothing else to copy to the machine.
 
-### 5. Add the bucket's keys
+The first backup starts within a minute, and the next ones follow the schedule. Watch it with `journalctl -u tender-agent -f`, or check on every machine at once with:
 
 ```sh
-sudo tender install credential r2.access-key-id < access-key-id.txt
-sudo tender install credential r2.secret-access-key < secret-access-key.txt
-sudo tender install credential r2.password < password.txt
+tender status
 ```
 
-`r2.password` encrypts this machine's backups. Make it long and random, for example with `openssl rand -base64 32`, and keep a copy off the machine, such as in a password manager. **Without it, nobody can read the backups, including you.**
+To add more machines, repeat steps 3 and 5 for each.
 
-The first backup starts within a minute. Watch it with `journalctl -u tender-agent -f`.
+## The tender command
 
-To add more machines, repeat steps 3 to 5 for each.
+`tender` talks to the hub over its API, so it doesn't need root. On the hub machine it finds the hub by itself. Anywhere else, set `TENDER_HUB=https://web-1.your-tailnet.ts.net` or pass `--hub`.
+
+| Command | What it does |
+| --- | --- |
+| `tender status` | Every machine, its last backup and the open alerts |
+| `tender machines list \| add \| remove \| rotate-token` | Manage machines and their tokens |
+| `tender destinations list \| add \| remove` | Manage where backups go |
+| `tender backups status \| set \| unset` | See and change each machine's backups |
+| `tender recipients list \| add \| remove` | Manage who gets alert emails |
+| `tender email test` | Send a test email to every recipient |
+| `tender update` | Install the latest release on this machine (root) |
+
+Run `tender help`, or add `--help` to any command, for the details.
+
+## Ask your AI client
+
+The hub serves MCP at `/mcp`. To add it to Claude Code:
+
+```sh
+claude mcp add --transport http tender https://web-1.your-tailnet.ts.net/mcp --scope user
+```
+
+Then ask things like "did last night's backups work?", "which machine is running out of disk?" or "back up web-2 every night at 4 and keep two weeks".
+
+The tools cover everything the `tender` command does. Each one tells your client whether it only reads, changes something or removes something, so the client can ask you before a removal. The tools never return bucket keys or passwords. Keys you give a tool pass through the AI conversation, so for real keys, `tender destinations add` is safer: it hides them as you type.
 
 ## Email alerts
 
-The hub sends email through any SMTP server that accepts implicit TLS, usually on port 465:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub --force \
-  --email-to you@example.com --email-from "Tender <alerts@example.com>" \
-  --smtp-host smtp.example.com --smtp-port 465 --smtp-username alerts@example.com
-sudo tender install credential smtp-password < smtp-password.txt
-sudo tender hub test-email
-```
-
-It checks every machine once a minute:
+The hub checks every machine once a minute:
 
 | Alert | When | Severity |
 | --- | --- | --- |
@@ -102,17 +135,21 @@ It checks every machine once a minute:
 
 You get one email when an alert opens, one if it gets worse, and one when it resolves. If a send fails, the hub keeps retrying until the email goes out.
 
-## Ask your AI client
+Email goes out through any SMTP server with implicit TLS. The settings live in `/etc/tender/hub.env`:
 
-The hub serves MCP at `/mcp`. To add it to Claude Code:
+| Variable | Default | What it sets |
+| --- | --- | --- |
+| `TENDER_ENCRYPTION_KEY` | made at install | The key that encrypts the secrets the hub stores. Required |
+| `TENDER_SMTP_HOST` | | The SMTP server. Email is off without it |
+| `TENDER_SMTP_PORT` | `465` | The SMTP port |
+| `TENDER_SMTP_USERNAME` | | The SMTP login, for servers that ask for one |
+| `TENDER_SMTP_PASSWORD` | | The SMTP password |
+| `TENDER_SMTP_FROM` | | The sender, such as `Tender <alerts@example.com>` |
+| `TENDER_LISTEN` | `127.0.0.1:8080` | Where the hub listens |
+| `TENDER_HOSTS` | | More names the hub answers to, comma-separated, such as `tender.example.com` behind your own proxy |
+| `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database |
 
-```sh
-claude mcp add --transport http tender https://web-1.your-tailnet.ts.net/mcp --scope user
-```
-
-Then ask things like "did last night's backups work?" or "which machine is running out of disk?". Every tool only reads.
-
-On the hub machine, `sudo tender mcp --stdio` serves the same tools to local clients.
+After editing the file by hand, run `sudo systemctl restart tender-hub`.
 
 ## Updating
 
@@ -120,33 +157,33 @@ On the hub machine, `sudo tender mcp --stdio` serves the same tools to local cli
 sudo tender update
 ```
 
-`update` checks and installs the latest release, then refreshes and restarts what Tender runs on the machine. Add `--version v0.1.0` for a specific release. For a fresh install of a specific release, put `TENDER_VERSION=v0.1.0` before `sh` in the install command.
+`update` checks and installs the latest release, then refreshes and restarts what Tender runs on the machine. Add `--version v0.2.0` for a specific release. For a fresh install of a specific release, put `TENDER_VERSION=v0.2.0` before `sh` in the install command.
 
 ## Restoring
 
-`tender restore` is coming. Until then, restore with restic, as root on any machine that has the keys:
+`tender restore` is coming. Until then, restore with restic on any Linux machine, using the bucket keys and the repository password from your password manager:
 
 ```sh
-export AWS_ACCESS_KEY_ID=$(cat /etc/tender/credentials/r2.access-key-id)
-export AWS_SECRET_ACCESS_KEY=$(cat /etc/tender/credentials/r2.secret-access-key)
-export RESTIC_PASSWORD_FILE=/etc/tender/credentials/r2.password
+export AWS_ACCESS_KEY_ID=<access key ID>
+export AWS_SECRET_ACCESS_KEY=<secret access key>
+export RESTIC_PASSWORD=<repository password>
 export RESTIC_REPOSITORY=s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender/web-1
 
 restic snapshots --host web-1 --tag tender
 restic restore latest --host web-1 --tag tender --target /root/restore --include /etc/nginx
 ```
 
-Restore into an empty folder, like `/root/restore`, and copy back what you need. Restoring over a running system can break it.
+On a machine whose agent still runs, root can use the agent's copy of the password instead: `export RESTIC_PASSWORD_FILE=/var/lib/tender/agent/repository-password`.
 
-If the machine is gone, any Linux machine with restic works. Use the keys and password from your password manager.
+Restore into an empty folder, like `/root/restore`, and copy back what you need. Restoring over a running system can break it.
 
 ## How it works
 
-The agent runs as the `tender` system user. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, but can write only to its own folder. It gets its destination, schedule and retention from the hub and keeps the last copy, so backups go on when the hub is unreachable.
+The hub keeps everything in one SQLite database and listens on `127.0.0.1:8080` only. It stores bucket keys and repository passwords encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY`. It sends them to one caller only: the agent of a machine that uses that destination, signed in with its own token. No other route, MCP tool or log line ever shows them.
 
-The hub keeps everything in one SQLite database. It listens on `127.0.0.1:8080` only, and Tailscale Serve is the only way in. Each agent signs in with its own token. The hub stores only a SHA-256 hash of it, and an agent can write only its own machine's data.
+Each agent signs in with its own token. The hub stores only a SHA-256 hash of it, and a token works only for its own machine: it can't report for another one or get another machine's keys.
 
-Bucket keys never reach the hub. Each machine holds only its own keys, and on the hub machine, the hub service can't read them.
+The agent runs as the `tender` system user. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, but can write only to its own folder. It keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
 
 Every backup covers all real filesystems on the machine and leaves out:
 
@@ -163,13 +200,11 @@ Docker volumes live under `/var/lib/docker`, so they're left out as well. Dump a
 | --- | --- |
 | `/usr/local/bin/tender` | The Tender binary |
 | `/usr/local/bin/restic` | restic 0.19.1, checked against its official SHA-256 |
+| `/etc/tender/hub.env` | The hub's encryption key and email settings, readable only by root |
 | `/etc/tender/agent.toml` | The agent's hub, machine name, backup paths and excludes |
-| `/etc/tender/hub.toml` | The hub's address, database and email settings |
-| `/etc/tender/credentials/` | Tokens, bucket keys and passwords, readable only by root and `tender` |
-| `/var/lib/tender/agent/` | The agent's state and any reports waiting for the hub |
+| `/etc/tender/credentials/hub-token` | The agent's token, readable only by root and `tender` |
 | `/var/lib/tender/hub/hub.db` | The hub's database |
-
-Run `tender help` for every command, and `tender hub help` for the hub's.
+| `/var/lib/tender/agent/` | The agent's state, its last settings and any reports waiting for the hub |
 
 ## License
 

@@ -58,5 +58,12 @@ func runMCP(args []string, log *slog.Logger) error {
 	if err := d.CheckSchema(ctx, migrations()...); err != nil {
 		return errors.Join(fmt.Errorf("the database at %s has no current schema. Run \"tender hub\" once to create or update it: %w", database, err), d.Close())
 	}
+	// Without a key, the tools that store secrets refuse; with the wrong one, they would store
+	// secrets the hub can't open.
+	if key != nil {
+		if err := checkKey(ctx, d, key, database); err != nil {
+			return errors.Join(err, d.Close())
+		}
+	}
 	return errors.Join(newTools(d, key, mailSender(smtp), log).RunStdio(ctx), d.Close())
 }

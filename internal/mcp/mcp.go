@@ -63,20 +63,19 @@ type Removed struct {
 type WriteOptions struct {
 	Destructive bool // deletes data or access: removing a machine, a destination, settings or a recipient
 	Idempotent  bool // calling it again with the same input changes nothing more
+	OpenWorld   bool // reaches outside the hub, such as sending an email
 }
 
 // AddWrite adds a tool that changes the hub's state, through the same store method as the REST
-// route of the same change. In and Out are structs, as for AddReadOnly. Write tools never reach
-// outside the hub, so openWorldHint is false; destructiveHint is set to what o says, because a
-// client assumes true when it is left out.
+// route of the same change. In and Out are structs, as for AddReadOnly. destructiveHint and
+// openWorldHint are always set, to what o says, because a client assumes true when they are left out.
 func AddWrite[In, Out any](s *Server, name, title, description string, o WriteOptions, h func(context.Context, In) (Out, error)) {
-	closed := false
-	destructive := o.Destructive
+	destructive, open := o.Destructive, o.OpenWorld
 	tool := &sdk.Tool{
 		Name:        name,
 		Title:       title,
 		Description: description,
-		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: o.Idempotent, OpenWorldHint: &closed},
+		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: o.Idempotent, OpenWorldHint: &open},
 	}
 	sdk.AddTool(s.sdk, tool, func(ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
 		out, err := h(ctx, in)

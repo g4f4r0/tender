@@ -37,6 +37,7 @@ type Error struct {
 	Status int
 	Title  string
 	Detail string
+	Type   string // the problem's type URI; about:blank for most
 }
 
 func (e *Error) Error() string {
@@ -116,13 +117,14 @@ func problem(method, path string, resp *http.Response) error {
 	var p struct {
 		Title  string `json:"title"`
 		Detail string `json:"detail"`
+		Type   string `json:"type"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if json.Unmarshal(raw, &p) == nil {
 		if p.Title != "" {
 			e.Title = p.Title
 		}
-		e.Detail = p.Detail
+		e.Detail, e.Type = p.Detail, p.Type
 	}
 	return fmt.Errorf("%s %s: %w", method, path, e)
 }

@@ -47,6 +47,17 @@ func notFoundIfNone(err error, format string, a ...any) error {
 	return err
 }
 
+// NoSettingsType is the problem type of the 404 for a machine without backup settings. The agent
+// tells it apart from other 404s, such as a wrong machine name, before it deletes its saved keys.
+const NoSettingsType = "https://github.com/g4f4r0/tender#no-backup-settings"
+
+func noSettingsIfNone(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return &server.Error{Status: http.StatusNotFound, Type: NoSettingsType, Detail: "This machine has no backup settings yet."}
+	}
+	return err
+}
+
 // Destinations
 
 const destinationColumns = `d.id, d.name, d.type, d.endpoint, d.bucket, d.path, d.created_at, d.updated_at`
@@ -270,22 +281,28 @@ func (s *Store) DeleteDestination(ctx context.Context, name string) error {
 	return tx.Commit()
 }
 
-// CheckKey is an error unless the store's key opens the credentials already stored. The hub runs it
-// at start, so a wrong key stops it there instead of failing every agent later.
+// CheckKey is an error unless the store's key opens every secret already stored. The hub and
+// "tender mcp" run it at start, so a wrong key stops them there instead of failing every agent
+// later, or storing new secrets that the hub can't open.
 func (s *Store) CheckKey(ctx context.Context) error {
-	var name string
-	var sealed []byte
-	err := s.db.Read.QueryRowContext(ctx, `SELECT name, password FROM backup_destinations ORDER BY id LIMIT 1`).Scan(&name, &sealed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
+	rows, err := s.db.Read.QueryContext(ctx, `SELECT name, access_key_id, secret_access_key, password FROM backup_destinations ORDER BY id`)
 	if err != nil {
 		return err
 	}
-	if _, err := s.open(sealed); err != nil {
-		return fmt.Errorf("destination %q: %w", name, err)
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var name string
+		var keyID, secretKey, password []byte
+		if err := rows.Scan(&name, &keyID, &secretKey, &password); err != nil {
+			return err
+		}
+		for _, sealed := range [][]byte{keyID, secretKey, password} {
+			if _, err := s.open(sealed); err != nil {
+				return fmt.Errorf("destination %q: %w", name, err)
+			}
+		}
 	}
-	return nil
+	return rows.Err()
 }
 
 // Destination returns the destination called name.
@@ -354,7 +371,7 @@ func (s *Store) Settings(ctx context.Context, machineID int64) (Settings, error)
 			&st.Schedule, &st.RetentionDays, &created, &updated)
 	d.CreatedAt, d.UpdatedAt = at(dcreated), at(dupdated)
 	st.CreatedAt, st.UpdatedAt = at(created), at(updated)
-	return st, notFoundIfNone(err, "This machine has no backup settings yet.")
+	return st, noSettingsIfNone(err)
 }
 
 // DeleteSettings removes a machine's backup settings: its agent stops backing up. Its snapshots
@@ -381,7 +398,7 @@ func (s *Store) Credentials(ctx context.Context, machineID int64) (Credentials, 
 		 FROM backup_settings s JOIN backup_destinations d ON d.id = s.destination_id WHERE s.machine_id = ?`, machineID).
 		Scan(&sealed[0], &sealed[1], &sealed[2])
 	if err != nil {
-		return Credentials{}, notFoundIfNone(err, "This machine has no backup settings yet.")
+		return Credentials{}, noSettingsIfNone(err)
 	}
 	var plain [3]string
 	for i, b := range sealed {

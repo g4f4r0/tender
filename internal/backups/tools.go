@@ -37,7 +37,7 @@ type addDestinationInput struct {
 }
 
 type updateDestinationInput struct {
-	Destination     string  `json:"destination" jsonschema:"destination name, as get_backup_status shows it in settings"`
+	Destination     string  `json:"destination" jsonschema:"destination name, as list_destinations shows it"`
 	Endpoint        *string `json:"endpoint,omitempty" jsonschema:"new S3 endpoint URL; leave out to keep it"`
 	Bucket          *string `json:"bucket,omitempty" jsonschema:"new bucket name; leave out to keep it"`
 	Path            *string `json:"path,omitempty" jsonschema:"new folder inside the bucket; leave out to keep it"`
@@ -116,6 +116,15 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			}
 			runs, err := s.ListHistory(ctx, id, in.Type, in.Status, page)
 			return server.NewList(runs, page, historyCursor), err
+		})
+
+	mcp.AddReadOnly(m, "list_destinations", "List backup destinations",
+		"List the places backups go, by name. Each has type (s3), endpoint, bucket and path (the folder inside the bucket, "+
+			"empty for its top); each machine's repository is a folder named after the machine under it. Keys and passwords are "+
+			"never shown. Use a name here as the destination of set_backup.",
+		func(ctx context.Context, _ struct{}) (server.List[Destination], error) {
+			list, err := s.Destinations(ctx)
+			return server.List[Destination]{Data: list}, err
 		})
 
 	const secrets = " Keys and passwords you pass here go through this conversation; for real keys, the owner is safer typing them " +

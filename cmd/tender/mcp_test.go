@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/g4f4r0/tender/internal/backups"
+	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
@@ -159,7 +161,7 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_backup_status", "get_machine_usage", "list_backup_history", "list_backup_snapshots", "list_machines", "list_notifications", "list_recipients"}
+	reads := []string{"get_backup_status", "get_machine_usage", "list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {false, false}, "remove_machine": {true, true},
@@ -170,8 +172,9 @@ func TestToolsList(t *testing.T) {
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
-		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint {
-			t.Errorf("%s annotations = %+v, want closed world", tool.Name, a)
+		// Only send_test_email reaches outside the hub.
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "send_test_email") {
+			t.Errorf("%s annotations = %+v, want open world only for send_test_email", tool.Name, a)
 			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {
@@ -226,6 +229,7 @@ func TestToolsMatchREST(t *testing.T) {
 		{"get_backup_status", nil, "/v1/backups"},
 		{"list_backup_snapshots", map[string]any{"machine": "g4f4r0-code"}, "/v1/machines/g4f4r0-code/backups/snapshots"},
 		{"list_backup_history", map[string]any{"machine": "g4f4r0-code", "status": "failed"}, "/v1/machines/g4f4r0-code/backups/history?status=failed"},
+		{"list_destinations", nil, "/v1/backups/destinations"},
 		{"list_notifications", nil, "/v1/notifications"},
 		{"list_notifications", map[string]any{"machine": "g4f4r0-code", "severity": "critical"}, "/v1/machines/g4f4r0-code/notifications?severity=critical"},
 	} {
@@ -497,5 +501,30 @@ func TestMCPStdioNeedsAnExistingSchema(t *testing.T) {
 
 	if err := runMCP(nil, quiet); err == nil || !strings.Contains(err.Error(), "usage") {
 		t.Errorf("without --stdio: %v", err)
+	}
+}
+
+// With a key that doesn't open the stored secrets, "tender mcp" refuses to start, instead of
+// storing new secrets the hub can't open.
+func TestMCPStdioRefusesTheWrongKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.db")
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := d.Migrate(ctx, migrations()...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Endpoint: "https://acct.r2.cloudflarestorage.com",
+		Bucket: "b", AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvEncryptionKey, base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err := runMCP([]string{"--stdio", "--database", path}, quiet); err == nil || !strings.Contains(err.Error(), "does not open the secrets") {
+		t.Errorf("wrong key: %v", err)
 	}
 }
