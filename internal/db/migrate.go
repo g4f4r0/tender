@@ -109,3 +109,25 @@ func load(set Migrations) ([]migration, error) {
 	sort.Slice(ms, func(i, j int) bool { return ms[i].version < ms[j].version })
 	return ms, nil
 }
+
+// CheckSchema returns an error unless every migration in sets is already applied. It changes nothing.
+func (d *DB) CheckSchema(ctx context.Context, sets ...Migrations) error {
+	for _, set := range sets {
+		ms, err := load(set)
+		if err != nil {
+			return err
+		}
+		for _, m := range ms {
+			var applied int
+			err := d.Read.QueryRowContext(ctx,
+				`SELECT count(*) FROM migrations WHERE domain = ? AND version = ?`, m.domain, m.version).Scan(&applied)
+			if err != nil {
+				return fmt.Errorf("read migrations: %w", err)
+			}
+			if applied == 0 {
+				return fmt.Errorf("migration %s/%s is not applied", m.domain, m.name)
+			}
+		}
+	}
+	return nil
+}

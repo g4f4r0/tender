@@ -17,6 +17,8 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/machines"
+	"github.com/g4f4r0/tender/internal/mcp"
+	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
 )
 
@@ -52,13 +54,32 @@ func openHub(ctx context.Context, path string) (*db.DB, error) {
 	return d, nil
 }
 
-// newHub returns the hub's HTTP server with every domain's routes.
+// newHub returns the hub's HTTP server with every domain's routes and the MCP endpoint.
 func newHub(d *db.DB, log *slog.Logger) *server.Server {
 	ms := machines.NewStore(d)
 	srv := server.New(d, log, ms)
 	ms.Routes(srv)
 	backups.NewStore(d).Routes(srv)
+	notifications.NewStore(d).Routes(srv)
+
+	// MCP clients are tailnet readers too. The SDK handler answers GET and DELETE with 405 in
+	// stateless mode, so only POST is routed.
+	tools := newTools(d, log).Handler()
+	srv.Handle("POST /mcp", srv.Reader(func(w http.ResponseWriter, r *http.Request) error {
+		tools.ServeHTTP(w, r)
+		return nil
+	}))
 	return srv
+}
+
+// newTools returns the MCP server with every domain's tools. The hub and "tender mcp" share it.
+func newTools(d *db.DB, log *slog.Logger) *mcp.Server {
+	ms := machines.NewStore(d)
+	s := mcp.New(version, log)
+	ms.RegisterTools(s)
+	backups.NewStore(d).RegisterTools(s, ms.Lookup)
+	notifications.NewStore(d).RegisterTools(s, ms.Lookup)
+	return s
 }
 
 func serveHub(args []string, log *slog.Logger) error {
