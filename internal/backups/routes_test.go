@@ -404,6 +404,32 @@ func TestHistoryCreate(t *testing.T) {
 	}
 }
 
+// A run the agent never finished is closed as failed when a later run of the same type starts.
+func TestHistoryAbandoned(t *testing.T) {
+	h := newHub(t)
+	lost := h.run("tok-a", "a", backups.HistoryInput{Type: "backup", Status: "in_progress", CreatedAt: base})
+	check := h.run("tok-a", "a", backups.HistoryInput{Type: "check", Status: "in_progress", CreatedAt: base})
+	other := h.run("tok-b", "b", backups.HistoryInput{Type: "backup", Status: "in_progress", CreatedAt: base})
+	h.run("tok-a", "a", backups.HistoryInput{Type: "backup", Status: "in_progress", CreatedAt: base.Add(24 * time.Hour)})
+
+	get := func(machine string, id int64) backups.History {
+		var got backups.History
+		h.do("GET", "/v1/machines/"+machine+"/backups/history/"+strconv.FormatInt(id, 10), "", nil, &got)
+		return got
+	}
+	if got := get("a", lost.ID); got.Status != "failed" || got.Error == nil {
+		t.Errorf("lost run = %+v, want failed with an error", got)
+	}
+	if got := get("a", check.ID); got.Status != "in_progress" {
+		t.Errorf("check run = %+v, want untouched", got)
+	}
+	if got := get("b", other.ID); got.Status != "in_progress" {
+		t.Errorf("other machine's run = %+v, want untouched", got)
+	}
+	// The late report for the closed run is a conflict, which the agent drops.
+	h.status(409, "PATCH", "/v1/machines/a/backups/history/"+strconv.FormatInt(lost.ID, 10), "tok-a", backups.HistoryPatch{Status: ptr("completed")})
+}
+
 func TestHistoryPatch(t *testing.T) {
 	h := newHub(t)
 	snapA := h.put("tok-a", "a", []backups.SnapshotInput{snap("s1", 0, 1)}).Data[0]

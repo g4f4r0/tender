@@ -2,6 +2,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -47,6 +49,9 @@ func main() {
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		return // the flag package already printed the usage
 	}
 	if err != nil {
 		log.Error("tender failed", "error", err)

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func at(s string) time.Time {
+func clock(s string) time.Time {
 	t, err := time.Parse("2006-01-02 15:04", s)
 	if err != nil {
 		panic(err)
@@ -19,7 +19,7 @@ func TestParseSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Next(at("2026-11-14 10:00")); !got.Equal(at("2026-11-15 03:30")) {
+	if got := s.Next(clock("2026-11-14 10:00")); !got.Equal(clock("2026-11-15 03:30")) {
 		t.Errorf("next = %v, want 2026-11-15 03:30 UTC", got)
 	}
 	for _, bad := range []string{"", "30 3 * *", "61 3 * * *", "@every nonsense", "every day"} {
@@ -42,11 +42,11 @@ func TestIsDue(t *testing.T) {
 		{"down for three days: owed once", "2026-11-10 03:31", "2026-11-14 09:00", true},
 	}
 	for _, c := range cases {
-		if got := isDue(s, at(c.last), at(c.now)); got != c.want {
+		if got := isDue(s, clock(c.last), clock(c.now)); got != c.want {
 			t.Errorf("%s: due = %v, want %v", c.name, got, c.want)
 		}
 	}
-	if !isDue(s, time.Time{}, at("2026-11-14 09:00")) {
+	if !isDue(s, time.Time{}, clock("2026-11-14 09:00")) {
 		t.Error("never backed up: want due")
 	}
 }
@@ -57,7 +57,7 @@ func TestStateFile(t *testing.T) {
 	if err != nil || !st.LastBackup.IsZero() {
 		t.Fatalf("missing file: %+v, %v", st, err)
 	}
-	want := agentState{LastBackup: at("2026-11-14 03:31"), LastCheck: at("2026-11-10 04:00")}
+	want := agentState{LastBackup: clock("2026-11-14 03:31"), LastCheck: clock("2026-11-10 04:00")}
 	if err := saveState(path, want); err != nil {
 		t.Fatal(err)
 	}

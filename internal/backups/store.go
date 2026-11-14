@@ -337,8 +337,20 @@ func (s *Store) CreateHistory(ctx context.Context, machineID int64, in HistoryIn
 	if err != nil {
 		return History{}, err
 	}
+	// An agent runs one job at a time, so an older unfinished run of the same type will never
+	// be finished: it crashed or lost its report. Close it, so it can't look in progress forever.
+	_, err = tx.ExecContext(ctx,
+		`UPDATE backup_history SET status = ?, error = ?, updated_at = ?
+		 WHERE machine_id = ? AND type = ? AND status IN (?, ?) AND created_at < ?`,
+		StatusFailed, abandoned, h.UpdatedAt.Unix(), machineID, h.Type, StatusPending, StatusInProgress, h.CreatedAt.Unix())
+	if err != nil {
+		return History{}, err
+	}
 	return h, tx.Commit()
 }
+
+// abandoned is the error on a run whose end was never reported.
+const abandoned = "The agent never reported how this run ended; a later run of the same type started."
 
 // PatchHistory finishes or advances a run that is pending or in_progress. A finished run
 // can't change: that is a Conflict.
