@@ -27,13 +27,15 @@ type Destination struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Repository is the restic repository string for this destination.
-func (d Destination) Repository() string {
+// Repository is the restic repository of one machine at this destination: a folder named after
+// the machine, so machines can share a bucket. Each machine has its own repository because
+// restic's prune and check lock the whole repository.
+func (d Destination) Repository(machine string) string {
 	repo := "s3:" + d.Endpoint + "/" + d.Bucket
 	if d.Path != "" {
 		repo += "/" + d.Path
 	}
-	return repo
+	return repo + "/" + machine
 }
 
 // Settings is a machine's backup settings, as GET /v1/machines/{machine}/backups/settings returns it.
