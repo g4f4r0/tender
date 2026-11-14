@@ -93,3 +93,21 @@ func TestReadPoolIsReadOnly(t *testing.T) {
 		t.Fatal("the read pool accepted a write")
 	}
 }
+
+func TestCheckSchema(t *testing.T) {
+	d := open(t)
+	a := set("a", map[string]string{"001_init.sql": `CREATE TABLE a (id INTEGER PRIMARY KEY) STRICT`})
+	if err := d.CheckSchema(context.Background(), a); err == nil {
+		t.Fatal("an empty database passed the check")
+	}
+	if err := d.Migrate(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CheckSchema(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	newer := set("a", map[string]string{"001_init.sql": `SELECT 1`, "002_more.sql": `SELECT 1`})
+	if err := d.CheckSchema(context.Background(), newer); err == nil {
+		t.Fatal("an unapplied migration passed the check")
+	}
+}

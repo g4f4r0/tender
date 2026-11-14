@@ -77,9 +77,7 @@ func (s *Store) listSnapshots(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.NewList(snaps, page, func(sn Snapshot) server.Cursor {
-		return server.Cursor{CreatedAt: sn.CreatedAt.Unix(), ID: sn.ID}
-	}))
+	server.WriteJSON(w, http.StatusOK, server.NewList(snaps, page, snapshotCursor))
 	return nil
 }
 
@@ -118,19 +116,14 @@ func (s *Store) listHistory(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	typ, status := r.URL.Query().Get("type"), r.URL.Query().Get("status")
-	if typ != "" && !validType(typ) {
-		return server.Invalid("type must be backup, cleanup or check.")
-	}
-	if status != "" && !validStatus(status) {
-		return server.Invalid("status must be pending, in_progress, completed or failed.")
+	if err := validateFilters(typ, status); err != nil {
+		return err
 	}
 	runs, err := s.ListHistory(r.Context(), server.MachineID(r.Context()), typ, status, page)
 	if err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.NewList(runs, page, func(h History) server.Cursor {
-		return server.Cursor{CreatedAt: h.CreatedAt.Unix(), ID: h.ID}
-	}))
+	server.WriteJSON(w, http.StatusOK, server.NewList(runs, page, historyCursor))
 	return nil
 }
 

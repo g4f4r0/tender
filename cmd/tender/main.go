@@ -21,6 +21,7 @@ var version = "dev"
 const usage = `Usage:
   tender hub [--database PATH] [--listen ADDR]   run the hub
   tender agent [--config PATH]                   run the agent
+  tender mcp --stdio [--database PATH]           serve the MCP tools over stdio, on the hub machine
   tender version                                 print the version
 
 Run "tender hub help" for the hub's other commands.
@@ -44,6 +45,8 @@ func main() {
 		err = runHub(os.Args[2:], log)
 	case "agent":
 		err = runAgent(os.Args[2:], log)
+	case "mcp":
+		err = runMCP(os.Args[2:], log)
 	case "version":
 		fmt.Println(version)
 	default:

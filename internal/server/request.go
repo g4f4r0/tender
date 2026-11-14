@@ -62,17 +62,30 @@ func (p Page) Size() int { return p.Limit + 1 }
 
 // ParsePage reads ?limit= (default 50, at most 500) and ?cursor=.
 func ParsePage(r *http.Request) (Page, error) {
-	p := Page{Limit: defaultLimit, Before: Cursor{math.MaxInt64, math.MaxInt64}}
 	q := r.URL.Query()
+	limit := 0
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxLimit {
-			return p, BadRequest("limit must be a whole number from 1 to %d.", maxLimit)
+		if err != nil || n < 1 {
+			return Page{}, errLimit()
 		}
-		p.Limit = n
+		limit = n
 	}
-	if v := q.Get("cursor"); v != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(v)
+	return NewPage(limit, q.Get("cursor"))
+}
+
+// NewPage returns the page that limit and cursor name. A limit of 0 means the default, 50;
+// the most is 500. An empty cursor means the first page.
+func NewPage(limit int, cursor string) (Page, error) {
+	p := Page{Limit: defaultLimit, Before: Cursor{math.MaxInt64, math.MaxInt64}}
+	if limit != 0 {
+		if limit < 1 || limit > maxLimit {
+			return p, errLimit()
+		}
+		p.Limit = limit
+	}
+	if cursor != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(cursor)
 		if err == nil {
 			_, err = fmt.Sscanf(string(raw), "%d:%d", &p.Before.CreatedAt, &p.Before.ID)
 		}
@@ -82,6 +95,8 @@ func ParsePage(r *http.Request) (Page, error) {
 	}
 	return p, nil
 }
+
+func errLimit() error { return BadRequest("limit must be a whole number from 1 to %d.", maxLimit) }
 
 // NewList turns the rows fetched with p.Size() into a response, cutting the extra row and
 // setting next_cursor from the last row kept.

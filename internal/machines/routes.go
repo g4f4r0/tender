@@ -2,7 +2,6 @@ package machines
 
 import (
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/server"
@@ -39,11 +38,11 @@ func (s *Store) listUsage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	since, err := queryTime(r.URL.Query(), "since")
+	since, err := parseTime("since", r.URL.Query().Get("since"))
 	if err != nil {
 		return err
 	}
-	until, err := queryTime(r.URL.Query(), "until")
+	until, err := parseTime("until", r.URL.Query().Get("until"))
 	if err != nil {
 		return err
 	}
@@ -51,9 +50,7 @@ func (s *Store) listUsage(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.NewList(usage, page, func(u Usage) server.Cursor {
-		return server.Cursor{CreatedAt: u.CreatedAt.Unix(), ID: u.ID}
-	}))
+	server.WriteJSON(w, http.StatusOK, server.NewList(usage, page, usageCursor))
 	return nil
 }
 
@@ -73,9 +70,8 @@ func (s *Store) addUsage(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// queryTime reads an optional RFC 3339 query parameter; absent is the zero time.
-func queryTime(q url.Values, name string) (time.Time, error) {
-	v := q.Get(name)
+// parseTime reads an optional RFC 3339 time; empty is the zero time.
+func parseTime(name, v string) (time.Time, error) {
 	if v == "" {
 		return time.Time{}, nil
 	}
