@@ -38,7 +38,7 @@ type Machine struct {
 
 	HasBackupSettings       bool
 	BackupSettingsCreatedAt time.Time
-	LastBackup              *Run      // the newest run of type backup; nil before the first
+	LastBackup              *Run      // the newest finished (completed or failed) backup run; nil before the first
 	LastCompletedBackup     time.Time // when the newest completed backup started; zero before the first
 }
 

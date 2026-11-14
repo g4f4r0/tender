@@ -38,6 +38,8 @@ func TestLoadMachines(t *testing.T) {
 	for _, h := range []backups.HistoryInput{
 		{Type: "backup", Status: "completed", CreatedAt: at.Add(-time.Hour)},
 		{Type: "backup", Status: "failed", Error: &failure, CreatedAt: at},
+		// A retry in progress doesn't hide the failure before it ends.
+		{Type: "backup", Status: "in_progress", CreatedAt: at.Add(time.Minute)},
 	} {
 		if _, err := bs.CreateHistory(ctx, 1, h); err != nil {
 			t.Fatal(err)

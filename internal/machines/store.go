@@ -233,6 +233,7 @@ func (in UsageInput) validate() error {
 const usageLifetime = 14 * 24 * time.Hour
 
 // PruneUsage deletes usage readings older than 14 days, now and then every day until ctx ends.
+// Each machine's newest reading is kept, so a long-silent machine still has a last seen.
 func (s *Store) PruneUsage(ctx context.Context, log *slog.Logger) {
 	tick := time.NewTicker(24 * time.Hour)
 	defer tick.Stop()
@@ -249,6 +250,10 @@ func (s *Store) PruneUsage(ctx context.Context, log *slog.Logger) {
 }
 
 func (s *Store) pruneUsage(ctx context.Context, now time.Time) error {
-	_, err := s.db.Write.ExecContext(ctx, `DELETE FROM machine_usage WHERE created_at < ?`, now.Add(-usageLifetime).Unix())
+	_, err := s.db.Write.ExecContext(ctx,
+		`DELETE FROM machine_usage WHERE created_at < ? AND id NOT IN (
+		   SELECT (SELECT id FROM machine_usage u WHERE u.machine_id = m.id ORDER BY created_at DESC, id DESC LIMIT 1)
+		   FROM machines m)`,
+		now.Add(-usageLifetime).Unix())
 	return err
 }

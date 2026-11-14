@@ -48,6 +48,10 @@ func loadMachines(ms *machines.Store, bs *backups.Store) func(context.Context) (
 		if err != nil {
 			return nil, err
 		}
+		finished, err := bs.LastFinished(ctx)
+		if err != nil {
+			return nil, err
+		}
 		byName := map[string]backups.Summary{}
 		for _, s := range summaries {
 			byName[s.Machine] = s
@@ -62,7 +66,7 @@ func loadMachines(ms *machines.Store, bs *backups.Store) func(context.Context) (
 			if s.Settings != nil {
 				m.HasBackupSettings, m.BackupSettingsCreatedAt = true, s.Settings.CreatedAt
 			}
-			if h := s.LastBackup; h != nil {
+			if h, ok := finished[o.Name]; ok {
 				m.LastBackup = &notifications.Run{Status: h.Status, Time: h.CreatedAt}
 				if h.Error != nil {
 					m.LastBackup.Error = *h.Error

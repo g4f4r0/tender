@@ -40,4 +40,22 @@ func TestPruneUsage(t *testing.T) {
 	if err := d.Read.QueryRow(`SELECT count(*) FROM machine_usage`).Scan(&kept); err != nil || kept != 2 {
 		t.Errorf("kept %d readings, %v, want the two from the last 14 days", kept, err)
 	}
+
+	// A machine silent for longer than 14 days keeps its newest reading, for last seen.
+	if _, err := s.Create(ctx, "b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, age := range []time.Duration{20 * 24 * time.Hour, 40 * 24 * time.Hour} {
+		if _, err := s.AddUsage(ctx, 2, UsageInput{CreatedAt: now.Add(-age)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.pruneUsage(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	var newest int64
+	if err := d.Read.QueryRow(`SELECT count(*), max(created_at) FROM machine_usage WHERE machine_id = 2`).Scan(&kept, &newest); err != nil ||
+		kept != 1 || newest != now.Add(-20*24*time.Hour).Unix() {
+		t.Errorf("silent machine kept %d readings, newest %d, %v; want only its 20-day-old one", kept, newest, err)
+	}
 }
