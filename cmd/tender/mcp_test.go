@@ -136,6 +136,10 @@ func errorText(res *sdk.CallToolResult) string {
 
 func TestToolsList(t *testing.T) {
 	cs := connect(t, seeded(t))
+	// No list-change notifications: they make clients hold a listen request open.
+	if caps := cs.InitializeResult().Capabilities; caps.Tools == nil || caps.Tools.ListChanged {
+		t.Errorf("tools capability = %+v, want tools without listChanged", caps.Tools)
+	}
 	list, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)

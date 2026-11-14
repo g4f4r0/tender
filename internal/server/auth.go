@@ -52,7 +52,9 @@ func (s *Server) wrap(h HandlerFunc, identify func(*http.Request) (int64, error)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), machineKey{}, id))
-		if key := r.Header.Get("Idempotency-Key"); key != "" && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
+		// Only agents write, so only their requests are made idempotent; readers' keys are ignored.
+		isAgent := r.Header.Get("Authorization") != ""
+		if key := r.Header.Get("Idempotency-Key"); isAgent && key != "" && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
 			s.once(w, r, id, key, h)
 			return
 		}

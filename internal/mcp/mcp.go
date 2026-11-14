@@ -22,8 +22,14 @@ type Server struct {
 // New returns a server with no tools.
 func New(version string, log *slog.Logger) *Server {
 	impl := &sdk.Implementation{Name: "tender", Title: "Tender", Version: version}
-	opts := &sdk.ServerOptions{Instructions: "Read-only state of the machines that run tender: usage, backups and notifications. " +
-		"Start with list_machines."}
+	opts := &sdk.ServerOptions{
+		Instructions: "Read-only state of the machines that run tender: usage, backups and notifications. " +
+			"Start with list_machines.",
+		// The tool list never changes, so don't offer list-change notifications. Offering them makes
+		// clients on the 2026-07-28 protocol hold a subscriptions/listen request open, which a
+		// stateless JSON server can't serve, and Claude Code waits about 25 s for it at startup.
+		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
+	}
 	return &Server{sdk: sdk.NewServer(impl, opts), log: log}
 }
 
