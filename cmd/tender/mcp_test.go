@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,10 +22,20 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/machines"
+	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+// testKey is the hub's encryption key in these tests: 32 bytes, 0 to 31.
+var testKey = func() []byte {
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = byte(i)
+	}
+	return k
+}()
 
 // seeded returns a database with two machines and data for the first:
 // g4f4r0-apps has nothing. g4f4r0-code has two readings, a destination and settings, two
@@ -33,7 +44,7 @@ func seeded(t *testing.T) *db.DB {
 	t.Helper()
 	d := schema(t)
 	ctx := context.Background()
-	ms, bs := machines.NewStore(d), backups.NewStore(d)
+	ms, bs := machines.NewStore(d), backups.NewStore(d, testKey)
 	for _, name := range []string{"g4f4r0-code", "g4f4r0-apps"} {
 		if _, err := ms.Create(ctx, name); err != nil {
 			t.Fatal(err)
@@ -47,7 +58,8 @@ func seeded(t *testing.T) *db.DB {
 			t.Fatal(err)
 		}
 	}
-	if _, err := bs.AddDestination(ctx, backups.Destination{Name: "r2-code", Type: "s3", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "b"}); err != nil {
+	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "b",
+		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bs.SetSettings(ctx, 1, "r2-code", "30 3 * * *", 30); err != nil {
@@ -79,12 +91,15 @@ func seeded(t *testing.T) *db.DB {
 }
 
 // connect connects a real MCP client to the tools over the SDK's in-memory transport.
-func connect(t *testing.T, d *db.DB) *sdk.ClientSession {
+func connect(t *testing.T, d *db.DB) *sdk.ClientSession { return connectSending(t, d, nil) }
+
+// connectSending is connect with send_test_email sending through sender.
+func connectSending(t *testing.T, d *db.DB, sender notifications.Sender) *sdk.ClientSession {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	st, ct := sdk.NewInMemoryTransports()
 	done := make(chan struct{})
-	go func() { _ = newTools(d, quiet).Run(ctx, st); close(done) }()
+	go func() { _ = newTools(d, testKey, sender, quiet).Run(ctx, st); close(done) }()
 	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -144,20 +159,41 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
+	reads := []string{"get_backup_status", "get_machine_usage", "list_backup_history", "list_backup_snapshots", "list_machines", "list_notifications", "list_recipients"}
+	// Per write tool: destructive, idempotent.
+	writes := map[string][2]bool{
+		"add_machine": {false, false}, "rotate_machine_token": {false, false}, "remove_machine": {true, true},
+		"add_destination": {false, false}, "update_destination": {false, true}, "remove_destination": {true, true},
+		"set_backup": {false, true}, "unset_backup": {true, true},
+		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
+	}
+	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
-		got = append(got, tool.Name)
 		a := tool.Annotations
-		if a == nil || !a.ReadOnlyHint || !a.IdempotentHint || a.OpenWorldHint == nil || *a.OpenWorldHint {
-			t.Errorf("%s annotations = %+v, want readOnly, idempotent, closed world", tool.Name, a)
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint {
+			t.Errorf("%s annotations = %+v, want closed world", tool.Name, a)
+			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {
 			t.Errorf("%s lacks a schema or a description", tool.Name)
 		}
+		if w, ok := writes[tool.Name]; ok {
+			gotWrites = append(gotWrites, tool.Name)
+			if a.ReadOnlyHint || a.DestructiveHint == nil || *a.DestructiveHint != w[0] || a.IdempotentHint != w[1] {
+				t.Errorf("%s annotations = %+v, want not read-only, destructive %v, idempotent %v", tool.Name, a, w[0], w[1])
+			}
+			continue
+		}
+		gotReads = append(gotReads, tool.Name)
+		if !a.ReadOnlyHint || !a.IdempotentHint {
+			t.Errorf("%s annotations = %+v, want readOnly and idempotent", tool.Name, a)
+		}
 	}
-	want := []string{"get_backup_status", "get_machine_usage", "list_backup_history", "list_backup_snapshots", "list_machines", "list_notifications"}
-	if !reflect.DeepEqual(slices.Sorted(slices.Values(got)), want) {
-		t.Errorf("tools = %v, want %v", got, want)
+	if !reflect.DeepEqual(slices.Sorted(slices.Values(gotReads)), reads) {
+		t.Errorf("read tools = %v, want %v", gotReads, reads)
+	}
+	if want := slices.Sorted(maps.Keys(writes)); !reflect.DeepEqual(slices.Sorted(slices.Values(gotWrites)), want) {
+		t.Errorf("write tools = %v, want %v", gotWrites, want)
 	}
 }
 
@@ -178,7 +214,7 @@ func restJSON(t *testing.T, h http.Handler, path string) any {
 // The tools and the REST routes read through the same store methods, so they answer alike.
 func TestToolsMatchREST(t *testing.T) {
 	d := seeded(t)
-	cs, rest := connect(t, d), newHub(d, quiet)
+	cs, rest := connect(t, d), newHub(d, testKey, nil, quiet)
 	for _, c := range []struct {
 		tool string
 		args map[string]any
@@ -386,16 +422,12 @@ func post(t *testing.T, srv *httptest.Server, login bool, body string) (*http.Re
 }
 
 func TestMCPOverHTTP(t *testing.T) {
-	srv := httptest.NewServer(newHub(seeded(t), quiet))
+	srv := httptest.NewServer(newHub(seeded(t), testKey, nil, quiet))
 	t.Cleanup(srv.Close)
 
 	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}`
+	// No login: the hub is reached through the owner's own network access control.
 	res, body := post(t, srv, false, initialize)
-	if res.StatusCode != 401 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/problem+json") {
-		t.Errorf("without the reader header: %d %s %s, want 401 problem+json", res.StatusCode, res.Header.Get("Content-Type"), body)
-	}
-
-	res, body = post(t, srv, true, initialize)
 	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") ||
 		!strings.Contains(body, `"serverInfo":{"name":"tender"`) {
 		t.Fatalf("initialize: %d %s %s", res.StatusCode, res.Header.Get("Content-Type"), body)

@@ -51,7 +51,7 @@ func (s *Store) Create(ctx context.Context, name string) (string, error) {
 	if n, err := res.RowsAffected(); err != nil {
 		return "", err
 	} else if n == 0 {
-		return "", server.Conflict("Machine %q already exists.", name)
+		return "", server.Conflict("Machine %q already exists. Choose another name, or rotate its token to get a new one.", name)
 	}
 	return token, nil
 }
@@ -73,6 +73,21 @@ func (s *Store) RotateToken(ctx context.Context, name string) (string, error) {
 		return "", server.NotFound("Machine %q doesn't exist.", name)
 	}
 	return token, nil
+}
+
+// Delete removes a machine and, with it, its usage, backup settings, snapshots, history and
+// notifications. Its token stops working at once.
+func (s *Store) Delete(ctx context.Context, name string) error {
+	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM machines WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return server.NotFound("Machine %q doesn't exist.", name)
+	}
+	return nil
 }
 
 // Authenticate returns the machine that owns token. It compares every stored hash in constant time.

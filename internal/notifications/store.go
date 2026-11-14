@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
+	"net/mail"
 	"slices"
 	"time"
 
@@ -12,7 +14,7 @@ import (
 	"github.com/g4f4r0/tender/internal/server"
 )
 
-// Store reads notifications.
+// Store reads notifications and keeps the recipients.
 type Store struct{ db *db.DB }
 
 // NewStore returns a store on d.
@@ -133,4 +135,97 @@ func (s *Store) changeSeverity(ctx context.Context, n Notification, f finding, n
 func (s *Store) setStatus(ctx context.Context, id int64, status string, now time.Time) error {
 	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET status = ?, updated_at = ? WHERE id = ?`, status, now.Unix(), id)
 	return err
+}
+
+// Recipients
+
+func scanRecipient(row scanner) (Recipient, error) {
+	var r Recipient
+	var created, updated int64
+	err := row.Scan(&r.ID, &r.Email, &created, &updated)
+	r.CreatedAt, r.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
+	return r, err
+}
+
+// Recipients returns everyone who gets alert emails, in the order they were added.
+func (s *Store) Recipients(ctx context.Context) ([]Recipient, error) {
+	rows, err := s.db.Read.QueryContext(ctx, `SELECT id, email, created_at, updated_at FROM notification_recipients ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Recipient{}
+	for rows.Next() {
+		r, err := scanRecipient(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// emails lists the recipients' addresses; none is nil.
+func (s *Store) emails(ctx context.Context) ([]string, error) {
+	rs, err := s.Recipients(ctx)
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.Email)
+	}
+	return out, err
+}
+
+// AddRecipient adds an address that gets every alert. It must be a bare address, like
+// alerts@example.com, not "Name <alerts@example.com>".
+func (s *Store) AddRecipient(ctx context.Context, email string) (Recipient, error) {
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
+		return Recipient{}, server.Invalid("email must be a bare address such as alerts@example.com.")
+	}
+	now := time.Now().Unix()
+	r, err := scanRecipient(s.db.Write.QueryRowContext(ctx,
+		`INSERT INTO notification_recipients (email, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING
+		 RETURNING id, email, created_at, updated_at`, email, now, now))
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, server.Conflict("%s is already a recipient.", email)
+	}
+	return r, err
+}
+
+// DeleteRecipient removes a recipient by id.
+func (s *Store) DeleteRecipient(ctx context.Context, id int64) error {
+	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM notification_recipients WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return server.NotFound("Recipient %d doesn't exist. List the recipients to see their ids.", id)
+	}
+	return nil
+}
+
+// SendTest emails the test message to every recipient and returns who got it. It is a 422 when
+// email is off or nobody is a recipient, with the sentence that says what to do.
+func (s *Store) SendTest(ctx context.Context, sender Sender, hub string) (TestResult, error) {
+	if sender == nil {
+		return TestResult{}, server.Invalid("Email is off on this hub. Set TENDER_SMTP_HOST and TENDER_SMTP_FROM in /etc/tender/hub.env and restart the hub.")
+	}
+	to, err := s.emails(ctx)
+	if err != nil {
+		return TestResult{}, err
+	}
+	if len(to) == 0 {
+		return TestResult{}, server.Invalid("There are no recipients to send to. Add one first, such as alerts@example.com.")
+	}
+	msg, err := TestMessage(hub)
+	if err != nil {
+		return TestResult{}, err
+	}
+	if err := sender.Send(ctx, to, msg); err != nil {
+		return TestResult{}, &server.Error{Status: http.StatusBadGateway,
+			Detail: "The hub couldn't send the email: " + err.Error() + ". Check the TENDER_SMTP_ settings in /etc/tender/hub.env."}
+	}
+	return TestResult{SentTo: to}, nil
 }

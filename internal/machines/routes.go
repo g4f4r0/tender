@@ -9,9 +9,12 @@ import (
 
 // Routes registers the machines REST routes on srv.
 func (s *Store) Routes(srv *server.Server) {
-	srv.Handle("GET /v1/machines", srv.Reader(s.list))
-	srv.Handle("GET /v1/machines/{machine}", srv.Reader(s.get))
-	srv.Handle("GET /v1/machines/{machine}/usage", srv.Reader(s.listUsage))
+	srv.Handle("GET /v1/machines", srv.People(s.list))
+	srv.Handle("POST /v1/machines", srv.People(s.create))
+	srv.Handle("GET /v1/machines/{machine}", srv.People(s.get))
+	srv.Handle("DELETE /v1/machines/{machine}", srv.People(s.remove))
+	srv.Handle("POST /v1/machines/{machine}/token", srv.People(s.rotateToken))
+	srv.Handle("GET /v1/machines/{machine}/usage", srv.People(s.listUsage))
 	srv.Handle("POST /v1/machines/{machine}/usage", srv.Agent(s.addUsage))
 }
 
@@ -21,6 +24,41 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	server.WriteJSON(w, http.StatusOK, server.List[Overview]{Data: machines})
+	return nil
+}
+
+func (s *Store) create(w http.ResponseWriter, r *http.Request) error {
+	var in MachineInput
+	if err := server.Decode(w, r, &in); err != nil {
+		return err
+	}
+	token, err := s.Create(r.Context(), in.Name)
+	if err != nil {
+		return err
+	}
+	o, err := s.Get(r.Context(), in.Name)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Location", "/v1/machines/"+in.Name)
+	server.WriteJSON(w, http.StatusCreated, MachineCreated{Machine: o.Machine, Token: token})
+	return nil
+}
+
+func (s *Store) rotateToken(w http.ResponseWriter, r *http.Request) error {
+	token, err := s.RotateToken(r.Context(), r.PathValue("machine"))
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, Token{Token: token})
+	return nil
+}
+
+func (s *Store) remove(w http.ResponseWriter, r *http.Request) error {
+	if err := s.Delete(r.Context(), r.PathValue("machine")); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 

@@ -1,5 +1,6 @@
-// Package mcp serves the hub's read-only tools to AI clients over MCP. It is the only package
-// that imports the MCP SDK; domains register their tools here and never see the protocol.
+// Package mcp serves the hub's tools to AI clients over MCP: read tools for its state and write
+// tools for the same changes the REST API makes. It is the only package that imports the MCP SDK;
+// domains register their tools here and never see the protocol.
 package mcp
 
 import (
@@ -23,8 +24,10 @@ type Server struct {
 func New(version string, log *slog.Logger) *Server {
 	impl := &sdk.Implementation{Name: "tender", Title: "Tender", Version: version}
 	opts := &sdk.ServerOptions{
-		Instructions: "Read-only state of the machines that run Tender: usage, backups and notifications. " +
-			"Start with list_machines.",
+		Instructions: "The machines that run Tender: their usage, backups and notifications, and the tools to manage them: " +
+			"machines, backup destinations and settings, and alert recipients. Start with list_machines. " +
+			"Secrets you pass to a tool go through this conversation; for real keys the owner is safer typing them into " +
+			"\"tender destinations add\".",
 		// The tool list never changes, so don't offer list-change notifications. Offering them makes
 		// clients on the 2026-07-28 protocol hold a subscriptions/listen request open, which a
 		// stateless JSON server can't serve, and Claude Code waits about 25 s for it at startup.
@@ -44,6 +47,36 @@ func AddReadOnly[In, Out any](s *Server, name, title, description string, h func
 		Title:       title,
 		Description: description,
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closed},
+	}
+	sdk.AddTool(s.sdk, tool, func(ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
+		out, err := h(ctx, in)
+		return nil, out, s.clientError(name, err)
+	})
+}
+
+// Removed is the result of a tool that deletes something.
+type Removed struct {
+	Removed string `json:"removed" jsonschema:"what was removed"`
+}
+
+// WriteOptions say how a write tool behaves, for the client to decide whether to ask first.
+type WriteOptions struct {
+	Destructive bool // deletes data or access: removing a machine, a destination, settings or a recipient
+	Idempotent  bool // calling it again with the same input changes nothing more
+}
+
+// AddWrite adds a tool that changes the hub's state, through the same store method as the REST
+// route of the same change. In and Out are structs, as for AddReadOnly. Write tools never reach
+// outside the hub, so openWorldHint is false; destructiveHint is set to what o says, because a
+// client assumes true when it is left out.
+func AddWrite[In, Out any](s *Server, name, title, description string, o WriteOptions, h func(context.Context, In) (Out, error)) {
+	closed := false
+	destructive := o.Destructive
+	tool := &sdk.Tool{
+		Name:        name,
+		Title:       title,
+		Description: description,
+		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: o.Idempotent, OpenWorldHint: &closed},
 	}
 	sdk.AddTool(s.sdk, tool, func(ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
 		out, err := h(ctx, in)

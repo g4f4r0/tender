@@ -289,7 +289,99 @@ func TestOverview(t *testing.T) {
 	if err := res.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 401 {
-		t.Errorf("reader route without the header: %d, want 401", res.StatusCode)
+	if res.StatusCode != 200 {
+		t.Errorf("people route without the Tailscale header: %d, want 200", res.StatusCode)
+	}
+}
+
+func TestCreateMachineRoute(t *testing.T) {
+	h := newHub(t)
+
+	var created machines.MachineCreated
+	res := h.do("POST", "/v1/machines", "", machines.MachineInput{Name: "g4f4r0-code"}, &created)
+	if res.StatusCode != 201 || created.Name != "g4f4r0-code" || created.ID == 0 || created.CreatedAt.IsZero() || len(created.Token) != 43 {
+		t.Fatalf("POST /v1/machines: %d %+v, want 201 with the machine and a 43 character token", res.StatusCode, created)
+	}
+	if loc := res.Header.Get("Location"); loc != "/v1/machines/g4f4r0-code" {
+		t.Errorf("Location = %q", loc)
+	}
+	// The token is the machine's own, and no other response shows it.
+	if res := h.do("POST", "/v1/machines/g4f4r0-code/usage", created.Token, reading(time.Now().UTC(), 1), nil); res.StatusCode != 201 {
+		t.Errorf("the new token: %d, want 201", res.StatusCode)
+	}
+	for _, path := range []string{"/v1/machines", "/v1/machines/g4f4r0-code"} {
+		var raw json.RawMessage
+		h.do("GET", path, "", nil, &raw)
+		if bytes.Contains(raw, []byte(created.Token)) || bytes.Contains(raw, []byte("token")) {
+			t.Errorf("GET %s shows a token: %s", path, raw)
+		}
+	}
+
+	var problem struct{ Detail string }
+	if res := h.do("POST", "/v1/machines", "", machines.MachineInput{Name: "g4f4r0-code"}, &problem); res.StatusCode != 409 || !strings.Contains(problem.Detail, "rotate") {
+		t.Errorf("duplicate: %d %q, want 409 that says what to do", res.StatusCode, problem.Detail)
+	}
+	for _, bad := range []string{"", "Has Caps", "has/slash"} {
+		if res := h.do("POST", "/v1/machines", "", machines.MachineInput{Name: bad}, nil); res.StatusCode != 422 {
+			t.Errorf("name %q: %d, want 422", bad, res.StatusCode)
+		}
+	}
+	if res := h.do("POST", "/v1/machines", "", map[string]any{"name": "x", "token": "mine"}, nil); res.StatusCode != 400 {
+		t.Errorf("unknown field: %d, want 400", res.StatusCode)
+	}
+	if res := h.do("POST", "/v1/machines", "", map[string]any{"name": 5}, nil); res.StatusCode != 422 {
+		t.Errorf("name of the wrong type: %d, want 422", res.StatusCode)
+	}
+}
+
+func TestRotateTokenRoute(t *testing.T) {
+	h := newHub(t)
+	old := h.add("a")
+	other := h.add("b")
+
+	var fresh machines.Token
+	if res := h.do("POST", "/v1/machines/a/token", "", nil, &fresh); res.StatusCode != 200 || len(fresh.Token) != 43 || fresh.Token == old {
+		t.Fatalf("rotate: %d %+v, want 200 and a new token", res.StatusCode, fresh)
+	}
+	if res := h.do("POST", "/v1/machines/a/usage", old, reading(time.Now().UTC(), 1), nil); res.StatusCode != 401 {
+		t.Errorf("old token: %d, want 401", res.StatusCode)
+	}
+	if res := h.do("POST", "/v1/machines/a/usage", fresh.Token, reading(time.Now().UTC(), 1), nil); res.StatusCode != 201 {
+		t.Errorf("new token: %d, want 201", res.StatusCode)
+	}
+	if res := h.do("POST", "/v1/machines/b/usage", other, reading(time.Now().UTC(), 1), nil); res.StatusCode != 201 {
+		t.Errorf("another machine's token changed: %d, want 201", res.StatusCode)
+	}
+	if res := h.do("POST", "/v1/machines/nope/token", "", nil, nil); res.StatusCode != 404 {
+		t.Errorf("unknown machine: %d, want 404", res.StatusCode)
+	}
+}
+
+func TestDeleteMachineRoute(t *testing.T) {
+	h := newHub(t)
+	token := h.add("a")
+	h.add("b")
+	h.do("POST", "/v1/machines/a/usage", token, reading(time.Now().UTC(), 1), nil)
+
+	if res := h.do("DELETE", "/v1/machines/a", "", nil, nil); res.StatusCode != 204 {
+		t.Fatalf("delete: %d, want 204", res.StatusCode)
+	}
+	if res := h.do("GET", "/v1/machines/a", "", nil, nil); res.StatusCode != 404 {
+		t.Errorf("deleted machine: %d, want 404", res.StatusCode)
+	}
+	if res := h.do("POST", "/v1/machines/a/usage", token, reading(time.Now().UTC(), 1), nil); res.StatusCode != 404 && res.StatusCode != 401 {
+		t.Errorf("deleted machine's token: %d, want it refused", res.StatusCode)
+	}
+	var n int
+	if err := h.db.Read.QueryRow(`SELECT count(*) FROM machine_usage`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d readings left after the delete, %v; want the cascade to remove them", n, err)
+	}
+	var list server.List[machines.Overview]
+	h.do("GET", "/v1/machines", "", nil, &list)
+	if len(list.Data) != 1 || list.Data[0].Name != "b" {
+		t.Errorf("machines after the delete = %+v, want only b", list.Data)
+	}
+	if res := h.do("DELETE", "/v1/machines/a", "", nil, nil); res.StatusCode != 404 {
+		t.Errorf("second delete: %d, want 404", res.StatusCode)
 	}
 }
