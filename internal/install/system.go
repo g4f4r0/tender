@@ -39,8 +39,9 @@ func (in *Installer) mountPaths(ctx context.Context) ([]string, error) {
 	return paths, nil
 }
 
-// serve publishes the hub on this node's Tailscale HTTPS port 443, unless something else already uses it.
-func (in *Installer) serve(ctx context.Context, target string) {
+// serve publishes the hub on this node's Tailscale HTTPS port 443, unless something else already
+// uses it. It returns the hub's URL when it is known, and whether this run published it.
+func (in *Installer) serve(ctx context.Context, target string) (url string, published bool) {
 	command := "tailscale serve --bg --https=443 " + target
 	out, err := in.Run(ctx, "tailscale", "serve", "status", "--json")
 	var status struct {
@@ -53,20 +54,22 @@ func (in *Installer) serve(ctx context.Context, target string) {
 		err = json.Unmarshal(out, &status)
 	}
 	if err != nil {
-		in.say("\nTailscale did not answer (%v). When it is up, run: %s", err, command)
-		return
+		in.say("Could not publish the hub: Tailscale did not answer (%v). When Tailscale is up, run: %s", err, command)
+		return "", false
 	}
 	switch {
 	case status.TCP["443"] == nil:
 		if _, err := in.run(ctx, "tailscale", "serve", "--bg", "--https=443", target); err != nil {
-			in.say("\nTailscale Serve failed (%v). Run: %s", err, command)
-			return
+			in.say("Could not publish the hub: Tailscale Serve failed (%v). Run: %s", err, command)
+			return "", false
 		}
+		published = true
 	case servesTarget(status.Web, target):
-		in.say("\nTailscale Serve already publishes %s on 443.", target)
 	default:
-		in.say("\nTailscale port 443 on this node already serves something else, so tender left it alone.\nTo publish the hub there, run: %s", command)
-		return
+		if !in.Refreshing { // a refresh would repeat this on every update
+			in.say("Tailscale port 443 on this node already serves something else, so tender left it alone. To publish the hub there, run: %s", command)
+		}
+		return "", false
 	}
 	out, err = in.Run(ctx, "tailscale", "status", "--json")
 	var self struct{ Self struct{ DNSName string } }
@@ -74,10 +77,16 @@ func (in *Installer) serve(ctx context.Context, target string) {
 		err = json.Unmarshal(out, &self)
 	}
 	if err != nil || self.Self.DNSName == "" {
-		in.say("\nThe hub is published, but its name is unknown: see tailscale status.")
-		return
+		if published {
+			in.say("Published the hub with Tailscale Serve. Its name is unknown: see \"tailscale status\".")
+		}
+		return "", published
 	}
-	in.say("\nHub URL: https://%s", strings.TrimSuffix(self.Self.DNSName, "."))
+	url = "https://" + strings.TrimSuffix(self.Self.DNSName, ".")
+	if published {
+		in.say("Published the hub with Tailscale Serve at %s", url)
+	}
+	return url, published
 }
 
 func servesTarget(web map[string]struct {

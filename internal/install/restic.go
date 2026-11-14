@@ -38,46 +38,57 @@ func (in *Installer) installRestic(ctx context.Context) error {
 	if have, err := os.ReadFile(in.path(resticPath)); err == nil && sum(have) == in.ResticBinarySHA256 {
 		return nil
 	}
+	in.say("Installing restic %s", resticVersion)
 	archive, err := in.download(ctx)
 	if err != nil {
 		return err
 	}
 	if got := sum(archive); got != in.ResticArchiveSHA256 {
-		return fmt.Errorf("restic download has SHA-256 %s, want %s: nothing was installed", got, in.ResticArchiveSHA256)
+		return fmt.Errorf("the restic download failed its SHA-256 check (got %s, want %s), so nothing was installed. Try again, and report it at %s if it repeats", got, in.ResticArchiveSHA256, issuesURL)
 	}
 	bin, err := io.ReadAll(io.LimitReader(bzip2.NewReader(bytes.NewReader(archive)), maxBinaryBytes+1))
 	if err != nil {
-		return fmt.Errorf("decompress restic: %w", err)
+		return fmt.Errorf("cannot decompress the restic download, so nothing was installed. Try again: %w", err)
 	}
 	if len(bin) > maxBinaryBytes {
-		return errors.New("restic decompresses to more than 256 MB: nothing was installed")
+		return errors.New("the restic download decompresses to more than 256 MB, so nothing was installed. Report it at " + issuesURL)
 	}
 	if got := sum(bin); got != in.ResticBinarySHA256 {
-		return fmt.Errorf("decompressed restic has SHA-256 %s, want %s: nothing was installed", got, in.ResticBinarySHA256)
+		return fmt.Errorf("the decompressed restic failed its SHA-256 check (got %s, want %s), so nothing was installed. Try again, and report it at %s if it repeats", got, in.ResticBinarySHA256, issuesURL)
 	}
 	_, err = in.write(ctx, resticPath, bin, 0o755, "")
 	return err
 }
 
 func (in *Installer) download(ctx context.Context) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, in.ResticURL, nil)
+	b, err := get(ctx, in.ResticURL, maxArchiveBytes)
+	if err != nil {
+		return nil, fmt.Errorf("cannot download restic. Check this machine's internet access and run the command again: %w", err)
+	}
+	return b, nil
+}
+
+// get downloads url over HTTP(S) and refuses an answer larger than limit bytes.
+func get(ctx context.Context, url string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", "tender")
 	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download restic: %w", err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download restic: %s", resp.Status)
+		return nil, fmt.Errorf("%s answered %s", url, resp.Status)
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxArchiveBytes+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("download restic: %w", err)
+		return nil, err
 	}
-	if len(b) > maxArchiveBytes {
-		return nil, errors.New("download restic: more than 64 MB")
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%s is larger than %d MB", url, limit>>20)
 	}
 	return b, nil
 }

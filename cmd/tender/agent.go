@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -19,11 +18,16 @@ import (
 )
 
 func runAgent(args []string, log *slog.Logger) error {
-	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
-	configPath := fs.String("config", config.DefaultAgentPath, "agent config file")
-	state := fs.String("state", defaultState(), "folder for the agent's state")
-	if err := fs.Parse(args); err != nil {
+	fs := newFlagSet("agent", "[--config PATH] [--state PATH]",
+		"Run the agent: it backs up this machine on the schedule the hub sets and reports every run to the hub. "+
+			"Run it as a service; \"sudo tender install agent\" sets that up.")
+	configPath := fs.String("config", config.DefaultAgentPath, "`PATH` the agent config file")
+	state := fs.String("state", defaultState(), "`PATH` the folder for the agent's state")
+	if err := parseFlags(fs, args, os.Stdout); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "agent takes no arguments, got %q", fs.Arg(0))
 	}
 
 	cfg, err := config.LoadAgent(*configPath)

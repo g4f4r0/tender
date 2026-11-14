@@ -48,18 +48,21 @@ func LoadHub(path string) (Hub, error) {
 		if !explicit && errors.Is(err, fs.ErrNotExist) {
 			return h, nil
 		}
-		return Hub{}, fmt.Errorf("read config %s: %w", path, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			return Hub{}, fmt.Errorf("there is no hub config at %s. Check the path passed to --config: %w", path, err)
+		}
+		return Hub{}, fmt.Errorf("cannot read config %s. Fix its TOML syntax and check that you can read it: %w", path, err)
 	}
 	if keys := md.Undecoded(); len(keys) > 0 {
 		names := make([]string, len(keys))
 		for i, k := range keys {
 			names[i] = k.String()
 		}
-		return Hub{}, fmt.Errorf("config %s: unknown keys: %s", path, strings.Join(names, ", "))
+		return Hub{}, fmt.Errorf("config %s: unknown keys: %s. Fix the spelling or remove them", path, strings.Join(names, ", "))
 	}
 	if h.Email != nil {
 		if err := h.Email.validate(); err != nil {
-			return Hub{}, fmt.Errorf("config %s: [email] %w", path, err)
+			return Hub{}, fmt.Errorf("config %s: [email] %w. Fix it and start the hub again", path, err)
 		}
 	}
 	return h, nil

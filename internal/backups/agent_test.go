@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,6 +176,34 @@ func testAgent(t *testing.T, h *hub) (*Agent, *stubRunner) {
 	now := time.Date(2026, 11, 14, 4, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return now }
 	return a, stub
+}
+
+// Right after "tender install agent" the destination's keys aren't saved yet. The agent waits for
+// them instead of recording a failed backup, and backs up as soon as they're there.
+func TestWaitsForCredentials(t *testing.T) {
+	h := newHub(t)
+	a, stub := testAgent(t, h)
+	ctx := context.Background()
+	a.refreshSettings(ctx)
+	h.seen()
+
+	a.CredentialsDir = t.TempDir()
+	a.newRunner = a.newRestic // the real one, which reads the credential files
+	a.runDue(ctx)
+	a.runDue(ctx)
+	if got := routes(h.seen()); len(got) != 0 || len(stub.calls) != 0 {
+		t.Fatalf("without credentials: requests %v, restic calls %v; want none", got, stub.calls)
+	}
+	st, err := loadState(filepath.Join(a.StateDir, "agent-state.json"))
+	if err != nil || !st.LastBackup.IsZero() {
+		t.Fatalf("last backup = %v, %v; want still due", st.LastBackup, err)
+	}
+
+	a.newRunner = func(Settings) (Runner, error) { return stub, nil } // the keys are saved now
+	a.runDue(ctx)
+	if !strings.HasPrefix(strings.Join(stub.calls, ","), "backup") {
+		t.Errorf("after the keys arrived, restic calls = %v, want a backup", stub.calls)
+	}
 }
 
 func TestOnlineFlow(t *testing.T) {
@@ -434,6 +463,17 @@ func TestFailedBackupIsReportedAndSkipsCleanup(t *testing.T) {
 	}
 }
 
+// stopDuringBackup stops the agent while restic is backing up, like a SIGTERM would.
+type stopDuringBackup struct {
+	*stubRunner
+	stop func()
+}
+
+func (s stopDuringBackup) Backup(ctx context.Context, paths, exclude []string) Outcome {
+	s.stop()
+	return s.stubRunner.Backup(ctx, paths, exclude)
+}
+
 func TestStoppedRunIsReportedAndRunsAgainOnNextStart(t *testing.T) {
 	h := newHub(t)
 	a, stub := testAgent(t, h)
@@ -441,7 +481,8 @@ func TestStoppedRunIsReportedAndRunsAgainOnNextStart(t *testing.T) {
 	a.refreshSettings(ctx)
 	h.seen()
 	stub.backup = Outcome{Status: StatusFailed, Error: "Fatal: unable to save snapshot: context canceled"}
-	a.newRunner = func(Settings) (Runner, error) { cancel(); return stub, nil } // SIGTERM arrives during the run
+	stopping := stopDuringBackup{stubRunner: stub, stop: cancel} // SIGTERM arrives during the run
+	a.newRunner = func(Settings) (Runner, error) { return stopping, nil }
 	a.runDue(ctx)
 
 	patched := false

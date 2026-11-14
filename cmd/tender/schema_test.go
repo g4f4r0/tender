@@ -93,7 +93,7 @@ func TestSchemaConstraints(t *testing.T) {
 	d := schema(t)
 	must(t, d, `INSERT INTO machines (id, name, token_hash, created_at, updated_at) VALUES (1, 'g4f4r0-apps', x'00', 1, 1)`)
 	must(t, d, `INSERT INTO backup_destinations (id, name, type, endpoint, bucket, created_at, updated_at)
-	            VALUES (1, 'r2-apps', 's3', 'https://example.r2.cloudflarestorage.com', 'g4f4r0-backups-apps', 1, 1)`)
+	            VALUES (1, 'r2', 's3', 'https://example.r2.cloudflarestorage.com', 'g4f4r0-backups-apps', 1, 1)`)
 
 	bad := map[string]string{
 		"STRICT rejects text in an integer column": `INSERT INTO machine_usage (machine_id, uptime_seconds, created_at, updated_at) VALUES (1, 'soon', 1, 1)`,

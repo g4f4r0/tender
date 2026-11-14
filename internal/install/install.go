@@ -49,6 +49,12 @@ type Installer struct {
 	ResticArchiveSHA256 string // of the downloaded .bz2
 	ResticBinarySHA256  string // of the decompressed restic
 
+	Version     string // the running tender version, "dev" for a local build
+	LatestURL   string // answers with the newest release as JSON, including its tag_name
+	DownloadURL string // holds the releases: <DownloadURL>/<tag>/<file>
+
+	Refreshing bool // refresh the installed services: restart them whatever changed, skip the next steps
+
 	changed bool // some file changed during this run
 }
 
@@ -61,6 +67,7 @@ func New(out io.Writer) (*Installer, error) {
 	return &Installer{
 		Root: "/", Run: execRunner, Out: out, Platform: runtime.GOOS + "/" + runtime.GOARCH, Binary: self,
 		ResticURL: resticURL, ResticArchiveSHA256: resticArchiveSHA256, ResticBinarySHA256: resticBinarySHA256,
+		Version: "dev", LatestURL: latestURL, DownloadURL: downloadURL,
 	}, nil
 }
 
@@ -90,10 +97,10 @@ func (in *Installer) run(ctx context.Context, name string, args ...string) ([]by
 // preflight stops early on a machine that cannot run the units. Being root is checked by the caller.
 func (in *Installer) preflight() error {
 	if in.Platform != "linux/amd64" {
-		return fmt.Errorf("tender installs the pinned restic %s for linux/amd64 only; this machine is %s", resticVersion, in.Platform)
+		return fmt.Errorf("tender installs on linux/amd64 only, and this machine is %s. Run the install on a 64-bit x86 Linux server", in.Platform)
 	}
 	if fi, err := os.Stat(in.path("/run/systemd/system")); err != nil || !fi.IsDir() {
-		return errors.New("systemd is not running on this machine; tender install needs it")
+		return errors.New("systemd is not running on this machine, and tender runs its services with it. Use a Linux server that boots with systemd")
 	}
 	return nil
 }
@@ -128,8 +135,16 @@ func (in *Installer) write(ctx context.Context, path string, data []byte, mode o
 			return true, err
 		}
 	}
-	in.say("wrote %s", full)
 	return true, nil
+}
+
+// writeSaying is write, and says what happened when it changed the file.
+func (in *Installer) writeSaying(ctx context.Context, path string, data []byte, mode os.FileMode, group, what string) (bool, error) {
+	changed, err := in.write(ctx, path, data, mode, group)
+	if err == nil && changed {
+		in.say("%s", what)
+	}
+	return changed, err
 }
 
 // ensureDir creates path with this mode and the group, unless it is already a directory with that mode.
@@ -158,13 +173,13 @@ func (in *Installer) prepare(ctx context.Context) error {
 			"--home-dir", stateParent, "--shell", "/usr/sbin/nologin", userName); err != nil {
 			return err
 		}
-		in.say("created user %s", userName)
+		in.say("Created the %s user", userName)
 	}
 	self, err := os.ReadFile(in.Binary)
 	if err != nil {
 		return err
 	}
-	if _, err := in.write(ctx, binaryPath, self, 0o755, ""); err != nil {
+	if _, err := in.writeSaying(ctx, binaryPath, self, 0o755, "", "Installed tender at "+in.path(binaryPath)); err != nil {
 		return err
 	}
 	if err := in.ensureDir(ctx, etcDir, 0o755, ""); err != nil {
@@ -173,13 +188,16 @@ func (in *Installer) prepare(ctx context.Context) error {
 	return in.ensureDir(ctx, credentialDir, 0o750, userName)
 }
 
-// writeConfig writes the rendered config. No data means the file exists and stays.
-func (in *Installer) writeConfig(ctx context.Context, path string, data []byte) error {
+// writeConfig writes the rendered config. No data means the file exists and stays; that is worth
+// a line only when the person passed settings that the kept file now ignores.
+func (in *Installer) writeConfig(ctx context.Context, path string, data []byte, passedSettings bool) error {
 	if data == nil {
-		in.say("kept %s (--force replaces it)", in.path(path))
+		if passedSettings {
+			in.say("Kept the existing %s. Add --force to replace it.", in.path(path))
+		}
 		return nil
 	}
-	_, err := in.write(ctx, path, data, 0o644, "")
+	_, err := in.writeSaying(ctx, path, data, 0o644, "", "Wrote "+in.path(path))
 	return err
 }
 
@@ -213,9 +231,14 @@ func (in *Installer) enable(ctx context.Context, unit string, unitChanged, exist
 	if _, err := in.run(ctx, "systemctl", "enable", "--now", unit); err != nil {
 		return err
 	}
-	if in.changed && existed {
-		_, err := in.run(ctx, "systemctl", "restart", unit)
-		return err
+	if !existed {
+		in.say("Started %s", unit)
+	}
+	if (in.changed || in.Refreshing) && existed {
+		if _, err := in.run(ctx, "systemctl", "restart", unit); err != nil {
+			return err
+		}
+		in.say("Restarted %s", unit)
 	}
 	return nil
 }
@@ -227,10 +250,10 @@ var credentialName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 // smtp-password to an installed hub rewrites its unit and restarts it.
 func (in *Installer) Credential(ctx context.Context, name, value string) error {
 	if !credentialName.MatchString(name) {
-		return fmt.Errorf("credential name %q: use lower-case letters, digits, dots and dashes, starting with a letter or digit", name)
+		return fmt.Errorf("credential name %q is not valid. Use lower-case letters, digits, dots and dashes, starting with a letter or digit", name)
 	}
 	if value == "" {
-		return errors.New("the credential value is empty")
+		return errors.New("the credential value is empty. Pipe it in, for example: sudo tender install credential NAME < FILE")
 	}
 	if err := in.ensureDir(ctx, etcDir, 0o755, ""); err != nil {
 		return err
@@ -239,8 +262,12 @@ func (in *Installer) Credential(ctx context.Context, name, value string) error {
 		return err
 	}
 	in.changed = false
-	if _, err := in.write(ctx, filepath.Join(credentialDir, name), []byte(value), 0o640, userName); err != nil {
+	if changed, err := in.write(ctx, filepath.Join(credentialDir, name), []byte(value), 0o640, userName); err != nil {
 		return err
+	} else if changed {
+		in.say("Saved credential %s", name)
+	} else {
+		in.say("Credential %s already has this value. Nothing to change.", name)
 	}
 	if name != "smtp-password" {
 		return nil
@@ -259,7 +286,10 @@ func (in *Installer) Credential(ctx context.Context, name, value string) error {
 	return in.enable(ctx, "tender-hub", unitChanged, true)
 }
 
-const hubUnitPath = unitDir + "/tender-hub.service"
+const (
+	agentUnitPath = unitDir + "/tender-agent.service"
+	hubUnitPath   = unitDir + "/tender-hub.service"
+)
 
 // hubUnit is the hub's unit file. systemd fails a unit whose LoadCredential path is missing, so
 // the smtp-password line goes in only when the file exists.
@@ -288,11 +318,14 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	}
 	tokenPath := filepath.Join(credentialDir, "hub-token")
 	if _, err := os.Stat(in.path(tokenPath)); o.Token == "" && err != nil {
-		return errors.New("no hub token: pass it on stdin or with --token-file")
+		return errors.New("this machine has no hub token yet. Create one with \"tender hub add-machine NAME\" on the hub, then pass it with --token-file PATH or pipe it in on stdin")
 	}
 	const configPath = etcDir + "/agent.toml"
 	var cfg []byte
 	if _, err := os.Stat(in.path(configPath)); err != nil || o.Force {
+		if o.Hub == "" || o.Machine == "" {
+			return errors.New("this machine has no agent config yet. Pass --hub URL and --machine NAME")
+		}
 		paths, err := in.mountPaths(ctx)
 		if err != nil {
 			return err
@@ -309,7 +342,7 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	if err != nil {
 		return err
 	}
-	unitPath := filepath.Join(unitDir, "tender-agent.service")
+	unitPath := agentUnitPath
 	_, statErr := os.Stat(in.path(unitPath))
 	existed := statErr == nil
 
@@ -320,23 +353,54 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	if err := in.prepare(ctx); err != nil {
 		return err
 	}
-	if err := in.writeConfig(ctx, configPath, cfg); err != nil {
+	if err := in.writeConfig(ctx, configPath, cfg, o.Hub != ""); err != nil {
 		return err
 	}
 	if o.Token != "" {
-		if _, err := in.write(ctx, tokenPath, []byte(o.Token), 0o640, userName); err != nil {
+		if _, err := in.writeSaying(ctx, tokenPath, []byte(o.Token), 0o640, userName, "Saved the hub token"); err != nil {
 			return err
 		}
 	}
-	unitChanged, err := in.write(ctx, unitPath, unit, 0o644, "")
+	unitChanged, err := in.writeSaying(ctx, unitPath, unit, 0o644, "", "Wrote "+in.path(unitPath))
 	if err != nil {
 		return err
 	}
 	if err := in.enable(ctx, "tender-agent", unitChanged, existed); err != nil {
 		return err
 	}
-	in.say("\nNext:\n1. Add each destination's keys: tender install credential NAME < file, for example NAME r2-apps.restic-password.\n2. Check the agent: journalctl -u tender-agent -f")
+	switch {
+	case !existed:
+		in.say(agentNext)
+	case !in.changed && !in.Refreshing:
+		in.say("tender-agent is already installed and up to date. Nothing to change.")
+	}
 	return nil
+}
+
+const agentNext = `
+The agent is running. Next:
+  1. Save the repository password and the S3 keys of the destination this machine backs up to,
+     named after it (here r2):
+       sudo tender install credential r2.password < password.txt
+       sudo tender install credential r2.access-key-id < access-key-id.txt
+       sudo tender install credential r2.secret-access-key < secret-access-key.txt
+  2. Watch the agent: journalctl -u tender-agent -f`
+
+// hubNext says what to do after a first hub install. url is empty when the hub is not published.
+func hubNext(url string) string {
+	if url == "" {
+		url = "HUB_URL"
+	}
+	return `
+The hub is running. Next:
+  1. Add a machine and keep the token it prints once:
+       sudo tender hub add-machine NAME
+  2. Add a destination and set when that machine backs up:
+       sudo tender hub add-destination r2 --type s3 --endpoint URL --bucket BUCKET
+       sudo tender hub set-backup NAME --destination r2 --schedule "30 3 * * *" --retention-days 30
+  3. Install the agent on that machine, with the token when it asks:
+       curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh \
+         | sudo sh -s -- agent --hub ` + url + ` --machine NAME`
 }
 
 // HubOptions are the settings of "tender install hub".
@@ -374,10 +438,10 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	if err := in.prepare(ctx); err != nil {
 		return err
 	}
-	if err := in.writeConfig(ctx, configPath, cfg); err != nil {
+	if err := in.writeConfig(ctx, configPath, cfg, o.Email != nil); err != nil {
 		return err
 	}
-	unitChanged, err := in.write(ctx, unitPath, unit, 0o644, "")
+	unitChanged, err := in.writeSaying(ctx, unitPath, unit, 0o644, "", "Wrote "+in.path(unitPath))
 	if err != nil {
 		return err
 	}
@@ -388,7 +452,13 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	if h, err := config.LoadHub(in.path(configPath)); err == nil {
 		listen = h.Listen
 	}
-	in.serve(ctx, "http://"+listen)
+	url, published := in.serve(ctx, "http://"+listen)
+	switch {
+	case !existed:
+		in.say(hubNext(url))
+	case !in.changed && !published && !in.Refreshing:
+		in.say("tender-hub is already installed and up to date. Nothing to change.")
+	}
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
@@ -18,14 +19,27 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `Usage:
-  tender hub [--config PATH] [--database PATH] [--listen ADDR]   run the hub
-  tender agent [--config PATH]                   run the agent
-  tender mcp --stdio [--database PATH]           serve the MCP tools over stdio, on the hub machine
-  tender install agent|hub|credential            set up this machine, as root
-  tender version                                 print the version
+var usage = `tender backs up whole servers on a schedule and reports every run to a hub.
+AI clients read the hub's state over MCP, read-only.
 
-Run "tender hub help" for the hub's other commands and "tender install" for the install options.
+Usage: tender COMMAND [options]
+
+Commands:
+` + table([]row{
+	{"install agent --hub URL --machine NAME", "Install and start the agent on this machine"},
+	{"install hub", "Install and start the hub on this machine"},
+	{"install credential NAME", "Save a destination's key or password from stdin"},
+	{"install refresh", "Restart the installed services on this binary"},
+	{"update [--version vX.Y.Z]", "Update tender to the latest release"},
+	{"agent [--config PATH]", "Run the agent (its service does this)"},
+	{"hub [--config PATH]", "Run the hub (its service does this)"},
+	{"hub help", "List the hub's administration commands"},
+	{"mcp --stdio [--database PATH]", "Serve the read-only MCP tools over stdio"},
+	{"version", "Print the version"},
+	{"help", "Print this help"},
+}) + `
+Install and update run as root. Run "tender COMMAND --help" for a command's options.
+Docs: ` + docsURL + `
 `
 
 // migrations lists every domain's migrations in dependency order: machines first.
@@ -35,9 +49,10 @@ func migrations() []db.Migrations {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Print(usage)
 		os.Exit(2)
 	}
+	cleanVersion := strings.TrimPrefix(version, "v")
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: dropTime}))
 
 	var err error
@@ -50,17 +65,24 @@ func main() {
 		err = runMCP(os.Args[2:], log)
 	case "install":
 		err = runInstall(os.Args[2:], os.Stdin, os.Stdout)
+	case "update":
+		err = runUpdate(os.Args[2:], cleanVersion, os.Stdout)
 	case "version":
-		fmt.Println(version)
+		fmt.Println("tender " + cleanVersion)
+	case "help", "-h", "--help":
+		fmt.Print(usage)
 	default:
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprintf(os.Stderr, "tender: unknown command %q. Run \"tender help\" for the commands.\n", os.Args[1])
 		os.Exit(2)
 	}
 	if errors.Is(err, flag.ErrHelp) {
-		return // the flag package already printed the usage
+		return // the usage is printed
+	}
+	if errors.Is(err, errUsageShown) {
+		os.Exit(2)
 	}
 	if err != nil {
-		log.Error("tender failed", "error", err)
+		fmt.Fprintln(os.Stderr, "tender:", err)
 		os.Exit(1)
 	}
 }

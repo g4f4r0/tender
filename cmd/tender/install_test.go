@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,10 +33,32 @@ func TestReadLine(t *testing.T) {
 
 func TestInstallUsageErrors(t *testing.T) {
 	for _, args := range [][]string{
-		nil, {"bogus"}, {"agent"}, {"agent", "--hub", "https://h.example.net"}, {"hub", "extra"}, {"hub", "--smtp-host", "x"}, {"credential"}, {"credential", "a", "b"},
+		nil, {"bogus"}, {"agent"}, {"agent", "--hub", "https://h.example.net"}, {"hub", "extra"}, {"hub", "--smtp-host", "x"}, {"credential"}, {"credential", "a", "b"}, {"refresh", "extra"},
 	} {
 		if err := runInstall(args, strings.NewReader(""), &strings.Builder{}); err == nil {
 			t.Errorf("runInstall(%v) accepted", args)
 		}
+	}
+}
+
+func TestIsTerminal(t *testing.T) {
+	if isTerminal(strings.NewReader("token\n")) {
+		t.Error("a reader is not a terminal")
+	}
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = null.Close() }()
+	if !isTerminal(null) {
+		t.Error("/dev/null should count as no input")
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if isTerminal(r) {
+		t.Error("a pipe is not a terminal")
 	}
 }
