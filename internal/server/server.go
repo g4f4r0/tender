@@ -19,6 +19,12 @@ var migrationFiles embed.FS
 // Migrations creates the server's own tables. It needs the machines domain's tables first.
 var Migrations = db.Migrations{Domain: "server", Files: migrationFiles, Dir: "migrations"}
 
+// List is the shape of every collection response: {"data": [...], "next_cursor": "..."}.
+type List[T any] struct {
+	Data       []T    `json:"data"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
 // Server routes REST requests under /v1.
 type Server struct {
 	mux *http.ServeMux
