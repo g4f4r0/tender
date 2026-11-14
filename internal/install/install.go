@@ -222,7 +222,9 @@ func (in *Installer) enable(ctx context.Context, unit string, unitChanged, exist
 
 var credentialName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 
-// Credential writes /etc/tender/credentials/name for the agent, which reads it as a file.
+// Credential writes /etc/tender/credentials/name. The agent reads these files directly. The hub
+// can't (its unit hides the folder) and gets only smtp-password through LoadCredential, so adding
+// smtp-password to an installed hub rewrites its unit and restarts it.
 func (in *Installer) Credential(ctx context.Context, name, value string) error {
 	if !credentialName.MatchString(name) {
 		return fmt.Errorf("credential name %q: use lower-case letters, digits, dots and dashes, starting with a letter or digit", name)
@@ -236,8 +238,40 @@ func (in *Installer) Credential(ctx context.Context, name, value string) error {
 	if err := in.ensureDir(ctx, credentialDir, 0o750, userName); err != nil {
 		return err
 	}
-	_, err := in.write(ctx, filepath.Join(credentialDir, name), []byte(value), 0o640, userName)
-	return err
+	in.changed = false
+	if _, err := in.write(ctx, filepath.Join(credentialDir, name), []byte(value), 0o640, userName); err != nil {
+		return err
+	}
+	if name != "smtp-password" {
+		return nil
+	}
+	if _, err := os.Stat(in.path(hubUnitPath)); err != nil {
+		return nil // no hub here; "tender install hub" adds the line when it runs
+	}
+	unit, err := in.hubUnit()
+	if err != nil {
+		return err
+	}
+	unitChanged, err := in.write(ctx, hubUnitPath, unit, 0o644, "")
+	if err != nil {
+		return err
+	}
+	return in.enable(ctx, "tender-hub", unitChanged, true)
+}
+
+const hubUnitPath = unitDir + "/tender-hub.service"
+
+// hubUnit is the hub's unit file. systemd fails a unit whose LoadCredential path is missing, so
+// the smtp-password line goes in only when the file exists.
+func (in *Installer) hubUnit() ([]byte, error) {
+	unit, err := units.ReadFile("units/tender-hub.service")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(in.path(filepath.Join(credentialDir, "smtp-password"))); err != nil {
+		unit = dropLine(unit, "LoadCredential=smtp-password:")
+	}
+	return unit, nil
 }
 
 // AgentOptions are the settings of "tender install agent".
@@ -328,16 +362,11 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 			return err
 		}
 	}
-	unit, err := units.ReadFile("units/tender-hub.service")
+	unit, err := in.hubUnit()
 	if err != nil {
 		return err
 	}
-	// systemd fails the unit when a LoadCredential path is missing, and the hub reads the file
-	// directly without the line, so the line goes in only when the file exists.
-	if _, err := os.Stat(in.path(filepath.Join(credentialDir, "smtp-password"))); err != nil {
-		unit = dropLine(unit, "LoadCredential=smtp-password:")
-	}
-	unitPath := filepath.Join(unitDir, "tender-hub.service")
+	unitPath := hubUnitPath
 	_, statErr := os.Stat(in.path(unitPath))
 	existed := statErr == nil
 

@@ -17,6 +17,9 @@ StateDirectoryMode=0700
 ConfigurationDirectory=tender
 # "tender install hub" drops this line when the file does not exist: systemd fails the unit on a missing path.
 LoadCredential=smtp-password:/etc/tender/credentials/smtp-password
+# The hub never reads the credentials folder itself: on the same machine it holds the agent's
+# destination keys. systemd loads smtp-password above before the folder is hidden.
+InaccessiblePaths=-/etc/tender/credentials
 
 # Listens on 127.0.0.1 only; `tailscale serve` is the only way in.
 CapabilityBoundingSet=

@@ -538,6 +538,42 @@ func TestHubEmailAndSMTPCredential(t *testing.T) {
 	}
 }
 
+// smtp-password added after the hub is installed goes into the hub's unit, and the hub restarts.
+func TestSMTPCredentialAfterHub(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if err := e.in.Hub(ctx, HubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	unit := "/etc/systemd/system/tender-hub.service"
+	if strings.Contains(e.read(t, unit), "LoadCredential") || !strings.Contains(e.read(t, unit), "InaccessiblePaths=-/etc/tender/credentials\n") {
+		t.Fatalf("unit before:\n%s", e.read(t, unit))
+	}
+	e.commands() // reset the recorded commands
+	if err := e.in.Credential(ctx, "smtp-password", "smtp-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.read(t, unit), "LoadCredential=smtp-password:/etc/tender/credentials/smtp-password\n") {
+		t.Error("the unit does not load the new smtp-password")
+	}
+	chown := "chown root:tender " + e.path("/etc/tender/credentials/smtp-password")
+	want := []string{chown, "systemctl daemon-reload", "systemctl enable --now tender-hub", "systemctl restart tender-hub"}
+	if got := e.commands(); !reflect.DeepEqual(got, want) {
+		t.Errorf("commands = %q, want %q", got, want)
+	}
+	e.noSecret(t, "smtp-secret")
+
+	// Another credential doesn't touch the hub.
+	if err := e.in.Credential(ctx, "r2-apps.restic-password", "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range e.commands() {
+		if strings.HasPrefix(c, "systemctl") {
+			t.Errorf("an agent credential ran %q", c)
+		}
+	}
+}
+
 func TestHubServeCases(t *testing.T) {
 	for name, tc := range map[string]struct {
 		serve       string
