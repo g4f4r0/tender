@@ -4,20 +4,66 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/server"
 )
 
+const defaultDatabase = "/var/lib/tender/hub.db"
+
+const hubUsage = `Usage:
+  tender hub [--database PATH] [--listen ADDR]    run the hub
+  tender hub add-machine NAME                     add a machine and print its token once
+  tender hub rotate-token NAME                    replace a machine's token and print the new one
+  tender hub add-destination NAME --type s3 --endpoint URL --bucket BUCKET [--path PATH]
+  tender hub set-backup MACHINE --destination NAME --schedule "30 3 * * *" --retention-days 30
+  tender hub help                                 print this help
+
+Every command takes --database PATH (default ` + defaultDatabase + `).
+`
+
 func runHub(args []string, log *slog.Logger) error {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return hubCommand(args[0], args[1:], os.Stdout)
+	}
+	return serveHub(args, log)
+}
+
+// openHub opens the database and applies the migrations, so the commands also work before the first run.
+func openHub(ctx context.Context, path string) (*db.DB, error) {
+	d, err := db.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.Migrate(ctx, migrations()...); err != nil {
+		return nil, errors.Join(err, d.Close())
+	}
+	return d, nil
+}
+
+// newHub returns the hub's HTTP server with every domain's routes.
+func newHub(d *db.DB, log *slog.Logger) *server.Server {
+	ms := machines.NewStore(d)
+	srv := server.New(d, log, ms)
+	ms.Routes(srv)
+	backups.NewStore(d).Routes(srv)
+	return srv
+}
+
+func serveHub(args []string, log *slog.Logger) error {
 	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
-	database := fs.String("database", "/var/lib/tender/hub.db", "SQLite database file")
+	database := fs.String("database", defaultDatabase, "SQLite database file")
 	listen := fs.String("listen", "127.0.0.1:8080", "address to listen on")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -26,7 +72,7 @@ func runHub(args []string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	d, err := db.Open(*database)
+	d, err := openHub(ctx, *database)
 	if err != nil {
 		return err
 	}
@@ -35,13 +81,12 @@ func runHub(args []string, log *slog.Logger) error {
 			log.Error("close database", "error", err)
 		}
 	}()
-	if err := d.Migrate(ctx, migrations()...); err != nil {
-		return err
-	}
 
+	hub := newHub(d, log)
+	go hub.PruneKeys(ctx)
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           server.New(d, log),
+		Handler:           hub,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
@@ -60,4 +105,95 @@ func runHub(args []string, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// hubCommand runs one of the hub's administration commands, writing its result to out.
+func hubCommand(name string, args []string, out io.Writer) error {
+	if name == "help" {
+		_, err := io.WriteString(out, hubUsage)
+		return err
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	database := fs.String("database", defaultDatabase, "SQLite database file")
+	var run func(ctx context.Context, d *db.DB, arg string) error
+
+	switch name {
+	case "add-machine":
+		run = func(ctx context.Context, d *db.DB, machine string) error {
+			token, err := machines.NewStore(d).Create(ctx, machine)
+			if err == nil {
+				_, err = fmt.Fprintln(out, token)
+			}
+			return err
+		}
+	case "rotate-token":
+		run = func(ctx context.Context, d *db.DB, machine string) error {
+			token, err := machines.NewStore(d).RotateToken(ctx, machine)
+			if err == nil {
+				_, err = fmt.Fprintln(out, token)
+			}
+			return err
+		}
+	case "add-destination":
+		var in backups.Destination
+		fs.StringVar(&in.Type, "type", "", "destination type, s3")
+		fs.StringVar(&in.Endpoint, "endpoint", "", "S3 endpoint URL")
+		fs.StringVar(&in.Bucket, "bucket", "", "bucket name")
+		fs.StringVar(&in.Path, "path", "", "folder inside the bucket")
+		run = func(ctx context.Context, d *db.DB, destination string) error {
+			in.Name = destination
+			added, err := backups.NewStore(d).AddDestination(ctx, in)
+			if err == nil {
+				_, err = fmt.Fprintf(out, "Added destination %s (%s)\n", added.Name, added.Repository())
+			}
+			return err
+		}
+	case "set-backup":
+		destination := fs.String("destination", "", "destination name")
+		schedule := fs.String("schedule", "", `cron schedule in UTC, such as "30 3 * * *"`)
+		retention := fs.Int("retention-days", 0, "days to keep snapshots")
+		run = func(ctx context.Context, d *db.DB, machine string) error {
+			id, err := machines.NewStore(d).Lookup(ctx, machine)
+			if err != nil {
+				return err
+			}
+			st, err := backups.NewStore(d).SetSettings(ctx, id, *destination, *schedule, *retention)
+			if err == nil {
+				_, err = fmt.Fprintf(out, "%s backs up to %s on %q and keeps %d days\n",
+					machine, st.Destination.Name, st.Schedule, st.RetentionDays)
+			}
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown hub command %q; run \"tender hub help\"", name)
+	}
+
+	arg, err := parseWithName(fs, args)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	d, err := openHub(ctx, *database)
+	if err != nil {
+		return err
+	}
+	return errors.Join(run(ctx, d, arg), d.Close())
+}
+
+// parseWithName parses flags and the one name argument, which may come before, between or after them.
+func parseWithName(fs *flag.FlagSet, args []string) (string, error) {
+	var names []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return "", err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		names, args = append(names, fs.Arg(0)), fs.Args()[1:]
+	}
+	if len(names) != 1 {
+		return "", fmt.Errorf("%s takes one name; run \"tender hub help\"", fs.Name())
+	}
+	return names[0], nil
 }

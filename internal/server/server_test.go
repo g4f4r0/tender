@@ -18,7 +18,7 @@ func hub(t *testing.T) (*db.DB, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(New(d, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	srv := httptest.NewServer(New(d, slog.New(slog.NewTextHandler(io.Discard, nil)), nil))
 	t.Cleanup(srv.Close)
 	return d, srv
 }

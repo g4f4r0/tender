@@ -2,7 +2,10 @@ module github.com/g4f4r0/tender
 
 go 1.27
 
-require modernc.org/sqlite v1.62.0
+require (
+	github.com/robfig/cron/v3 v3.0.1
+	modernc.org/sqlite v1.62.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
