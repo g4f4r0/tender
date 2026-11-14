@@ -74,7 +74,7 @@ func TestUpdateToLatest(t *testing.T) {
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v, want %v", got, want)
 	}
-	if !strings.Contains(e.out.String(), "Updating tender 0.1.0 to v0.2.0") || !strings.Contains(e.out.String(), "Updated to tender v0.2.0") {
+	if !strings.Contains(e.out.String(), "Updating Tender 0.1.0 to v0.2.0") || !strings.Contains(e.out.String(), "Updated to Tender v0.2.0") {
 		t.Errorf("output = %q", e.out.String())
 	}
 }

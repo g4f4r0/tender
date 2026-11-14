@@ -1,5 +1,5 @@
 [Unit]
-Description=tender hub (receives agent reports, read-only MCP, notifications)
+Description=Tender hub (receives agent reports, read-only MCP, notifications)
 Documentation=https://github.com/g4f4r0/tender
 After=network-online.target
 Wants=network-online.target

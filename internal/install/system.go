@@ -67,7 +67,7 @@ func (in *Installer) serve(ctx context.Context, target string) (url string, publ
 	case servesTarget(status.Web, target):
 	default:
 		if !in.Refreshing { // a refresh would repeat this on every update
-			in.say("Tailscale port 443 on this node already serves something else, so tender left it alone. To publish the hub there, run: %s", command)
+			in.say("Tailscale port 443 on this node already serves something else, so Tender left it alone. To publish the hub there, run: %s", command)
 		}
 		return "", false
 	}

@@ -16,7 +16,7 @@ func TestFlagSetUsage(t *testing.T) {
 	}
 	want := `Usage: tender update [--version vX.Y.Z]
 
-Update tender to the latest release and restart its services. Run as root.
+Update Tender to the latest release and restart its services. Run as root.
 
 Options:
   --version vX.Y.Z   the release to install (default: the latest)

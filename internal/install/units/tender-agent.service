@@ -1,5 +1,5 @@
 [Unit]
-Description=tender agent (restic backups and host usage, pushes to the hub)
+Description=Tender agent (whole-server backups and usage, reports to the hub)
 Documentation=https://github.com/g4f4r0/tender
 After=network-online.target
 Wants=network-online.target

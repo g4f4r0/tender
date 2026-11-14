@@ -19,7 +19,7 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-var usage = `tender backs up whole servers on a schedule and reports every run to a hub.
+var usage = `Tender backs up whole servers on a schedule and reports every run to a hub.
 AI clients read the hub's state over MCP, read-only.
 
 Usage: tender COMMAND [options]
@@ -30,7 +30,7 @@ Commands:
 	{"install hub", "Install and start the hub on this machine"},
 	{"install credential NAME", "Save a destination's key or password from stdin"},
 	{"install refresh", "Restart the installed services on this binary"},
-	{"update [--version vX.Y.Z]", "Update tender to the latest release"},
+	{"update [--version vX.Y.Z]", "Update Tender to the latest release"},
 	{"agent [--config PATH]", "Run the agent (its service does this)"},
 	{"hub [--config PATH]", "Run the hub (its service does this)"},
 	{"hub help", "List the hub's administration commands"},
@@ -68,7 +68,7 @@ func main() {
 	case "update":
 		err = runUpdate(os.Args[2:], cleanVersion, os.Stdout)
 	case "version":
-		fmt.Println("tender " + cleanVersion)
+		fmt.Println("Tender " + cleanVersion)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
