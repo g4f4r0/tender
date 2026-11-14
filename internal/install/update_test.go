@@ -243,7 +243,7 @@ func TestAgentReusesConfigAndToken(t *testing.T) {
 	}
 	// A fresh machine with no options says what is missing.
 	err := newEnv(t).in.Agent(ctx, AgentOptions{Token: testToken})
-	if err == nil || !strings.Contains(err.Error(), "--hub and --machine") {
+	if err == nil || !strings.Contains(err.Error(), "--hub URL and --machine NAME") {
 		t.Errorf("err = %v", err)
 	}
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,20 +80,21 @@ func loadMachines(ms *machines.Store, bs *backups.Store) func(context.Context) (
 
 // testEmail is "tender hub test-email": it sends the test message and says where it went.
 func testEmail(args []string, out io.Writer) error {
-	fs := flag.NewFlagSet("test-email", flag.ContinueOnError)
-	configPath := fs.String("config", "", "hub config file (default "+config.DefaultHubPath+")")
-	if err := fs.Parse(args); err != nil {
+	fs := newFlagSet("hub test-email", "[--config PATH]",
+		"Send a test email through the hub's SMTP settings, to check that alerts will arrive.")
+	configPath := fs.String("config", "", "`PATH` the hub config file (default: "+config.DefaultHubPath+")")
+	if err := parseFlags(fs, args, out); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("test-email takes no name; run \"tender hub help\"")
+		return usageError(fs, "test-email takes no arguments, got %q", fs.Arg(0))
 	}
 	cfg, err := config.LoadHub(*configPath)
 	if err != nil {
 		return err
 	}
 	if cfg.Email == nil {
-		return fmt.Errorf("the hub config has no [email] table: nothing to test")
+		return errors.New("the hub config has no [email] table, so there is nothing to test. Add one (docs: " + docsURL + "), or run \"sudo tender install hub --force\" with the --email and --smtp options")
 	}
 	if err := dropToDatabaseOwner(cfg.Database); err != nil {
 		return err

@@ -25,18 +25,24 @@ import (
 
 const defaultDatabase = config.DefaultDatabase
 
-const hubUsage = `Usage:
-  tender hub [--config PATH] [--database PATH] [--listen ADDR]    run the hub
-  tender hub add-machine NAME                     add a machine and print its token once
-  tender hub rotate-token NAME                    replace a machine's token and print the new one
-  tender hub add-destination NAME --type s3 --endpoint URL --bucket BUCKET [--path PATH]
-  tender hub set-backup MACHINE --destination NAME --schedule "30 3 * * *" --retention-days 30
-  tender hub test-email [--config PATH]           send a test email
-  tender hub help                                 print this help
+var hubUsage = `Usage: tender hub [--config PATH] [--database PATH] [--listen ADDR]
+       tender hub COMMAND [options]
 
-Every command reads the hub config (--config PATH, default ` + config.DefaultHubPath + `; none is fine) and takes
---database PATH, which overrides its database (default ` + defaultDatabase + `). Run also takes --listen ADDR
-(default ` + config.DefaultListen + `).
+Run the hub, or manage what it knows about machines, destinations and backups. With no command,
+tender hub runs the hub: it keeps every machine's state, serves the REST API and the MCP endpoint,
+and sends alerts.
+
+Commands:
+` + table([]row{
+	{"add-machine NAME", "Add a machine and print its token once"},
+	{"rotate-token NAME", "Replace a machine's token and print the new one"},
+	{"add-destination NAME", "Add a place to send backups: an S3 bucket"},
+	{"set-backup MACHINE", "Set a machine's destination, schedule and retention"},
+	{"test-email", "Send a test alert email"},
+	{"help", "Print this help"},
+}) + `
+Run "tender hub COMMAND --help" for a command's options. Every command reads the hub config
+(` + config.DefaultHubPath + `, optional) and takes --config PATH and --database PATH.
 `
 
 func runHub(args []string, log *slog.Logger) error {
@@ -50,7 +56,7 @@ func runHub(args []string, log *slog.Logger) error {
 func openHub(ctx context.Context, path string) (*db.DB, error) {
 	d, err := db.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot open the hub database %s. Check that its folder exists and that you can write to it, or pass --database PATH: %w", path, err)
 	}
 	if err := d.Migrate(ctx, migrations()...); err != nil {
 		return nil, errors.Join(err, d.Close())
@@ -87,12 +93,18 @@ func newTools(d *db.DB, log *slog.Logger) *mcp.Server {
 }
 
 func serveHub(args []string, log *slog.Logger) error {
-	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
-	configPath := fs.String("config", "", "hub config file (default "+config.DefaultHubPath+")")
-	database := fs.String("database", "", "SQLite database file (overrides the config)")
-	listen := fs.String("listen", "", "address to listen on (overrides the config)")
-	if err := fs.Parse(args); err != nil {
+	fs := newFlagSet("hub", "[--config PATH] [--database PATH] [--listen ADDR]",
+		"Run the hub: it keeps every machine's state, serves the REST API and the MCP endpoint, and sends alerts. "+
+			"Run it as a service; \"sudo tender install hub\" sets that up. "+
+			"\"tender hub help\" lists the administration commands.")
+	configPath := fs.String("config", "", "`PATH` the hub config file (default: "+config.DefaultHubPath+")")
+	database := fs.String("database", "", "`PATH` the SQLite database (default: "+config.DefaultDatabase+")")
+	listen := fs.String("listen", "", "`ADDR` the address to listen on (default: "+config.DefaultListen+")")
+	if err := parseFlags(fs, args, os.Stdout); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "hub takes no arguments, got %q", fs.Arg(0))
 	}
 	cfg, err := hubConfig(*configPath, *database, *listen)
 	if err != nil {
@@ -141,7 +153,7 @@ func serveHub(args []string, log *slog.Logger) error {
 
 	select {
 	case err := <-errc:
-		return err
+		return fmt.Errorf("the hub stopped. Check that nothing else uses %s, or pass --listen ADDR: %w", cfg.Listen, err)
 	case <-ctx.Done():
 	}
 	log.Info("hub stopping")
@@ -177,13 +189,16 @@ func hubCommand(name string, args []string, out io.Writer) error {
 	if name == "test-email" {
 		return testEmail(args, out)
 	}
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	configPath := fs.String("config", "", "hub config file (default "+config.DefaultHubPath+")")
-	database := fs.String("database", "", "SQLite database file (overrides the config)")
+	var fs *flag.FlagSet
 	var run func(ctx context.Context, d *db.DB, arg string) error
+	var what string        // what the name argument names
+	var check func() error // rejects missing options before the database opens
 
 	switch name {
 	case "add-machine":
+		fs, what = hubFlags(name, "NAME",
+			"Add a machine to the hub and print its token once. Install the token on that machine with \"tender install agent\". "+
+				"A name is lowercase letters, digits and hyphens."), "a machine name"
 		run = func(ctx context.Context, d *db.DB, machine string) error {
 			token, err := machines.NewStore(d).Create(ctx, machine)
 			if err == nil {
@@ -192,6 +207,9 @@ func hubCommand(name string, args []string, out io.Writer) error {
 			return err
 		}
 	case "rotate-token":
+		fs, what = hubFlags(name, "NAME",
+			"Replace a machine's token and print the new one. The old token stops working at once, "+
+				"so install the new one on the machine."), "a machine name"
 		run = func(ctx context.Context, d *db.DB, machine string) error {
 			token, err := machines.NewStore(d).RotateToken(ctx, machine)
 			if err == nil {
@@ -200,23 +218,42 @@ func hubCommand(name string, args []string, out io.Writer) error {
 			return err
 		}
 	case "add-destination":
+		fs, what = hubFlags(name, "NAME --type s3 --endpoint URL --bucket BUCKET [--path PATH]",
+			"Add a place to send backups: an S3-compatible bucket, such as Cloudflare R2. "+
+				"Each machine gets its own folder in it. The keys and the repository password stay on each machine; "+
+				"save them there with \"tender install credential\"."), "a destination name"
 		var in backups.Destination
-		fs.StringVar(&in.Type, "type", "", "destination type, s3")
-		fs.StringVar(&in.Endpoint, "endpoint", "", "S3 endpoint URL")
-		fs.StringVar(&in.Bucket, "bucket", "", "bucket name")
-		fs.StringVar(&in.Path, "path", "", "folder inside the bucket")
+		fs.StringVar(&in.Type, "type", "", "`TYPE` the kind of destination: s3")
+		fs.StringVar(&in.Endpoint, "endpoint", "", "`URL` the S3 endpoint, such as https://ACCOUNT.r2.cloudflarestorage.com")
+		fs.StringVar(&in.Bucket, "bucket", "", "`BUCKET` the bucket name")
+		fs.StringVar(&in.Path, "path", "", "`PATH` a folder inside the bucket (default: the bucket's top)")
+		check = func() error {
+			if in.Type == "" || in.Endpoint == "" || in.Bucket == "" {
+				return usageError(fs, "add-destination needs --type, --endpoint and --bucket")
+			}
+			return nil
+		}
 		run = func(ctx context.Context, d *db.DB, destination string) error {
 			in.Name = destination
 			added, err := backups.NewStore(d).AddDestination(ctx, in)
 			if err == nil {
-				_, err = fmt.Fprintf(out, "Added destination %s; each machine backs up to %s\n", added.Name, added.Repository("<machine>"))
+				_, err = fmt.Fprintf(out, "Added destination %s. Each machine backs up to %s\n", added.Name, added.Repository("<machine>"))
 			}
 			return err
 		}
 	case "set-backup":
-		destination := fs.String("destination", "", "destination name")
-		schedule := fs.String("schedule", "", `cron schedule in UTC, such as "30 3 * * *"`)
-		retention := fs.Int("retention-days", 0, "days to keep snapshots")
+		fs, what = hubFlags(name, "MACHINE --destination NAME --schedule CRON --retention-days DAYS",
+			"Set where, when and for how long a machine's backups are kept: a destination, a cron schedule in UTC "+
+				"and the days to keep snapshots."), "a machine name"
+		destination := fs.String("destination", "", "`NAME` the destination to back up to")
+		schedule := fs.String("schedule", "", "`CRON` the schedule in UTC, such as \"30 3 * * *\"")
+		retention := fs.Int("retention-days", 0, "`DAYS` how long to keep snapshots")
+		check = func() error {
+			if *destination == "" || *schedule == "" || *retention == 0 {
+				return usageError(fs, "set-backup needs --destination, --schedule and --retention-days")
+			}
+			return nil
+		}
 		run = func(ctx context.Context, d *db.DB, machine string) error {
 			id, err := machines.NewStore(d).Lookup(ctx, machine)
 			if err != nil {
@@ -230,14 +267,19 @@ func hubCommand(name string, args []string, out io.Writer) error {
 			return err
 		}
 	default:
-		return fmt.Errorf("unknown hub command %q; run \"tender hub help\"", name)
+		return fmt.Errorf("unknown hub command %q. Run \"tender hub help\" for the commands.", name)
 	}
 
-	arg, err := parseWithName(fs, args)
+	arg, err := parseWithName(fs, args, what, out)
 	if err != nil {
 		return err
 	}
-	cfg, err := hubConfig(*configPath, *database, "")
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	cfg, err := hubConfig(fs.Lookup("config").Value.String(), fs.Lookup("database").Value.String(), "")
 	if err != nil {
 		return err
 	}
@@ -249,14 +291,23 @@ func hubCommand(name string, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(run(ctx, d, arg), d.Close())
+	return errors.Join(hubError(run(ctx, d, arg)), d.Close())
 }
 
-// parseWithName parses flags and the one name argument, which may come before, between or after them.
-func parseWithName(fs *flag.FlagSet, args []string) (string, error) {
+// hubFlags returns the FlagSet of "tender hub NAME" with the options every hub command has.
+func hubFlags(name, args, summary string) *flag.FlagSet {
+	fs := newFlagSet("hub "+name, args, summary)
+	fs.String("config", "", "`PATH` the hub config file (default: "+config.DefaultHubPath+")")
+	fs.String("database", "", "`PATH` the SQLite database (default: "+config.DefaultDatabase+")")
+	return fs
+}
+
+// parseWithName parses flags and the one name argument, which may come before, between or after
+// them. what says what the name is, for the error.
+func parseWithName(fs *flag.FlagSet, args []string, what string, out io.Writer) (string, error) {
 	var names []string
 	for {
-		if err := fs.Parse(args); err != nil {
+		if err := parseFlags(fs, args, out); err != nil {
 			return "", err
 		}
 		if fs.NArg() == 0 {
@@ -264,8 +315,31 @@ func parseWithName(fs *flag.FlagSet, args []string) (string, error) {
 		}
 		names, args = append(names, fs.Arg(0)), fs.Args()[1:]
 	}
-	if len(names) != 1 {
-		return "", fmt.Errorf("%s takes one name; run \"tender hub help\"", fs.Name())
+	command := strings.TrimPrefix(fs.Name(), "hub ")
+	switch len(names) {
+	case 1:
+		return names[0], nil
+	case 0:
+		return "", usageError(fs, "%s needs %s", command, what)
+	default:
+		return "", usageError(fs, "%s takes one name, got %d: %s", command, len(names), strings.Join(names, " "))
 	}
-	return names[0], nil
+}
+
+// hubError words a store's answer for the command line: the API's sentence, plus what to do.
+func hubError(err error) error {
+	var e *server.Error
+	if !errors.As(err, &e) {
+		return err
+	}
+	msg := strings.TrimSuffix(e.Detail, ".")
+	msg = strings.ToLower(msg[:1]) + msg[1:]
+	switch {
+	case strings.Contains(msg, "doesn't exist"):
+		return fmt.Errorf("%s. Check the spelling, or add it first. Run \"tender hub help\" for the commands.", msg)
+	case e.Status == http.StatusConflict:
+		return fmt.Errorf("%s. Choose another name.", msg)
+	default:
+		return fmt.Errorf("%s. Fix it and run the command again.", msg)
+	}
 }

@@ -320,14 +320,14 @@ func (a *Agent) syncSnapshots(ctx context.Context, run *agentRun) error {
 func (a *Agent) newRestic(s Settings) (Runner, error) {
 	d := s.Destination.Name
 	var keys [2]string
-	for i, name := range []string{d + ".s3-access-key-id", d + ".s3-secret-access-key"} {
+	for i, name := range []string{d + ".access-key-id", d + ".secret-access-key"} {
 		v, err := config.ReadCredential(a.CredentialsDir, name)
 		if err != nil {
 			return nil, err
 		}
 		keys[i] = v
 	}
-	password := d + ".restic-password"
+	password := d + ".password"
 	if _, err := config.ReadCredential(a.CredentialsDir, password); err != nil {
 		return nil, err
 	}

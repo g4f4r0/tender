@@ -38,22 +38,23 @@ func (in *Installer) installRestic(ctx context.Context) error {
 	if have, err := os.ReadFile(in.path(resticPath)); err == nil && sum(have) == in.ResticBinarySHA256 {
 		return nil
 	}
+	in.say("Installing restic %s", resticVersion)
 	archive, err := in.download(ctx)
 	if err != nil {
 		return err
 	}
 	if got := sum(archive); got != in.ResticArchiveSHA256 {
-		return fmt.Errorf("restic download has SHA-256 %s, want %s: nothing was installed", got, in.ResticArchiveSHA256)
+		return fmt.Errorf("the restic download failed its SHA-256 check (got %s, want %s), so nothing was installed. Try again, and report it at %s if it repeats", got, in.ResticArchiveSHA256, issuesURL)
 	}
 	bin, err := io.ReadAll(io.LimitReader(bzip2.NewReader(bytes.NewReader(archive)), maxBinaryBytes+1))
 	if err != nil {
-		return fmt.Errorf("decompress restic: %w", err)
+		return fmt.Errorf("cannot decompress the restic download, so nothing was installed. Try again: %w", err)
 	}
 	if len(bin) > maxBinaryBytes {
-		return errors.New("restic decompresses to more than 256 MB: nothing was installed")
+		return errors.New("the restic download decompresses to more than 256 MB, so nothing was installed. Report it at " + issuesURL)
 	}
 	if got := sum(bin); got != in.ResticBinarySHA256 {
-		return fmt.Errorf("decompressed restic has SHA-256 %s, want %s: nothing was installed", got, in.ResticBinarySHA256)
+		return fmt.Errorf("the decompressed restic failed its SHA-256 check (got %s, want %s), so nothing was installed. Try again, and report it at %s if it repeats", got, in.ResticBinarySHA256, issuesURL)
 	}
 	_, err = in.write(ctx, resticPath, bin, 0o755, "")
 	return err
@@ -62,7 +63,7 @@ func (in *Installer) installRestic(ctx context.Context) error {
 func (in *Installer) download(ctx context.Context) ([]byte, error) {
 	b, err := get(ctx, in.ResticURL, maxArchiveBytes)
 	if err != nil {
-		return nil, fmt.Errorf("download restic: %w", err)
+		return nil, fmt.Errorf("cannot download restic. Check this machine's internet access and run the command again: %w", err)
 	}
 	return b, nil
 }

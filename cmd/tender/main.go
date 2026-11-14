@@ -19,19 +19,27 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `tender backs up whole servers on a schedule and reports to a hub.
+var usage = `tender backs up whole servers on a schedule and reports every run to a hub.
+AI clients read the hub's state over MCP, read-only.
 
-Usage:
-  tender hub [--config PATH] [--database PATH] [--listen ADDR]   run the hub
-  tender agent [--config PATH]                   run the agent
-  tender mcp --stdio [--database PATH]           serve the MCP tools over stdio, on the hub machine
-  tender install agent|hub|credential|refresh    set up this machine, as root
-  tender update [--version vX.Y.Z]               update tender to the latest release, as root
-  tender version                                 print the version
-  tender help                                    print this help
+Usage: tender COMMAND [options]
 
-Run "tender hub help" for the hub's other commands and "tender install" for the install options.
-Docs: https://github.com/g4f4r0/tender
+Commands:
+` + table([]row{
+	{"install agent --hub URL --machine NAME", "Install and start the agent on this machine"},
+	{"install hub", "Install and start the hub on this machine"},
+	{"install credential NAME", "Save a destination's key or password from stdin"},
+	{"install refresh", "Restart the installed services on this binary"},
+	{"update [--version vX.Y.Z]", "Update tender to the latest release"},
+	{"agent [--config PATH]", "Run the agent (its service does this)"},
+	{"hub [--config PATH]", "Run the hub (its service does this)"},
+	{"hub help", "List the hub's administration commands"},
+	{"mcp --stdio [--database PATH]", "Serve the read-only MCP tools over stdio"},
+	{"version", "Print the version"},
+	{"help", "Print this help"},
+}) + `
+Install and update run as root. Run "tender COMMAND --help" for a command's options.
+Docs: ` + docsURL + `
 `
 
 // migrations lists every domain's migrations in dependency order: machines first.
@@ -41,7 +49,7 @@ func migrations() []db.Migrations {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Print(usage)
 		os.Exit(2)
 	}
 	cleanVersion := strings.TrimPrefix(version, "v")
@@ -64,11 +72,14 @@ func main() {
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "tender: unknown command %q\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "tender: unknown command %q. Run \"tender help\" for the commands.\n", os.Args[1])
 		os.Exit(2)
 	}
 	if errors.Is(err, flag.ErrHelp) {
-		return // the flag package already printed the usage
+		return // the usage is printed
+	}
+	if errors.Is(err, errUsageShown) {
+		os.Exit(2)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tender:", err)

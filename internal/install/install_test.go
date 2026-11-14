@@ -228,6 +228,15 @@ func TestAgentFreshInstall(t *testing.T) {
 		t.Errorf("agent.toml = %+v", cfg)
 	}
 	e.noSecret(t, testToken)
+
+	// Each step a person cares about gets one line, then the numbered next steps.
+	for _, want := range []string{"Installing restic 0.19.1\n", "Created the tender user\n", "Saved the hub token\n", "Started tender-agent\n",
+		"The agent is running. Next:", "sudo tender install credential r2.password < password.txt",
+		"sudo tender install credential r2.access-key-id < access-key-id.txt", "sudo tender install credential r2.secret-access-key < secret-access-key.txt"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, e.out.String())
+		}
+	}
 }
 
 func TestAgentSecondRunChangesNothing(t *testing.T) {
@@ -255,7 +264,7 @@ func TestAgentSecondRunChangesNothing(t *testing.T) {
 			t.Errorf("token %q: second run commands = %v, want %v", token, got, want)
 		}
 	}
-	if !strings.Contains(e.out.String(), "kept") || strings.Contains(e.out.String(), "wrote") {
+	if !strings.Contains(e.out.String(), "Nothing to change") || strings.Contains(e.out.String(), "Wrote") || strings.Contains(e.out.String(), "Next:") {
 		t.Errorf("output = %q", e.out.String())
 	}
 }
@@ -423,32 +432,39 @@ func TestCredential(t *testing.T) {
 			t.Errorf("name %q was accepted", bad)
 		}
 	}
-	if err := e.in.Credential(ctx, "r2-apps.restic-password", ""); err == nil {
+	if err := e.in.Credential(ctx, "r2.password", ""); err == nil {
 		t.Error("empty value accepted")
 	}
 	if len(e.fake.commands) != 0 || len(e.tree(t)) != 3 {
 		t.Errorf("a rejected credential changed something: %v", e.fake.commands)
 	}
 
-	if err := e.in.Credential(ctx, "r2-apps.restic-password", "the-restic-password"); err != nil {
+	if err := e.in.Credential(ctx, "r2.password", "the-repository-password"); err != nil {
 		t.Fatal(err)
 	}
-	const p = "/etc/tender/credentials/r2-apps.restic-password"
-	if e.read(t, p) != "the-restic-password" || e.mode(t, p) != 0o640 || e.mode(t, "/etc/tender/credentials") != 0o750 {
+	const p = "/etc/tender/credentials/r2.password"
+	if e.read(t, p) != "the-repository-password" || e.mode(t, p) != 0o640 || e.mode(t, "/etc/tender/credentials") != 0o750 {
 		t.Error("wrong content or modes")
 	}
 	want := []string{"chown root:tender " + e.path("/etc/tender/credentials"), "chown root:tender " + e.path(p)}
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v, want %v", got, want)
 	}
+	if !strings.Contains(e.out.String(), "Saved credential r2.password\n") {
+		t.Errorf("output = %q", e.out.String())
+	}
 	// Saving the same value again does nothing; a new value replaces it.
-	if err := e.in.Credential(ctx, "r2-apps.restic-password", "the-restic-password"); err != nil || len(e.commands()) != 0 {
+	e.out.Reset()
+	if err := e.in.Credential(ctx, "r2.password", "the-repository-password"); err != nil || len(e.commands()) != 0 {
 		t.Errorf("repeat changed something: %v", err)
 	}
-	if err := e.in.Credential(ctx, "r2-apps.restic-password", "new"); err != nil || e.read(t, p) != "new" {
+	if !strings.Contains(e.out.String(), "already has this value") {
+		t.Errorf("output = %q", e.out.String())
+	}
+	if err := e.in.Credential(ctx, "r2.password", "new"); err != nil || e.read(t, p) != "new" {
 		t.Errorf("replace failed: %v", err)
 	}
-	e.noSecret(t, "the-restic-password")
+	e.noSecret(t, "the-repository-password")
 }
 
 func TestHubFreshInstall(t *testing.T) {
@@ -486,8 +502,10 @@ func TestHubFreshInstall(t *testing.T) {
 	if strings.Contains(e.read(t, "/etc/systemd/system/tender-hub.service"), "LoadCredential") {
 		t.Error("the unit loads smtp-password, which does not exist")
 	}
-	if !strings.Contains(e.out.String(), "Hub URL: https://apps.example.ts.net\n") {
-		t.Errorf("output = %q", e.out.String())
+	for _, want := range []string{"Published the hub with Tailscale Serve at https://apps.example.ts.net\n", "The hub is running. Next:", "agent --hub https://apps.example.ts.net --machine NAME"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, e.out.String())
+		}
 	}
 
 	// Second run: nothing changes, and Serve already shows the hub.
@@ -564,7 +582,7 @@ func TestSMTPCredentialAfterHub(t *testing.T) {
 	e.noSecret(t, "smtp-secret")
 
 	// Another credential doesn't touch the hub.
-	if err := e.in.Credential(ctx, "r2-apps.restic-password", "x"); err != nil {
+	if err := e.in.Credential(ctx, "r2.password", "x"); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range e.commands() {
@@ -581,9 +599,9 @@ func TestHubServeCases(t *testing.T) {
 		wantURL     bool
 		wantMessage string
 	}{
-		"free":     {serve: noServe, wantServe: true, wantURL: true},
-		"ours":     {serve: ownServe, wantURL: true, wantMessage: "already publishes"},
-		"busy":     {serve: oldServe, wantMessage: "left it alone.\nTo publish the hub there, run: tailscale serve --bg --https=443 http://127.0.0.1:8080"},
+		"free":     {serve: noServe, wantServe: true, wantURL: true, wantMessage: "Published the hub with Tailscale Serve at https://apps.example.ts.net\n"},
+		"ours":     {serve: ownServe, wantURL: true, wantMessage: "The hub is running. Next:"},
+		"busy":     {serve: oldServe, wantMessage: "left it alone. To publish the hub there, run: tailscale serve --bg --https=443 http://127.0.0.1:8080\n"},
 		"no serve": {serve: "not json", wantMessage: "Tailscale did not answer"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -600,7 +618,7 @@ func TestHubServeCases(t *testing.T) {
 				t.Errorf("serve command ran = %v, want %v", ran, tc.wantServe)
 			}
 			out := e.out.String()
-			if strings.Contains(out, "Hub URL") != tc.wantURL {
+			if strings.Contains(out, "https://apps.example.ts.net") != tc.wantURL {
 				t.Errorf("hub URL printed = %v, want %v\n%s", !tc.wantURL, tc.wantURL, out)
 			}
 			if !strings.Contains(out, tc.wantMessage) {

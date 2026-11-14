@@ -96,8 +96,8 @@ func TestReadCredential(t *testing.T) {
 
 func TestReadCredentialErrorsNameTheFileNotTheContent(t *testing.T) {
 	dir := t.TempDir()
-	_, err := ReadCredential(dir, "r2.restic-password")
-	if err == nil || !strings.Contains(err.Error(), "r2.restic-password") {
+	_, err := ReadCredential(dir, "r2.password")
+	if err == nil || !strings.Contains(err.Error(), "r2.password") {
 		t.Errorf("missing file error = %v, want it to name the file", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "empty"), []byte("\n"), 0o600); err != nil {
