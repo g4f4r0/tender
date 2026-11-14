@@ -24,23 +24,47 @@ AI clients read the hub's state over MCP, read-only.
 
 Usage: tender COMMAND [options]
 
-Commands:
+Work with the hub, from any machine that can reach it:
 ` + table([]row{
-	{"install agent --hub URL --machine NAME", "Install and start the agent on this machine"},
-	{"install hub", "Install and start the hub on this machine"},
-	{"install credential NAME", "Save a destination's key or password from stdin"},
+	{"status", "Show the machines, their last backup and the open alerts"},
+	{"machines COMMAND", "list, add, remove, rotate-token"},
+	{"destinations COMMAND", "list, add, remove"},
+	{"backups COMMAND", "status, set, unset"},
+	{"recipients COMMAND", "list, add, remove"},
+	{"email test", "Send a test email to every recipient"},
+}) + `
+Set up this machine (run as root):
+` + table([]row{
+	{"install agent --hub URL --machine NAME", "Install and start the agent"},
+	{"install hub [--smtp-host HOST ...]", "Install and start the hub"},
 	{"install refresh", "Restart the installed services on this binary"},
 	{"update [--version vX.Y.Z]", "Update Tender to the latest release"},
+}) + `
+Run as services:
+` + table([]row{
+	{"hub [--listen ADDR] [--database PATH]", "Run the hub (its service does this)"},
 	{"agent [--config PATH]", "Run the agent (its service does this)"},
-	{"hub [--config PATH]", "Run the hub (its service does this)"},
-	{"hub help", "List the hub's administration commands"},
 	{"mcp --stdio [--database PATH]", "Serve the read-only MCP tools over stdio"},
+}) + `
+Other:
+` + table([]row{
 	{"version", "Print the version"},
 	{"help", "Print this help"},
 }) + `
-Install and update run as root. Run "tender COMMAND --help" for a command's options.
+Commands that talk to the hub take --hub URL, or read TENDER_HUB (default ` + defaultHub + `).
+Run "tender COMMAND --help" for a command's options.
 Docs: ` + docsURL + `
 `
+
+// hubCommands are the commands that talk to the hub over its REST API, and need no root.
+var hubCommands = map[string]func([]string, session) error{
+	"status":       runStatus,
+	"machines":     runMachines,
+	"destinations": runDestinations,
+	"backups":      runBackups,
+	"recipients":   runRecipients,
+	"email":        runEmail,
+}
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
@@ -64,7 +88,7 @@ func main() {
 	case "mcp":
 		err = runMCP(os.Args[2:], log)
 	case "install":
-		err = runInstall(os.Args[2:], os.Stdin, os.Stdout)
+		err = runInstall(os.Args[2:], os.Stdin, newSession())
 	case "update":
 		err = runUpdate(os.Args[2:], cleanVersion, os.Stdout)
 	case "version":
@@ -72,8 +96,12 @@ func main() {
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
-		fmt.Fprintf(os.Stderr, "tender: unknown command %q. Run \"tender help\" for the commands.\n", os.Args[1])
-		os.Exit(2)
+		run, ok := hubCommands[os.Args[1]]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "tender: unknown command %q. Run \"tender help\" for the commands.\n", os.Args[1])
+			os.Exit(2)
+		}
+		err = run(os.Args[2:], newSession())
 	}
 	if errors.Is(err, flag.ErrHelp) {
 		return // the usage is printed

@@ -141,3 +141,16 @@ func TestIdempotencyKeyIsReusedOnRetry(t *testing.T) {
 		t.Error("NewKey repeats")
 	}
 }
+
+func TestNoTokenSendsNoAuthorization(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Header["Authorization"]; ok {
+			t.Errorf("Authorization = %q, want no header", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	if err := New(srv.URL, "").Do(context.Background(), http.MethodDelete, "/v1/x", "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}

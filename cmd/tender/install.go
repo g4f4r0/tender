@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/install"
 )
 
@@ -22,23 +21,23 @@ Commands:
 ` + table([]row{
 	{"agent --hub URL --machine NAME", "Install and start the agent on this machine"},
 	{"hub", "Install and start the hub on this machine"},
-	{"credential NAME", "Save a destination's key or password from stdin"},
 	{"refresh", "Restart the installed services on this binary"},
 }) + `
-Run "tender install COMMAND --help" for a command's options. The hub token and the credentials
-come from stdin (one line) or a token file, never from arguments.
+Run "tender install COMMAND --help" for a command's options. The hub token comes from stdin
+(one line) or a token file, never from an argument. The SMTP password is asked for with typing
+hidden, or comes from a file.
 `
 
-// runInstall runs "tender install agent|hub|credential|refresh". It needs root.
-func runInstall(args []string, stdin io.Reader, out io.Writer) error {
+// runInstall runs "tender install agent|hub|refresh". It needs root.
+func runInstall(args []string, stdin io.Reader, s session) error {
+	out := s.out
 	if len(args) == 0 {
 		_, _ = io.WriteString(out, installUsage)
 		return errUsageShown
 	}
 	var agent install.AgentOptions
 	var hub install.HubOptions
-	var tokenFile, emailTo, emailFrom, smtpHost, smtpUsername string
-	var smtpPort int
+	var tokenFile, smtpPasswordFile string
 	var fs *flag.FlagSet
 	switch args[0] {
 	case "help", "-h", "--help":
@@ -55,22 +54,17 @@ func runInstall(args []string, stdin io.Reader, out io.Writer) error {
 		fs.StringVar(&tokenFile, "token-file", "", "`PATH` file with the hub token (default: one line on stdin)")
 		fs.BoolVar(&agent.Force, "force", false, "replace an existing /etc/tender/agent.toml")
 	case "hub":
-		fs = newFlagSet("install hub", "[--force]\n[--email-to ADDRESSES --email-from SENDER --smtp-host HOST]\n[--smtp-port PORT --smtp-username USER]",
+		fs = newFlagSet("install hub", "[--smtp-host HOST --smtp-from SENDER]\n[--smtp-port PORT --smtp-username USER]\n[--smtp-password-file PATH]",
 			"Install and start the hub on this machine, then publish it with Tailscale Serve. Run as root.\n\n"+
-				"Alert emails are optional: pass all five --email and --smtp options, or none. "+
-				"Then save the SMTP password with: sudo tender install credential smtp-password < FILE")
-		fs.BoolVar(&hub.Force, "force", false, "replace an existing /etc/tender/hub.toml")
-		fs.StringVar(&emailTo, "email-to", "", "`ADDRESSES` comma-separated addresses that get alerts")
-		fs.StringVar(&emailFrom, "email-from", "", "`SENDER` the sender, such as \"Tender <alerts@example.net>\"")
-		fs.StringVar(&smtpHost, "smtp-host", "", "`HOST` the SMTP server")
-		fs.IntVar(&smtpPort, "smtp-port", 0, "`PORT` the SMTP port, implicit TLS (usually 465)")
-		fs.StringVar(&smtpUsername, "smtp-username", "", "`USER` the SMTP user name")
-	case "credential":
-		fs = newFlagSet("install credential", "NAME",
-			"Save a credential on this machine, read from one line on stdin. Run as root.\n\n"+
-				"A destination needs three, named after it: r2.password (the repository password), "+
-				"r2.access-key-id and r2.secret-access-key. Alerts by email need smtp-password.\n\n"+
-				"Example: sudo tender install credential r2.password < password.txt")
+				"The hub keeps its settings in /etc/tender/hub.env, with the key that encrypts the secrets it stores. "+
+				"The key is made once and stays on every later run. Back that file up.\n\n"+
+				"Alert emails are optional. Pass --smtp-host and --smtp-from to turn them on; "+
+				"with --smtp-username it asks for the SMTP password with typing hidden. Run the command again to change them.")
+		fs.StringVar(&hub.SMTPHost, "smtp-host", "", "`HOST` the SMTP server")
+		fs.StringVar(&hub.SMTPFrom, "smtp-from", "", "`SENDER` the sender, such as \"Tender <alerts@example.net>\"")
+		fs.IntVar(&hub.SMTPPort, "smtp-port", 0, "`PORT` the SMTP port, implicit TLS (default: 465)")
+		fs.StringVar(&hub.SMTPUsername, "smtp-username", "", "`USER` the SMTP login name, for servers that ask for one")
+		fs.StringVar(&smtpPasswordFile, "smtp-password-file", "", "`PATH` file with the SMTP password (default: ask)")
 	case "refresh":
 		fs = newFlagSet("install refresh", "",
 			"Check the pinned restic, rewrite the service units and restart the installed services. "+
@@ -81,30 +75,21 @@ func runInstall(args []string, stdin io.Reader, out io.Writer) error {
 	if err := parseFlags(fs, args[1:], out); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "install %s takes no arguments, got %q", args[0], fs.Arg(0))
+	}
 
 	switch args[0] {
 	case "agent":
-		if fs.NArg() > 0 {
-			return usageError(fs, "install agent takes no arguments, got %q", fs.Arg(0))
-		}
 		if (agent.Hub == "") != (agent.Machine == "") {
 			return usageError(fs, "install agent needs both --hub and --machine, or neither on a machine that already has an agent")
 		}
 	case "hub":
-		if fs.NArg() > 0 {
-			return usageError(fs, "install hub takes no arguments, got %q", fs.Arg(0))
+		if hub.SMTPPort < 0 || hub.SMTPPort > 65535 {
+			return usageError(fs, "--smtp-port must be a port number, 1 to 65535")
 		}
-		var err error
-		if hub.Email, err = emailFlags(emailTo, emailFrom, smtpHost, smtpUsername, smtpPort); err != nil {
-			return usageError(fs, "%v", err)
-		}
-	case "refresh":
-		if fs.NArg() > 0 {
-			return usageError(fs, "install refresh takes no arguments, got %q", fs.Arg(0))
-		}
-	case "credential":
-		if fs.NArg() != 1 {
-			return usageError(fs, "install credential needs one credential name, such as r2.password")
+		if smtpPasswordFile != "" && hub.SMTPUsername == "" {
+			return usageError(fs, "--smtp-password-file needs --smtp-username")
 		}
 	}
 	if os.Geteuid() != 0 {
@@ -112,20 +97,27 @@ func runInstall(args []string, stdin io.Reader, out io.Writer) error {
 	}
 
 	// Read the secret before anything changes on the machine.
-	var secret string
 	switch {
-	case args[0] != "agent" && args[0] != "credential":
-	case tokenFile != "":
+	case args[0] == "hub" && hub.SMTPUsername != "":
 		var err error
-		if secret, err = readFileLine(tokenFile); err != nil {
+		if hub.SMTPPassword, err = s.secret("SMTP password for "+hub.SMTPUsername, smtpPasswordFile, "smtp-password-file"); err != nil {
 			return err
 		}
-	case args[0] == "agent" && isTerminal(stdin):
+		if hub.SMTPPassword == "" {
+			return errors.New("the SMTP password is empty. Run the command again and type it, or pass --smtp-password-file PATH.")
+		}
+	case args[0] != "agent":
+	case tokenFile != "":
+		var err error
+		if agent.Token, err = readFileLine(tokenFile); err != nil {
+			return err
+		}
+	case isTerminal(stdin):
 		// Nobody piped a token in; an installed agent keeps its own, a new one gets a clear error.
 	default:
 		var err error
-		if secret, err = readLine(stdin); err != nil {
-			return fmt.Errorf("cannot read the value from stdin. Pipe it in, for example: tender install %s < FILE: %w", args[0], err)
+		if agent.Token, err = readLine(stdin); err != nil {
+			return fmt.Errorf("cannot read the token from stdin. Pipe it in, for example: tender install agent < FILE: %w", err)
 		}
 	}
 
@@ -136,30 +128,12 @@ func runInstall(args []string, stdin io.Reader, out io.Writer) error {
 	ctx := context.Background()
 	switch args[0] {
 	case "agent":
-		agent.Token = secret
 		return in.Agent(ctx, agent)
 	case "hub":
 		return in.Hub(ctx, hub)
-	case "refresh":
-		return in.Refresh(ctx)
 	default:
-		return in.Credential(ctx, fs.Arg(0), secret)
+		return in.Refresh(ctx)
 	}
-}
-
-// emailFlags returns the [email] settings, nil when no flag is set. The five come together.
-func emailFlags(to, from, host, username string, port int) (*config.Email, error) {
-	if to == "" && from == "" && host == "" && username == "" && port == 0 {
-		return nil, nil
-	}
-	if to == "" || from == "" || host == "" || username == "" || port == 0 {
-		return nil, errors.New("alert emails need --email-to, --email-from, --smtp-host, --smtp-port and --smtp-username together. Pass all five, or none")
-	}
-	e := &config.Email{Host: host, Port: port, Username: username, From: from}
-	for _, a := range strings.Split(to, ",") {
-		e.To = append(e.To, strings.TrimSpace(a))
-	}
-	return e, nil
 }
 
 // isTerminal reports whether r is a terminal or /dev/null, where no one is piping a secret in.
@@ -184,7 +158,7 @@ func readLine(r io.Reader) (string, error) {
 func readFileLine(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("cannot read the token file %s. Check the path and that you can read it: %w", path, err)
+		return "", fmt.Errorf("cannot read %s. Check the path and that you can read it: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 	return readLine(f)

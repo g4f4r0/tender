@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ func newHub(t *testing.T) *hub {
 	h := &hub{t: t, fail: map[string]failure{}, nextID: 1, settings: &Settings{
 		Destination: Destination{Name: "r2-test", Type: "s3", Endpoint: "https://x.example", Bucket: "b"},
 		Schedule:    "30 3 * * *", RetentionDays: 30,
+		Credentials: &Credentials{AccessKeyID: "test-access-key-id", SecretAccessKey: "test-secret-access-key", Password: "test-only-password"},
 	}}
 	h.srv = httptest.NewServer(h)
 	t.Cleanup(h.srv.Close)
@@ -178,31 +180,125 @@ func testAgent(t *testing.T, h *hub) (*Agent, *stubRunner) {
 	return a, stub
 }
 
-// Right after "tender install agent" the destination's keys aren't saved yet. The agent waits for
-// them instead of recording a failed backup, and backs up as soon as they're there.
+// Settings without credentials mean the machine isn't ready, not that a backup failed. The agent
+// waits and logs once, records nothing, and backs up as soon as the hub sends the credentials.
 func TestWaitsForCredentials(t *testing.T) {
 	h := newHub(t)
+	h.settings.Credentials = nil
 	a, stub := testAgent(t, h)
+	var logs strings.Builder
+	a.Log = slog.New(slog.NewTextHandler(&logs, nil))
 	ctx := context.Background()
 	a.refreshSettings(ctx)
 	h.seen()
+	if _, err := os.Stat(a.settingsFile()); err == nil {
+		t.Error("settings without credentials were saved as the last good copy")
+	}
 
-	a.CredentialsDir = t.TempDir()
-	a.newRunner = a.newRestic // the real one, which reads the credential files
+	a.newRunner = a.newRestic // the real one, which needs the credentials
 	a.runDue(ctx)
 	a.runDue(ctx)
 	if got := routes(h.seen()); len(got) != 0 || len(stub.calls) != 0 {
 		t.Fatalf("without credentials: requests %v, restic calls %v; want none", got, stub.calls)
+	}
+	if n := strings.Count(logs.String(), "waiting for the hub"); n != 1 {
+		t.Errorf("logged the wait %d times, want once:\n%s", n, logs.String())
 	}
 	st, err := loadState(filepath.Join(a.StateDir, "agent-state.json"))
 	if err != nil || !st.LastBackup.IsZero() {
 		t.Fatalf("last backup = %v, %v; want still due", st.LastBackup, err)
 	}
 
-	a.newRunner = func(Settings) (Runner, error) { return stub, nil } // the keys are saved now
+	h.settings.Credentials = &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"} // the hub has them now
+	a.refreshSettings(ctx)
+	a.newRunner = func(Settings) (Runner, error) { return stub, nil }
 	a.runDue(ctx)
 	if !strings.HasPrefix(strings.Join(stub.calls, ","), "backup") {
-		t.Errorf("after the keys arrived, restic calls = %v, want a backup", stub.calls)
+		t.Errorf("after the credentials arrived, restic calls = %v, want a backup", stub.calls)
+	}
+}
+
+// The settings, with the credentials the hub sent, are saved for a restart with the hub down, and
+// only the owner can read them.
+func TestSavedSettingsKeepCredentialsAt0600(t *testing.T) {
+	h := newHub(t)
+	a, _ := testAgent(t, h)
+	a.refreshSettings(context.Background())
+	fi, err := os.Stat(a.settingsFile())
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("settings file = %v, %v; want mode 0600", fi, err)
+	}
+	b := NewAgent(h.client(), "m1", a.StateDir, a.Log)
+	b.loadSavedSettings()
+	if b.settings == nil || b.settings.Credentials == nil || b.settings.Credentials.Password != "test-only-password" {
+		t.Errorf("settings after a restart = %+v", b.settings)
+	}
+}
+
+// The password reaches restic through a 0600 file and the keys through the child's environment.
+func TestNewResticUsesHubCredentials(t *testing.T) {
+	h := newHub(t)
+	a, _ := testAgent(t, h)
+	r, err := a.newRestic(*h.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restic := r.(*Restic)
+	b, err := os.ReadFile(restic.PasswordFile)
+	if err != nil || string(b) != "test-only-password" {
+		t.Errorf("password file = %q, %v", b, err)
+	}
+	if fi, _ := os.Stat(restic.PasswordFile); fi.Mode().Perm() != 0o600 {
+		t.Errorf("password file mode = %v, want 0600", fi.Mode().Perm())
+	}
+	if want := []string{"AWS_ACCESS_KEY_ID=test-access-key-id", "AWS_SECRET_ACCESS_KEY=test-secret-access-key"}; strings.Join(restic.Env, ",") != strings.Join(want, ",") {
+		t.Errorf("env = %v, want %v", restic.Env, want)
+	}
+	if restic.Repository != "s3:https://x.example/b/m1" {
+		t.Errorf("repository = %q", restic.Repository)
+	}
+}
+
+// TestAgentWithRealResticUsesSettingsPassword runs a due backup end to end against the fake hub
+// with the real restic and a local repository. The repository is created with the password the
+// hub sent in the settings, and nothing else holds it.
+func TestAgentWithRealResticUsesSettingsPassword(t *testing.T) {
+	bin := lookRestic(t)
+	h := newHub(t)
+	a, _ := testAgent(t, h)
+	a.ResticBin = bin
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha\n")
+	a.Paths = []string{src}
+	repo := filepath.Join(t.TempDir(), "repo")
+	a.newRunner = func(s Settings) (Runner, error) { // the real runner, pointed at a local repository
+		r, err := a.newRestic(s)
+		if err != nil {
+			return nil, err
+		}
+		r.(*Restic).Repository = repo
+		return r, nil
+	}
+	ctx := context.Background()
+	a.refreshSettings(ctx)
+	h.seen()
+	a.runDue(ctx)
+
+	got := routes(h.seen())
+	if len(got) < 3 || got[0] != "POST "+m1+"history" || got[1] != "PUT "+m1+"snapshots" || got[2] != "PATCH "+m1+"history/1" {
+		t.Fatalf("requests = %v", got)
+	}
+	check := &Restic{Bin: bin, Repository: repo, PasswordFile: filepath.Join(t.TempDir(), "pw"), Host: "m1", CacheDir: t.TempDir(), StateDir: t.TempDir()}
+	writeFile(t, check.PasswordFile, "test-only-password")
+	if c := check.Check(ctx); c.Status != StatusCompleted {
+		t.Errorf("the repository does not open with the settings' password: %+v", c)
+	}
+	snaps, err := check.Snapshots(ctx)
+	if err != nil || len(snaps) != 1 {
+		t.Errorf("snapshots = %v, %v", snaps, err)
 	}
 }
 
@@ -413,7 +509,7 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	}
 
 	h.mu.Lock()
-	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "0 1 * * *", RetentionDays: 14}
+	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "0 1 * * *", RetentionDays: 14, Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}
 	h.mu.Unlock()
 	a.refreshSettings(ctx)
 	if a.settings == nil || a.settings.RetentionDays != 14 {
@@ -432,7 +528,7 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	// An unusable schedule from the hub doesn't replace a good copy.
 	h.setDown(false)
 	h.mu.Lock()
-	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "nonsense", RetentionDays: 1}
+	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "nonsense", RetentionDays: 1, Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}
 	h.mu.Unlock()
 	b.refreshSettings(ctx)
 	if b.settings.RetentionDays != 14 {

@@ -25,7 +25,8 @@ ConfigurationDirectory=tender
 Environment=RESTIC_CACHE_DIR=%C/tender
 Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
 
-# Credentials are files in /etc/tender/credentials (0750 root:tender, files 0640), which the agent reads directly.
+# The hub token is the one file in /etc/tender/credentials (0750 root:tender, file 0640). The agent gets
+# its destination and keys from the hub and keeps them in its state folder.
 
 # Read every file, write nothing outside the directories above.
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
