@@ -1,0 +1,91 @@
+// Package config loads the agent's TOML file and reads its credential files.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// DefaultAgentPath is where the agent reads its config when --config isn't given.
+const DefaultAgentPath = "/etc/tender/agent.toml"
+
+// Agent is /etc/tender/agent.toml. The destination, schedule and retention come from the hub.
+type Agent struct {
+	Hub     string  `toml:"hub"`
+	Machine string  `toml:"machine"`
+	Backups Backups `toml:"backups"`
+}
+
+// Backups says what to back up.
+type Backups struct {
+	Paths   []string `toml:"paths"`
+	Exclude []string `toml:"exclude"`
+}
+
+// DefaultExclude is used when the config has no exclude key.
+var DefaultExclude = []string{
+	"/var/lib/docker", "/var/lib/containerd", "/var/cache", "/tmp", "/var/tmp",
+	"/home/*/.cache", "/home/*/.local/share/tug/docker", "**/node_modules",
+}
+
+// LoadAgent reads and validates the agent config. Unknown keys are errors, so a typo
+// can't silently turn a setting off.
+func LoadAgent(path string) (Agent, error) {
+	var a Agent
+	md, err := toml.DecodeFile(path, &a)
+	if err != nil {
+		return Agent{}, fmt.Errorf("read config %s: %w", path, err)
+	}
+	if keys := md.Undecoded(); len(keys) > 0 {
+		names := make([]string, len(keys))
+		for i, k := range keys {
+			names[i] = k.String()
+		}
+		return Agent{}, fmt.Errorf("config %s: unknown keys: %s", path, strings.Join(names, ", "))
+	}
+	if a.Machine == "" {
+		return Agent{}, fmt.Errorf("config %s: machine is required", path)
+	}
+	u, err := url.Parse(a.Hub)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return Agent{}, fmt.Errorf("config %s: hub must be an http or https URL", path)
+	}
+	if len(a.Backups.Paths) == 0 {
+		a.Backups.Paths = []string{"/"}
+	}
+	if !md.IsDefined("backups", "exclude") {
+		a.Backups.Exclude = DefaultExclude
+	}
+	return a, nil
+}
+
+// CredentialsDir is $CREDENTIALS_DIRECTORY under systemd, else /etc/tender/credentials.
+func CredentialsDir() string {
+	if d := os.Getenv("CREDENTIALS_DIRECTORY"); d != "" {
+		return d
+	}
+	return "/etc/tender/credentials"
+}
+
+// ReadCredential returns the content of dir/name without its trailing newline.
+// Errors name the file, never its content.
+func ReadCredential(dir, name string) (string, error) {
+	if name == "" || name != filepath.Base(name) {
+		return "", fmt.Errorf("credential name %q must be a plain file name", name)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return "", fmt.Errorf("credential %s: %w", name, err)
+	}
+	v := strings.TrimRight(string(b), "\r\n")
+	if v == "" {
+		return "", errors.New("credential " + name + " is empty")
+	}
+	return v, nil
+}

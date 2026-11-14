@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/db"
@@ -19,16 +20,24 @@ var migrationFiles embed.FS
 // Migrations creates the server's own tables. It needs the machines domain's tables first.
 var Migrations = db.Migrations{Domain: "server", Files: migrationFiles, Dir: "migrations"}
 
-// Server routes REST requests under /v1.
-type Server struct {
-	mux *http.ServeMux
-	db  *db.DB
-	log *slog.Logger
+// List is the shape of every collection response: {"data": [...], "next_cursor": "..."}.
+type List[T any] struct {
+	Data       []T    `json:"data"`
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
-// New returns a server with GET /v1/health registered.
-func New(d *db.DB, log *slog.Logger) *Server {
-	s := &Server{mux: http.NewServeMux(), db: d, log: log}
+// Server routes REST requests under /v1.
+type Server struct {
+	mux      *http.ServeMux
+	db       *db.DB
+	log      *slog.Logger
+	machines Machines
+	keys     sync.Mutex // serializes requests that carry an Idempotency-Key
+}
+
+// New returns a server with GET /v1/health registered. Machines resolves tokens and names.
+func New(d *db.DB, log *slog.Logger, machines Machines) *Server {
+	s := &Server{mux: http.NewServeMux(), db: d, log: log, machines: machines}
 	s.mux.HandleFunc("GET /v1/health", s.health)
 	return s
 }
@@ -44,8 +53,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.mux.ServeHTTP(rec, r)
 	}
-	s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
-		"duration_ms", time.Since(start).Milliseconds())
+	attrs := []any{"method", r.Method, "path", r.URL.Path, "status", rec.status,
+		"duration_ms", time.Since(start).Milliseconds()}
+	if user := r.Header.Get(loginHeader); user != "" {
+		attrs = append(attrs, "user", user)
+	}
+	s.log.Info("request", attrs...)
 }
 
 // notRouted answers requests that match no route (404) or no method (405) with problem
