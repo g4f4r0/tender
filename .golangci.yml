@@ -1,0 +1,44 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        machines:
+          files: ["**/internal/machines/**"]
+          deny:
+            - pkg: github.com/g4f4r0/tender/internal/backups
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+        backups:
+          files: ["**/internal/backups/**"]
+          deny:
+            - pkg: github.com/g4f4r0/tender/internal/machines
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+        notifications:
+          files: ["**/internal/notifications/**"]
+          deny:
+            - pkg: github.com/g4f4r0/tender/internal/machines
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/backups
+              desc: domains must not import each other
+        shared:
+          files:
+            - "**/internal/db/**"
+            - "**/internal/config/**"
+            - "**/internal/server/**"
+            - "**/internal/mcp/**"
+            - "**/internal/client/**"
+          deny:
+            - pkg: github.com/g4f4r0/tender/internal/machines
+              desc: shared packages must not import a domain; only cmd/tender wires domains
+            - pkg: github.com/g4f4r0/tender/internal/backups
+              desc: shared packages must not import a domain; only cmd/tender wires domains
+            - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: shared packages must not import a domain; only cmd/tender wires domains
