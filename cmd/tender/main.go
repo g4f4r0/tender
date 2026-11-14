@@ -20,7 +20,7 @@ import (
 var version = "dev"
 
 var usage = `Tender backs up whole servers on a schedule and reports every run to a hub.
-AI clients read the hub's state over MCP, read-only.
+AI clients can check on it and manage it over MCP.
 
 Usage: tender COMMAND [options]
 
@@ -44,7 +44,7 @@ Run as services:
 ` + table([]row{
 	{"hub [--listen ADDR] [--database PATH]", "Run the hub (its service does this)"},
 	{"agent [--config PATH]", "Run the agent (its service does this)"},
-	{"mcp --stdio [--database PATH]", "Serve the read-only MCP tools over stdio"},
+	{"mcp --stdio [--database PATH]", "Serve the MCP tools over stdio, on the hub machine"},
 }) + `
 Other:
 ` + table([]row{
