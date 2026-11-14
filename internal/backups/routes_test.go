@@ -585,3 +585,21 @@ func TestSummary(t *testing.T) {
 	h.status(404, "GET", "/v1/machines/zzz/backups", "", nil)
 	h.status(401, "GET", "/v1/backups", "tok-a", nil)
 }
+
+func TestLastCompleted(t *testing.T) {
+	h := newHub(t)
+	h.setup()
+	h.run("tok-a", "a", backups.HistoryInput{Type: "backup", Status: "completed", CreatedAt: base})
+	h.run("tok-a", "a", backups.HistoryInput{Type: "backup", Status: "completed", CreatedAt: base.Add(time.Hour)})
+	h.run("tok-a", "a", backups.HistoryInput{Type: "backup", Status: "failed", Error: ptr("boom"), CreatedAt: base.Add(2 * time.Hour)})
+	h.run("tok-a", "a", backups.HistoryInput{Type: "check", Status: "completed", CreatedAt: base.Add(3 * time.Hour)})
+	h.run("tok-b", "b", backups.HistoryInput{Type: "backup", Status: "failed", Error: ptr("boom"), CreatedAt: base})
+
+	got, err := h.store.LastCompleted(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got["a"].Equal(base.Add(time.Hour)) {
+		t.Errorf("got %v, want only a, at the newest completed backup", got)
+	}
+}

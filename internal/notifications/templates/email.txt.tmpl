@@ -1,0 +1,28 @@
+{{define "opened.subject"}}{{.Machine}}: {{.Title}}{{end}}
+{{define "opened"}}{{.Content}}
+
+This is {{.Severity}} and has been open since {{.Since}}.
+
+To look closer, ask your AI client to call {{.Tool}} for {{.Machine}}.
+
+You'll get one more email when this is resolved.
+
+Sent by the tender hub on {{.Hub}}.
+{{end}}
+{{define "escalated.subject"}}{{.Machine}}: {{.Title}}, now critical{{end}}
+{{define "escalated"}}{{.Content}}
+
+This was a warning and is now critical. It has been open since {{.Since}}.
+
+To look closer, ask your AI client to call {{.Tool}} for {{.Machine}}.
+
+Sent by the tender hub on {{.Hub}}.
+{{end}}
+{{define "resolved.subject"}}{{.Machine}}: {{.Title}}, resolved{{end}}
+{{define "resolved"}}This is resolved as of {{.ResolvedAt}}. It was open for {{.Duration}}.
+
+Sent by the tender hub on {{.Hub}}.
+{{end}}
+{{define "test.subject"}}tender test email{{end}}
+{{define "test"}}This is a test from the tender hub on {{.Hub}}. If you can read it, alert emails reach you.
+{{end}}

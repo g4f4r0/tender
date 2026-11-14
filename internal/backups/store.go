@@ -499,3 +499,25 @@ func isNotFound(err error) bool {
 	var e *server.Error
 	return errors.As(err, &e) && e.Status == 404
 }
+
+// LastCompleted returns when each machine's newest completed backup started, by machine name.
+// Machines with none are missing. It reads the machines table for the names, like Summaries.
+func (s *Store) LastCompleted(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.Read.QueryContext(ctx,
+		`SELECT m.name, max(h.created_at) FROM backup_history h JOIN machines m ON m.id = h.machine_id
+		 WHERE h.type = ? AND h.status = ? GROUP BY m.id`, TypeBackup, StatusCompleted)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var name string
+		var created int64
+		if err := rows.Scan(&name, &created); err != nil {
+			return nil, err
+		}
+		out[name] = at(created)
+	}
+	return out, rows.Err()
+}
