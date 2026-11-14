@@ -1,6 +1,6 @@
 # tender
 
-One Go binary that orchestrates restic backups across machines and serves their state to AI clients over MCP. `tender agent` runs on each machine; `tender hub` stores state in SQLite and serves the REST API and MCP. V1 is read-only and has no web UI.
+One Go binary that orchestrates restic backups across machines and serves their state to AI clients over MCP. `tender agent` runs on each machine; `tender hub` stores state in SQLite and serves the REST API and MCP. V1 has no web UI and no login: people and AI clients manage it through the `tender` CLI and MCP, which have the same features as the REST API.
 
 ## Commands
 
