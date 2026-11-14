@@ -141,16 +141,7 @@ func TestMissingBinaryFails(t *testing.T) {
 
 // TestResticIntegration runs the real restic against a local repository.
 func TestResticIntegration(t *testing.T) {
-	bin, err := exec.LookPath("restic")
-	if err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			bin = filepath.Join(home, ".local", "bin", "restic")
-			_, err = os.Stat(bin)
-		}
-	}
-	if err != nil {
-		t.Skip("restic is not installed")
-	}
+	bin := lookRestic(t)
 	ctx := context.Background()
 
 	src := filepath.Join(t.TempDir(), "src")
@@ -248,4 +239,20 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// lookRestic finds the real restic, on PATH or in ~/.local/bin, or skips the test.
+func lookRestic(t *testing.T) string {
+	t.Helper()
+	bin, err := exec.LookPath("restic")
+	if err != nil {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			bin = filepath.Join(home, ".local", "bin", "restic")
+			_, err = os.Stat(bin)
+		}
+	}
+	if err != nil {
+		t.Skip("restic is not installed")
+	}
+	return bin
 }
