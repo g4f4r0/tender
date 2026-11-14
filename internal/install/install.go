@@ -49,6 +49,12 @@ type Installer struct {
 	ResticArchiveSHA256 string // of the downloaded .bz2
 	ResticBinarySHA256  string // of the decompressed restic
 
+	Version     string // the running tender version, "dev" for a local build
+	LatestURL   string // answers with the newest release as JSON, including its tag_name
+	DownloadURL string // holds the releases: <DownloadURL>/<tag>/<file>
+
+	Refreshing bool // refresh the installed services: restart them whatever changed, skip the next steps
+
 	changed bool // some file changed during this run
 }
 
@@ -61,6 +67,7 @@ func New(out io.Writer) (*Installer, error) {
 	return &Installer{
 		Root: "/", Run: execRunner, Out: out, Platform: runtime.GOOS + "/" + runtime.GOARCH, Binary: self,
 		ResticURL: resticURL, ResticArchiveSHA256: resticArchiveSHA256, ResticBinarySHA256: resticBinarySHA256,
+		Version: "dev", LatestURL: latestURL, DownloadURL: downloadURL,
 	}, nil
 }
 
@@ -213,7 +220,7 @@ func (in *Installer) enable(ctx context.Context, unit string, unitChanged, exist
 	if _, err := in.run(ctx, "systemctl", "enable", "--now", unit); err != nil {
 		return err
 	}
-	if in.changed && existed {
+	if (in.changed || in.Refreshing) && existed {
 		_, err := in.run(ctx, "systemctl", "restart", unit)
 		return err
 	}
@@ -230,7 +237,7 @@ func (in *Installer) Credential(ctx context.Context, name, value string) error {
 		return fmt.Errorf("credential name %q: use lower-case letters, digits, dots and dashes, starting with a letter or digit", name)
 	}
 	if value == "" {
-		return errors.New("the credential value is empty")
+		return errors.New("the credential value is empty: pipe it in, for example tender install credential NAME < file")
 	}
 	if err := in.ensureDir(ctx, etcDir, 0o755, ""); err != nil {
 		return err
@@ -259,7 +266,10 @@ func (in *Installer) Credential(ctx context.Context, name, value string) error {
 	return in.enable(ctx, "tender-hub", unitChanged, true)
 }
 
-const hubUnitPath = unitDir + "/tender-hub.service"
+const (
+	agentUnitPath = unitDir + "/tender-agent.service"
+	hubUnitPath   = unitDir + "/tender-hub.service"
+)
 
 // hubUnit is the hub's unit file. systemd fails a unit whose LoadCredential path is missing, so
 // the smtp-password line goes in only when the file exists.
@@ -288,11 +298,14 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	}
 	tokenPath := filepath.Join(credentialDir, "hub-token")
 	if _, err := os.Stat(in.path(tokenPath)); o.Token == "" && err != nil {
-		return errors.New("no hub token: pass it on stdin or with --token-file")
+		return errors.New("tender has no hub token for this machine yet: add --token-file PATH, or pipe the token in on stdin")
 	}
 	const configPath = etcDir + "/agent.toml"
 	var cfg []byte
 	if _, err := os.Stat(in.path(configPath)); err != nil || o.Force {
+		if o.Hub == "" || o.Machine == "" {
+			return errors.New("this machine has no agent config yet: pass --hub and --machine")
+		}
 		paths, err := in.mountPaths(ctx)
 		if err != nil {
 			return err
@@ -309,7 +322,7 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	if err != nil {
 		return err
 	}
-	unitPath := filepath.Join(unitDir, "tender-agent.service")
+	unitPath := agentUnitPath
 	_, statErr := os.Stat(in.path(unitPath))
 	existed := statErr == nil
 
@@ -335,7 +348,9 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	if err := in.enable(ctx, "tender-agent", unitChanged, existed); err != nil {
 		return err
 	}
-	in.say("\nNext:\n1. Add each destination's keys: tender install credential NAME < file, for example NAME r2-apps.restic-password.\n2. Check the agent: journalctl -u tender-agent -f")
+	if !in.Refreshing {
+		in.say("\nNext:\n1. Add each destination's keys: tender install credential NAME < file, for example NAME r2-apps.restic-password.\n2. Check the agent: journalctl -u tender-agent -f")
+	}
 	return nil
 }
 

@@ -60,24 +60,34 @@ func (in *Installer) installRestic(ctx context.Context) error {
 }
 
 func (in *Installer) download(ctx context.Context) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, in.ResticURL, nil)
+	b, err := get(ctx, in.ResticURL, maxArchiveBytes)
+	if err != nil {
+		return nil, fmt.Errorf("download restic: %w", err)
+	}
+	return b, nil
+}
+
+// get downloads url over HTTP(S) and refuses an answer larger than limit bytes.
+func get(ctx context.Context, url string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", "tender")
 	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download restic: %w", err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download restic: %s", resp.Status)
+		return nil, fmt.Errorf("%s answered %s", url, resp.Status)
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxArchiveBytes+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("download restic: %w", err)
+		return nil, err
 	}
-	if len(b) > maxArchiveBytes {
-		return nil, errors.New("download restic: more than 64 MB")
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%s is larger than %d MB", url, limit>>20)
 	}
 	return b, nil
 }
