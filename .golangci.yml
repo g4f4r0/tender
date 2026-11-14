@@ -35,6 +35,7 @@ linters:
             - "**/internal/server/**"
             - "**/internal/mcp/**"
             - "**/internal/client/**"
+            - "**/internal/install/**"
           deny:
             - pkg: github.com/g4f4r0/tender/internal/machines
               desc: shared packages must not import a domain; only cmd/tender wires domains

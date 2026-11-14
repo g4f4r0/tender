@@ -1,0 +1,53 @@
+[Unit]
+Description=tender hub (receives agent reports, read-only MCP, notifications)
+Documentation=https://github.com/g4f4r0/tender
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tender
+Group=tender
+ExecStart=/usr/local/bin/tender hub --config /etc/tender/hub.toml
+Restart=always
+RestartSec=5
+
+StateDirectory=tender/hub
+StateDirectoryMode=0700
+ConfigurationDirectory=tender
+# "tender install hub" drops this line when the file does not exist: systemd fails the unit on a missing path.
+LoadCredential=smtp-password:/etc/tender/credentials/smtp-password
+
+# Listens on 127.0.0.1 only; `tailscale serve` is the only way in.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SocketBindDeny=any
+SocketBindAllow=tcp:8080
+UMask=0077
+RemoveIPC=yes
+
+[Install]
+WantedBy=multi-user.target
