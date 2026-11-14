@@ -24,3 +24,21 @@ type Notification struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// Recipient is an email address that gets every alert, as GET /v1/notifications/recipients lists it.
+type Recipient struct {
+	ID        int64     `json:"id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// RecipientInput is the body of POST /v1/notifications/recipients.
+type RecipientInput struct {
+	Email string `json:"email"`
+}
+
+// TestResult is the 202 response of POST /v1/notifications/test.
+type TestResult struct {
+	SentTo []string `json:"sent_to"`
+}
