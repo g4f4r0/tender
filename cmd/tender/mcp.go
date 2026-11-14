@@ -29,6 +29,9 @@ func runMCP(args []string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if err := dropToDatabaseOwner(*database); err != nil {
+		return err
+	}
 	if _, err := os.Stat(*database); err != nil {
 		return fmt.Errorf("no database at %s: run \"tender hub\" once to create it, or pass --database", *database)
 	}

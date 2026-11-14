@@ -62,7 +62,7 @@ func defaultState() string {
 	if d := os.Getenv("STATE_DIRECTORY"); d != "" {
 		return d
 	}
-	return "/var/lib/tender"
+	return "/var/lib/tender/agent"
 }
 
 // postUsage sends a reading now and every 60 seconds until ctx ends. A missed reading is not queued.

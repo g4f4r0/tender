@@ -241,6 +241,9 @@ func hubCommand(name string, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := dropToDatabaseOwner(cfg.Database); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	d, err := openHub(ctx, cfg.Database)
 	if err != nil {
