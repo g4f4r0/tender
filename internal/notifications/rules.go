@@ -64,6 +64,9 @@ type Machine struct {
 	DockerReason             string // why it is unreachable: socket_missing, permission_denied, refused, timeout or error
 	DockerUnreachableReports int
 	DockerReportedAt         *time.Time // when the daemon's latest services report arrived; nil before the first
+
+	Security     *Security      // its security checks; nil before the first report
+	UpdateFailed *UpdateFailure // its last update of Tender, when it failed
 }
 
 // The Docker states a daemon reports.
@@ -83,6 +86,8 @@ const (
 // that is gone, never stay.
 func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 	switch {
+	case isSystem(n.Type):
+		return silent
 	case n.Service != nil:
 		i := slices.IndexFunc(m.Services, func(s Service) bool { return s.Name == *n.Service })
 		if i < 0 || !m.Services[i].AlertsEnabled {
@@ -197,6 +202,7 @@ func evaluate(m Machine, now time.Time) []finding {
 	if len(out) > 0 && out[0].typ == TypeMachineSilent {
 		return out
 	}
+	out = append(out, evaluateSystem(m, now)...)
 	switch {
 	case m.DockerUnreachableReports >= serviceReports:
 		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
