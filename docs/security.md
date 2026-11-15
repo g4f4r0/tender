@@ -27,6 +27,8 @@ Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in t
 
 A log sink's secrets are an OTLP sink's `headers`, a webhook sink's signing `secret`, and the query string of either one's URL, which can carry a key and shows as `?***`. The hub stores them in its database encrypted under the same key, and every route, MCP tool and CLI command shows them as `"***"`. The only time one is shown is a webhook secret the hub made, once, in the answer that added the sink.
 
+The Cloudflare API token, for apps' `cloudflare` routes, is stored the same way and always shows as `"***"`. A tunnel's token goes only to that machine's daemon, which hands it to cloudflared in its environment. [Exposure](exposure.md#cloudflare) explains both.
+
 The hub sends a sink's whole config, secrets included, only to the daemons of the machines the sink applies to, signed in with their own tokens. Each daemon keeps the list in `/var/lib/tender/daemon/logs/sinks.json`, which only root can read, so it can go on sending while the hub is down. `last_error` never holds a sink's answer or its URL.
 
 ## Machine tokens

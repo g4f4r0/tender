@@ -32,6 +32,7 @@ Each guide does one task.
 6. [Metrics](metrics.md) lists what the hub serves to Prometheus at `/metrics`.
 7. [Security](security.md) explains who can reach the hub, how secrets are stored, what the daemon can do and what it checks on each machine.
 8. [Updates](updates.md) explains how Tender updates itself from the hub, one machine at a time.
+9. [Exposure](exposure.md) explains how an app's routes reach people through Tailscale, a Cloudflare tunnel or Caddy.
 
 ## Reference
 
