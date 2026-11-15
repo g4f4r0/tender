@@ -203,7 +203,7 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		"headers": map[string]any{"Authorization": "Bearer " + otlpKey}}})
 	rest("POST", "/v1/logs/sinks", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/in", "secret": hookSecret}})
 	rest("POST", "/v1/logs/sinks", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/in", "secret": hookSecret}}) // 409
-	rest("POST", "/v1/logs/sinks", map[string]any{"name": "bad", "type": "webhook", "config": map[string]any{"url": "nope", "secret": hookSecret}})                     // 422
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "bad", "type": "webhook", "config": map[string]any{"url": "nope", "secret": hookSecret}})                         // 422
 	rest("PATCH", "/v1/logs/sinks/hook", map[string]any{"config": map[string]any{"secret": newHookSec}})
 	rest("PATCH", "/v1/logs/sinks/hook", map[string]any{"config": map[string]any{"secret": newHookSec, "url": "nope"}}) // 422
 	rest("GET", "/v1/logs/sinks", nil)
