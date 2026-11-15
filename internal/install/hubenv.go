@@ -153,3 +153,15 @@ func envValue(text []byte, name string) string {
 	}
 	return ""
 }
+
+// envVars returns every variable an env file's text sets, without quotes.
+func envVars(text []byte) map[string]string {
+	out := map[string]string{}
+	for _, l := range strings.Split(string(text), "\n") {
+		k, _, ok := strings.Cut(l, "=")
+		if k = strings.TrimSpace(k); ok && k != "" && !strings.HasPrefix(k, "#") {
+			out[k] = envValue(text, k)
+		}
+	}
+	return out
+}

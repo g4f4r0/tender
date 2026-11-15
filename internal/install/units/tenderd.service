@@ -1,13 +1,16 @@
 [Unit]
-Description=Tender daemon (whole-server backups and usage, reports to the hub)
+Description=Tender daemon (whole-server backups, usage, services and security checks, reports to the hub)
 Documentation=https://github.com/g4f4r0/tender
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=tender
-Group=tender
+# The daemon runs as root. It backs up every file, controls Docker and reads the journal, which made
+# it root-equivalent as the tender user too. The sandbox below keeps a bug from changing the system:
+# it writes only its own folders. The hub, the part on the network, stays the tender user.
+User=root
+Group=root
 ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml
 Restart=always
 RestartSec=30
@@ -27,11 +30,12 @@ Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
 # The hub token is the one file in /etc/tender/credentials (0750 root:tender, file 0640). The daemon gets
 # its destination and keys from the hub and keeps them in its state folder.
 
-# Read every file, write nothing outside the directories above. Connecting to Docker's socket is not a
-# write, so it works on the read-only file system; the installer adds the docker group when there is one.
-# journalctl, for machine logs, only reads the journal's files; the installer adds the systemd-journal group.
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH
-AmbientCapabilities=CAP_DAC_READ_SEARCH
+# Read every file (CAP_DAC_READ_SEARCH), read the firewall's rules (CAP_NET_ADMIN) and name the process
+# behind each listening socket (CAP_SYS_PTRACE). Nothing else: no CAP_DAC_OVERRIDE, so it can't write
+# another user's files, and no CAP_SYS_ADMIN. Updating Tender and upgrading the system's packages run
+# outside this sandbox, as transient units (tenderupdate, tenderupgrade) through systemd-run.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE
+AmbientCapabilities=
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
@@ -46,7 +50,8 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK: ss and nft read sockets and firewall rules over netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
@@ -56,6 +61,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
 SystemCallFilter=setpriority sched_setscheduler ioprio_set
+# A program the daemon runs, such as sshd -T or apt-get, gets an error for a call outside the filter
+# instead of being killed.
+SystemCallErrorNumber=EPERM
 SocketBindDeny=any
 UMask=0077
 KeyringMode=private
