@@ -58,7 +58,10 @@ func emailFor(ev channels.Event, hub string) (Message, error) {
 	if title == "" {
 		title = channels.Base(n.Event)
 	}
-	if n.Service != nil {
+	switch {
+	case n.Service != nil && n.Container != nil && *n.Container != *n.Service:
+		title = *n.Container + " in " + *n.Service + " " + title
+	case n.Service != nil:
 		title = *n.Service + " " + title
 	}
 	data := emailData{

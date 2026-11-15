@@ -65,7 +65,8 @@ type Notification struct {
 	Event     string    `json:"event"`
 	Severity  string    `json:"severity"`
 	Machine   *string   `json:"machine"` // the machine it is about, or null
-	Service   *string   `json:"service"` // the Docker service it is about, or null
+	Service   *string   `json:"service"`   // the service it is about, or null
+	Container *string   `json:"container"` // the container in the service it is about, or null
 	Channel   *string   `json:"channel"` // the channel a channel.failing notification is about, or null
 	Message   string    `json:"message"`
 	CreatedAt time.Time `json:"created_at"`
