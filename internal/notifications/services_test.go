@@ -201,6 +201,42 @@ func TestServiceAlertsAcrossAnOutage(t *testing.T) {
 	}
 }
 
+func TestMemoryHigh(t *testing.T) {
+	gib, used := int64(1<<30), int64(950<<20)
+	svc := func(reports int, limit *int64) Service {
+		return Service{Name: "web", State: "running", AlertsEnabled: true, MemoryBytes: &used, MemoryLimitBytes: limit, MemoryHighReports: reports}
+	}
+	for _, c := range []struct {
+		name string
+		s    Service
+		want []string
+	}{
+		{"one report", svc(1, &gib), []string{}},
+		{"two reports", svc(2, &gib), []string{"service_memory_high:warning"}},
+		{"no limit", svc(2, nil), []string{}},
+		{"alerts off", func() Service { s := svc(2, &gib); s.AlertsEnabled = false; return s }(), []string{}},
+	} {
+		if got := summary(evaluate(up(0, c.s), t0)); !slices.Equal(got, c.want) {
+			t.Errorf("%s: findings = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if f := evaluate(up(0, svc(2, &gib)), t0); f[0].content != "The service web on a uses 950 MiB, 92% of its 1 GiB memory limit." {
+		t.Errorf("content = %q", f[0].content)
+	}
+
+	// It opens, emails, and resolves once the service is back under the limit.
+	r := newRig(t)
+	r.tick(0, up(0, svc(2, &gib)))
+	below := svc(0, &gib)
+	r.tick(time.Minute, up(time.Minute, below))
+	if got, want := r.serviceRows(), []string{"service_memory_high web resolved"}; !slices.Equal(got, want) {
+		t.Errorf("rows = %q, want %q", got, want)
+	}
+	if want := []string{"a: web memory high", "a: web memory high, resolved"}; !slices.Equal(r.sender.subjects, want) {
+		t.Errorf("emails = %q, want %q", r.sender.subjects, want)
+	}
+}
+
 func TestEvaluateDocker(t *testing.T) {
 	down := Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}
 	for _, c := range []struct {

@@ -18,6 +18,7 @@ const (
 	TypeServiceDown       = "service_down"
 	TypeServiceRestarting = "service_restarting"
 	TypeServiceUnhealthy  = "service_unhealthy"
+	TypeServiceMemoryHigh = "service_memory_high"
 	TypeDockerUnreachable = "docker_unreachable"
 )
 
@@ -102,11 +103,15 @@ type Service struct {
 	AlertsEnabled   bool
 	StoppedByTender bool // a Tender stop left it stopped
 
+	MemoryBytes      *int64 // its memory use in the latest report, while it runs
+	MemoryLimitBytes *int64 // its memory limit, or nil without one
+
 	// How many reports in a row found it down (exited or dead), restarting (in the restarting
-	// state, or with a restart count that grew) and unhealthy.
+	// state, or with a restart count that grew), unhealthy, and above 90% of its memory limit.
 	DownReports       int
 	RestartingReports int
 	UnhealthyReports  int
+	MemoryHighReports int
 }
 
 // Run is one backup run.
@@ -222,6 +227,12 @@ func evaluateService(machine string, s Service, reports int) []finding {
 		content := fmt.Sprintf("The service %s on %s is unhealthy: its health check fails.", s.Name, machine)
 		out = append(out, finding{TypeServiceUnhealthy, SeverityWarning, content, s.Name})
 	}
+	// Only a service with a memory limit: the services domain has no machine total to compare with.
+	if s.MemoryHighReports >= reports && s.MemoryBytes != nil && s.MemoryLimitBytes != nil {
+		content := fmt.Sprintf("The service %s on %s uses %s, %d%% of its %s memory limit.", s.Name, machine,
+			formatBytes(*s.MemoryBytes), int(100*float64(*s.MemoryBytes)/float64(*s.MemoryLimitBytes)), formatBytes(*s.MemoryLimitBytes))
+		out = append(out, finding{TypeServiceMemoryHigh, SeverityWarning, content, s.Name})
+	}
 	return out
 }
 
@@ -233,6 +244,17 @@ func severityRank(s string) int {
 		return 1
 	}
 	return 0
+}
+
+// formatBytes is a size in binary units, such as 512 MiB or 1.5 GiB.
+func formatBytes(n int64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	v, i := float64(n), 0
+	for v >= 1024 && i < len(units)-1 {
+		v, i = v/1024, i+1
+	}
+	s := strconv.FormatFloat(v, 'f', 1, 64)
+	return strings.TrimSuffix(s, ".0") + " " + units[i]
 }
 
 // formatTime is 2026-11-14 03:31 UTC.
