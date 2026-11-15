@@ -17,7 +17,8 @@ import (
 )
 
 var tokensUsage = groupUsage("tokens", "Make and remove the API tokens that people and AI clients send to the hub. "+
-	"Every command but the hub's health check needs one. Make the first one on the hub machine with: sudo tender tokens add NAME", []row{
+	"The hub refuses every request from people and AI clients without one. Make the first one on the hub machine with: "+
+	"sudo tender tokens add NAME", []row{
 	{"list", "List the API tokens and when each was last used"},
 	{"add NAME", "Make an API token and print it once"},
 	{"remove NAME --yes", "Delete an API token; clients that use it are refused"},

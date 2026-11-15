@@ -2952,7 +2952,7 @@ None.
 #### Errors
 
 1. `name is required. Call list_tokens to see the names.`
-2. `Token "claude-code" doesn't exist. List the tokens with: tender tokens list`
+2. `Token "claude-code" doesn't exist. Call list_tokens to see the names.`
 
 #### Covers
 

@@ -133,7 +133,8 @@ func (s *Store) Authenticate(ctx context.Context, token string) (string, error) 
 	hash := hashOf(token)
 	var id int64
 	var name string
-	err := s.db.Read.QueryRowContext(ctx, `SELECT id, name FROM api_tokens WHERE token_hash = ?`, hash).Scan(&id, &name)
+	var used *int64
+	err := s.db.Read.QueryRowContext(ctx, `SELECT id, name, last_used_at FROM api_tokens WHERE token_hash = ?`, hash).Scan(&id, &name, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", server.NotFound("No API token is this one.")
 	}
@@ -141,9 +142,10 @@ func (s *Store) Authenticate(ctx context.Context, token string) (string, error) 
 		return "", err
 	}
 	now := s.now().Unix()
-	_, err = s.db.Write.ExecContext(ctx,
-		`UPDATE api_tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at <= ?)`,
-		now, id, now-int64(usedEvery/time.Second))
+	if used != nil && *used > now-int64(usedEvery/time.Second) {
+		return name, nil // noted less than a minute ago: no write
+	}
+	_, err = s.db.Write.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, now, id)
 	return name, err
 }
 

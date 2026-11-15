@@ -237,8 +237,9 @@ func TestTokenTools(t *testing.T) {
 	if res := callTool(t, cs, "delete_token", map[string]any{"name": "laptop"}); res.IsError {
 		t.Errorf("delete_token: %+v", res.Content)
 	}
-	if res := callTool(t, cs, "delete_token", map[string]any{"name": "laptop"}); !res.IsError {
-		t.Error("delete_token of a missing token succeeded")
+	if res := callTool(t, cs, "delete_token", map[string]any{"name": "laptop"}); !res.IsError ||
+		!strings.Contains(errorText(res), "Call list_tokens to see the names.") {
+		t.Errorf("delete_token of a missing token: %+v", res.Content)
 	}
 	for _, name := range toolNames(t) {
 		if strings.Contains(name, "token") && name != "list_tokens" && name != "delete_token" && name != "rotate_machine_token" {

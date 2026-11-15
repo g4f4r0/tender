@@ -2,6 +2,8 @@ package tokens
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
 	"github.com/g4f4r0/tender/internal/mcp"
 	"github.com/g4f4r0/tender/internal/server"
@@ -35,6 +37,10 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 				return mcp.Removed{}, server.Invalid("name is required. Call list_tokens to see the names.")
 			}
 			if err := s.Delete(ctx, in.Name); err != nil {
+				var e *server.Error
+				if errors.As(err, &e) && e.Status == http.StatusNotFound {
+					return mcp.Removed{}, server.NotFound("Token %q doesn't exist. Call list_tokens to see the names.", in.Name)
+				}
 				return mcp.Removed{}, err
 			}
 			return mcp.Removed{Removed: in.Name}, nil
