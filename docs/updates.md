@@ -96,7 +96,7 @@ The machine rolls back to the version it ran, and the rollout stops there, so th
 
 ```text
 Rollout 4 of 0.3.2, failed, started 12 minutes ago:
-  db: failed. Tender v0.3.2 failed its health check, so it rolled back to Tender 0.3.1: after 2m0s, the daemon has not reported to the hub on Tender 0.3.2.
+  db: failed. Tender v0.3.2 failed its health check, so it rolled back to Tender 0.3.1: after 2m0s, tenderd is not running.
   apps: pending
 ```
 

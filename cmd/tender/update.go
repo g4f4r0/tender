@@ -170,7 +170,7 @@ func updatesShow(args []string, s session) error {
 		for _, m := range r.Machines {
 			line := fmt.Sprintf("  %s: %s", m.Machine, strings.ReplaceAll(m.Status, "_", " "))
 			if m.Error != nil {
-				line += ". " + oneLine(*m.Error)
+				line += ". " + strings.Join(strings.Fields(*m.Error), " ") // the whole reason, which is why it stopped
 			}
 			say(s.out, "%s", line)
 		}

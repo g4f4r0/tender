@@ -2474,7 +2474,7 @@ Content-Type: application/json
   "error": "The rollout stopped at db, which failed to update. The machines after it were not updated.",
   "machines": [
     {"machine": "db", "position": 1, "status": "failed", "action_id": 52,
-     "error": "Tender v0.3.2 failed its health check, so it rolled back to Tender 0.3.1: after 2m0s, the daemon has not reported to the hub on Tender 0.3.2.",
+     "error": "Tender v0.3.2 failed its health check, so it rolled back to Tender 0.3.1: after 2m0s, tenderd is not running.",
      "created_at": "2026-11-16T02:00:04Z", "updated_at": "2026-11-16T02:04:40Z"},
     {"machine": "apps", "position": 2, "status": "pending", "action_id": null, "error": null,
      "created_at": "2026-11-16T02:00:04Z", "updated_at": "2026-11-16T02:00:04Z"}
