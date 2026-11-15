@@ -469,6 +469,9 @@ type HubOptions struct {
 	SMTPUsername string
 	SMTPPassword string
 	SMTPFrom     string
+	// Clear names the hub.env settings to remove, such as TENDER_SMTP_HOST: their options were
+	// passed empty. Clearing TENDER_SMTP_USERNAME clears TENDER_SMTP_PASSWORD too.
+	Clear []string
 }
 
 // Hub installs and starts the hub, then publishes it with Tailscale Serve. The hub's settings
@@ -487,6 +490,9 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	}
 	unit, err := units.ReadFile("units/tenderhub.service")
 	if err != nil {
+		return err
+	}
+	if unit, err = hubUnit(unit, envValue(env, "TENDER_LISTEN")); err != nil {
 		return err
 	}
 	oldUnit := in.installed(oldUnitPath(oldHubUnit)) // a tender-hub unit, from v0.2.1 or earlier

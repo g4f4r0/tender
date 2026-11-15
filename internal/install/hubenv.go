@@ -1,11 +1,14 @@
 package install
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -45,6 +48,16 @@ func hubEnv(old []byte, o HubOptions) (data []byte, newKey bool, err error) {
 	if o.SMTPPort != 0 {
 		settings = append(settings, [2]string{"TENDER_SMTP_PORT", strconv.Itoa(o.SMTPPort)})
 	}
+	clear := slices.Clone(o.Clear)
+	if slices.Contains(clear, "TENDER_SMTP_USERNAME") {
+		clear = append(clear, "TENDER_SMTP_PASSWORD") // a password without its user is no use
+	}
+	for _, name := range clear {
+		if !strings.HasPrefix(name, "TENDER_SMTP_") {
+			return nil, false, fmt.Errorf("%s can't be cleared", name)
+		}
+		text = unsetEnv(text, name)
+	}
 	for _, kv := range settings {
 		if kv[1] == "" {
 			continue
@@ -56,7 +69,8 @@ func hubEnv(old []byte, o HubOptions) (data []byte, newKey bool, err error) {
 	}
 	host, from := envValue([]byte(text), "TENDER_SMTP_HOST"), envValue([]byte(text), "TENDER_SMTP_FROM")
 	if (host == "") != (from == "") {
-		return nil, false, errors.New("alert emails need both an SMTP server and a sender. Pass --smtp-host and --smtp-from together")
+		return nil, false, errors.New("alert emails need both an SMTP server and a sender. Pass --smtp-host and --smtp-from together, " +
+			`or both empty, --smtp-host "" --smtp-from "", to turn alert emails off`)
 	}
 	return []byte(text), newKey, nil
 }
@@ -83,6 +97,33 @@ func setEnv(text, name, value string) string {
 		}
 	}
 	return strings.Join(append(lines, line), "\n") + "\n"
+}
+
+// unsetEnv removes the line that sets name from an env file's text.
+func unsetEnv(text, name string) string {
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	lines = slices.DeleteFunc(lines, func(l string) bool {
+		k, _, ok := strings.Cut(l, "=")
+		return ok && strings.TrimSpace(k) == name
+	})
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// hubUnit renders the hub's unit for the address it listens on: systemd lets it bind that port
+// only. listen is TENDER_LISTEN, or empty for the default.
+func hubUnit(unit []byte, listen string) ([]byte, error) {
+	if listen == "" {
+		listen = defaultListen
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if n, perr := strconv.Atoi(port); err != nil || perr != nil || n < 1 || n > 65535 {
+		return nil, fmt.Errorf("TENDER_LISTEN in %s is %q, which is not an address with a port, such as %s. Fix it and run this again", hubEnvPath, listen, defaultListen)
+	}
+	const bind = "\nSocketBindAllow=tcp:8080\n"
+	if !bytes.Contains(unit, []byte(bind)) {
+		return nil, errors.New("the embedded tenderhub unit has no SocketBindAllow line")
+	}
+	return bytes.Replace(unit, []byte(bind), []byte("\nSocketBindAllow=tcp:"+port+"\n"), 1), nil
 }
 
 // quoteEnv writes a value the way systemd's EnvironmentFile reads it: plain, or in double quotes

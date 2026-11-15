@@ -575,6 +575,57 @@ func TestHubServesAtTheConfiguredAddress(t *testing.T) {
 	if !slices.Contains(e.commands(), "tailscale serve --bg --https=443 http://127.0.0.1:9090") {
 		t.Error("the hub was not published at TENDER_LISTEN")
 	}
+	// The unit lets the hub bind that port, and only that one.
+	if unit := e.read(t, "/etc/systemd/system/tenderhub.service"); !strings.Contains(unit, "\nSocketBindAllow=tcp:9090\n") || strings.Contains(unit, "tcp:8080") {
+		t.Errorf("the unit doesn't allow port 9090:\n%s", unit)
+	}
+
+	// An address without a port number stops the install before anything changes.
+	bad := newEnv(t)
+	if err := os.MkdirAll(bad.path("/etc/tender"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad.path("/etc/tender/hub.env"), []byte("TENDER_ENCRYPTION_KEY="+key+"\nTENDER_LISTEN=localhost\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := bad.tree(t)
+	if err := bad.in.Hub(context.Background(), HubOptions{}); err == nil || !strings.Contains(err.Error(), "TENDER_LISTEN") ||
+		!reflect.DeepEqual(before, bad.tree(t)) {
+		t.Errorf("TENDER_LISTEN=localhost: %v", err)
+	}
+}
+
+// An option passed empty clears its setting in hub.env; one left out keeps it. Clearing the user
+// clears the password with it.
+func TestHubClearsAnOptionPassedEmpty(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if err := e.in.Hub(ctx, HubOptions{SMTPHost: "smtp.example.net", SMTPFrom: "a@example.net", SMTPPort: 587, SMTPUsername: "api", SMTPPassword: "pw"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.in.Hub(ctx, HubOptions{Clear: []string{"TENDER_SMTP_USERNAME", "TENDER_SMTP_PORT"}}); err != nil {
+		t.Fatal(err)
+	}
+	env := []byte(e.read(t, "/etc/tender/hub.env"))
+	for name, want := range map[string]string{"TENDER_SMTP_HOST": "smtp.example.net", "TENDER_SMTP_FROM": "a@example.net",
+		"TENDER_SMTP_PORT": "", "TENDER_SMTP_USERNAME": "", "TENDER_SMTP_PASSWORD": ""} {
+		if got := envValue(env, name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if strings.Contains(string(env), "TENDER_SMTP_PASSWORD") || strings.Contains(string(env), "TENDER_SMTP_USERNAME") {
+		t.Errorf("cleared lines stay:\n%s", env)
+	}
+	// Half an email setup is still refused: clearing the host needs the sender cleared too.
+	if err := e.in.Hub(ctx, HubOptions{Clear: []string{"TENDER_SMTP_HOST"}}); err == nil {
+		t.Error("cleared the host and kept the sender")
+	}
+	if err := e.in.Hub(ctx, HubOptions{Clear: []string{"TENDER_SMTP_HOST", "TENDER_SMTP_FROM"}}); err != nil {
+		t.Fatal(err)
+	}
+	if env := e.read(t, "/etc/tender/hub.env"); strings.Contains(env, "SMTP") || !strings.Contains(env, "TENDER_ENCRYPTION_KEY=") {
+		t.Errorf("after turning email off:\n%s", env)
+	}
 }
 
 func TestHubRejectsHalfAnEmailSetupBeforeChangingAnything(t *testing.T) {

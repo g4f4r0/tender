@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -65,6 +66,10 @@ func runHub(args []string, log *slog.Logger) error {
 
 // openHub opens the database and applies the migrations.
 func openHub(ctx context.Context, path string) (*db.DB, error) {
+	if err := writable(path); err != nil {
+		return nil, fmt.Errorf("the hub can't write its database %s: %w. Its service may only write in %s: keep the database there, "+
+			"or let it write that folder with ReadWritePaths= in a drop-in, made with: sudo systemctl edit tenderhub", path, err, filepath.Dir(config.DefaultDatabase))
+	}
 	d, err := db.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open the hub database %s. Check that its folder exists and that you can write to it, or pass --database PATH: %w", path, err)
@@ -73,6 +78,19 @@ func openHub(ctx context.Context, path string) (*db.DB, error) {
 		return nil, errors.Join(err, d.Close())
 	}
 	return d, nil
+}
+
+// writable is an error unless this process may write path, and its folder, for the WAL beside it.
+// A folder that doesn't exist yet is left to db.Open to report.
+func writable(path string) error {
+	const w = 2 // W_OK
+	for _, p := range []string{filepath.Dir(path), path} {
+		err := syscall.Access(p, w)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // newHub returns the hub's HTTP server with every domain's routes and the MCP endpoint. key is
