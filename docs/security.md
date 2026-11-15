@@ -27,7 +27,7 @@ Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in t
 
 A log sink's secrets are an OTLP sink's `headers`, a webhook sink's signing `secret`, and the query string of either one's URL, which can carry a key and shows as `?***`. The hub stores them in its database encrypted under the same key, and every route, MCP tool and CLI command shows them as `"***"`. The only time one is shown is a webhook secret the hub made, once, in the answer that added the sink.
 
-The hub sends a sink's whole config, secrets included, only to the daemons of the machines the sink applies to, signed in with their own tokens. Each daemon keeps the list in `/var/lib/tender/daemon/logs/sinks.json`, which only the daemon's user can read, so it can go on sending while the hub is down. `last_error` never holds a sink's answer or its URL.
+The hub sends a sink's whole config, secrets included, only to the daemons of the machines the sink applies to, signed in with their own tokens. Each daemon keeps the list in `/var/lib/tender/daemon/logs/sinks.json`, which only root can read, so it can go on sending while the hub is down. `last_error` never holds a sink's answer or its URL.
 
 ## Machine tokens
 
@@ -154,7 +154,7 @@ Service logs and the journal can hold tokens, passwords or customer data that an
 1. Logs come back only as the output of the logs action that asked for them. Like every route, that output is open to anyone who can reach the hub.
 2. The hub clears the output of every completed logs action 1 hour after it finishes. A failed logs action holds why it failed, not logs, so it keeps its output.
 3. Cleared logs leave no bytes in the hub's database files, `hub.db`, `hub.db-wal` and `hub.db-shm`. The hub runs SQLite with `secure_delete`, which zeroes what a write frees, and after a pass that clears logs it empties the write-ahead log with `wal_checkpoint(TRUNCATE)`. A checkpoint that a reader holds up is tried again by the next minute's pass.
-4. The daemon writes logs to disk only to send them to a [log sink](log-shipping.md): each sink's batches wait in `/var/lib/tender/daemon/logs/`, a folder only the daemon's user can read, up to 64 MiB, until the sink takes them. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
+4. The daemon writes logs to disk only to send them to a [log sink](log-shipping.md): each sink's batches wait in `/var/lib/tender/daemon/logs/`, a folder only root can read, up to 64 MiB, until the sink takes them. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
 5. Logs never go into the hub's or the daemon's own logs, into notifications, or into the events that channels get. Logs sent to a sink go from the daemon straight to it and never reach the hub.
 
 An AI client that reads logs sends them to its model provider. Ask for the narrowest logs you need, with `--unit`, `--priority` and `--since`.

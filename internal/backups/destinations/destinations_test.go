@@ -186,6 +186,14 @@ func TestOpenSaysWhatIsMissing(t *testing.T) {
 	if _, err := sftp.Open(cfg, "apps", Host{SSHDir: empty, LookPath: missing}); err == nil || !strings.Contains(err.Error(), "ssh is not installed") {
 		t.Errorf("sftp without ssh: %v", err)
 	}
+	// OpenSSH refuses a group-readable key, as a key made for a daemon that ran as tender was.
+	if err := os.Chmod(filepath.Join(empty, SSHKey), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sftp.Open(cfg, "apps", Host{SSHDir: empty}); err == nil || !strings.Contains(err.Error(), "mode 0640") ||
+		!strings.Contains(err.Error(), "sudo chmod 0600 "+filepath.Join(empty, SSHKey)) {
+		t.Errorf("sftp with a group-readable key: %v, want how to fix it", err)
+	}
 	rc, _ := Get("rclone")
 	cfg, _ = rc.Check(Config{"remote": "r:x"})
 	if _, err := rc.Open(cfg, "apps", Host{RcloneConfig: "/etc/tender/rclone.conf", LookPath: missing}); err == nil ||

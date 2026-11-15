@@ -83,12 +83,18 @@ func (sftp) Location(c Config) string {
 func (t sftp) Open(c Config, machine string, h Host) (Repo, error) {
 	key, known := filepath.Join(h.SSHDir, SSHKey), filepath.Join(h.SSHDir, SSHKnownHosts)
 	for _, f := range []string{key, known} {
-		if _, err := os.Stat(f); err != nil {
+		info, err := os.Stat(f)
+		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return Repo{}, fmt.Errorf("the sftp destination needs %s on this machine, and it isn't there. "+
 					"Make the key and known_hosts as the backups guide shows", f)
 			}
 			return Repo{}, fmt.Errorf("the sftp destination can't read %s: %w", f, err)
+		}
+		// OpenSSH refuses a private key that others can read, so say so before restic runs ssh.
+		if f == key && info.Mode().Perm()&0o077 != 0 {
+			return Repo{}, fmt.Errorf("the SSH key %s can be read by others (mode %04o), and ssh refuses such a key. "+
+				"Run: sudo chown root:root %s && sudo chmod 0600 %s", f, info.Mode().Perm(), f, f)
 		}
 	}
 	if _, err := h.lookPath("ssh"); err != nil {

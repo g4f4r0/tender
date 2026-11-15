@@ -51,12 +51,13 @@ For Google Cloud Storage, use the endpoint `https://storage.googleapis.com` and 
 
 A `local` destination is a folder on each machine, such as a USB disk or a mounted NAS share. It protects against deleted files, not against losing the machine, so pair it with another destination for anything you can't lose.
 
-1. On each machine, make the folder and give it to the daemon's user:
+1. On each machine, make the folder for root, which the daemon runs as:
 
    ```sh
-   sudo mkdir -p /mnt/backup/tender
-   sudo chown tender:tender /mnt/backup/tender
+   sudo install -d -m 0700 -o root -g root /mnt/backup/tender
    ```
+
+   The daemon has no right to write another user's files, so root must own the folder.
 
 2. The daemon may write only its own folders, so allow this one too, then restart it:
 
@@ -86,12 +87,12 @@ An `sftp` destination is a folder on any SSH server. Each machine logs in with i
 1. On each machine, make a key for the daemon and save the server's host key. Replace `nas.example.com` and the port with your server's:
 
    ```sh
-   sudo install -d -m 0750 -o root -g tender /etc/tender/ssh
+   sudo install -d -m 0700 -o root -g root /etc/tender/ssh
    sudo ssh-keygen -t ed25519 -N '' -C "tender@$(hostname)" -f /etc/tender/ssh/id_ed25519
    ssh-keyscan -p 22 nas.example.com | sudo tee /etc/tender/ssh/known_hosts
-   sudo chgrp tender /etc/tender/ssh/id_ed25519 /etc/tender/ssh/known_hosts
-   sudo chmod 0640 /etc/tender/ssh/id_ed25519 /etc/tender/ssh/known_hosts
    ```
+
+   `ssh-keygen` saves the key for root alone, at mode 0600, which is how `ssh` wants it. The daemon runs as root, so it reads the key there. It refuses a key that others can read, as `ssh` does.
 
    Check the host key that `ssh-keyscan` printed against the server's own, with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. The daemon refuses a server whose key isn't in `known_hosts`.
 
@@ -121,12 +122,10 @@ With `--private-repos`, rest-server lets each user reach only the folder named a
 An `rclone` destination reaches any storage that rclone does, through a remote you set up on each machine. The remote's login stays in that machine's rclone config and never passes through Tender.
 
 1. On each machine, install rclone from [rclone.org](https://rclone.org/install/) into `/usr/local/bin`.
-2. Make the remote in the daemon's rclone config, and let the daemon read it:
+2. Make the remote in the daemon's rclone config. The daemon runs as root, so it reads the file as root made it:
 
    ```sh
    sudo rclone config --config /etc/tender/rclone.conf
-   sudo chgrp tender /etc/tender/rclone.conf
-   sudo chmod 0640 /etc/tender/rclone.conf
    ```
 
 3. Add the destination, with the remote's name and a folder in it:
@@ -135,7 +134,7 @@ An `rclone` destination reaches any storage that rclone does, through a remote y
    tender destinations add drive --type rclone --remote gdrive:backups
    ```
 
-The daemon can't write `/etc/tender`, so rclone can't save a token it refreshes there. A remote with fixed keys, such as B2 or S3, works as it is. A remote that signs in through a browser, such as Google Drive, keeps working only as long as its saved refresh token does. Run `sudo rclone config reconnect gdrive: --config /etc/tender/rclone.conf` when `backup_failed` says the token expired.
+The daemon can't write `/etc/tender`, so rclone can't save a token it refreshes there. A remote with fixed keys, such as B2 or S3, works as it is. A remote that signs in through a browser, such as Google Drive, keeps working only as long as its saved refresh token does. Run `sudo rclone config reconnect gdrive: --config /etc/tender/rclone.conf` when the `backup.failed` notification says the token expired.
 
 ### Test a destination
 

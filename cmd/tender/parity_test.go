@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -177,5 +179,28 @@ func TestDocsListEveryEvent(t *testing.T) {
 				t.Errorf("the row of `%s` doesn't say it can be %s: %s", e.Name, s, row)
 			}
 		}
+	}
+}
+
+// The daemon runs as root from v0.3.0, so no docs page has people hand a file to the tender group
+// for it: OpenSSH refuses a group-readable key, and the hub, the tender user, needs none of them.
+func TestDocsGiveTheDaemonNoTenderGroupFiles(t *testing.T) {
+	err := filepath.WalkDir("../../docs", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, "chgrp tender") || strings.Contains(line, "-g tender ") || strings.Contains(line, ":tender ") {
+				t.Errorf("%s:%d gives a file to the tender group, but the daemon runs as root: %s", path, i+1, strings.TrimSpace(line))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
