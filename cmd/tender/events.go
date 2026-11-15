@@ -1,11 +1,15 @@
 package main
 
-import "github.com/g4f4r0/tender/internal/notifications"
+import (
+	"slices"
 
-// domainEvents are the events the other domains fire. Each domain names its events in its own
-// package as plain values, so it never imports notifications; this wiring turns them into
-// notifications.EventType and registers them before the hub starts. The notifications domain
-// registers its own, the rules' events, itself.
-var domainEvents []notifications.EventType
+	"github.com/g4f4r0/tender/internal/notifications"
+)
+
+// domainEvents are the events the other domains' problems fire, one list per domain, each in
+// its own file here, such as logEvents in logs_events.go. The wiring finds those problems and hands
+// them to the rules as notifications.Finding, so no domain imports notifications. They are
+// registered before the hub starts; the notifications domain registers its rules' events itself.
+var domainEvents = slices.Concat(logEvents)
 
 func init() { notifications.Register(domainEvents...) }

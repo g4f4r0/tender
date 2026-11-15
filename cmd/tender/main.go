@@ -12,6 +12,7 @@ import (
 	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
@@ -31,11 +32,12 @@ Work with the hub, from any machine that can reach it:
 ` + table([]row{
 	{"status", "Show the machines, their last backup, services and open problems"},
 	{"machines COMMAND", "list, add, remove, rotate-token"},
-	{"destinations COMMAND", "list, add, remove"},
+	{"destinations COMMAND", "list, add, update, test, remove"},
 	{"backups COMMAND", "status, set, unset"},
 	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
 	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
 	{"actions COMMAND", "list, show"},
+	{"sinks COMMAND", "list, add, show, update, remove"},
 	{"channels COMMAND", "list, add, show, update, remove, test"},
 	{"notifications COMMAND", "list"},
 }) + `
@@ -64,21 +66,21 @@ Docs: ` + docsURL + `
 
 // hubCommands are the commands that talk to the hub over its REST API, and need no root.
 var hubCommands = map[string]func([]string, session) error{
-	"status":       runStatus,
-	"machines":     runMachines,
-	"destinations": runDestinations,
-	"backups":      runBackups,
-	"services":     runServices,
-	"logs":         runLogs,
-	"actions":      runActions,
-	"channels":     runChannels,
-
+	"status":        runStatus,
+	"machines":      runMachines,
+	"destinations":  runDestinations,
+	"backups":       runBackups,
+	"services":      runServices,
+	"logs":          runLogs,
+	"actions":       runActions,
+	"sinks":         runSinks,
+	"channels":      runChannels,
 	"notifications": runNotifications,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
-	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations, server.Migrations}
+	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations, logs.Migrations, server.Migrations}
 }
 
 func main() {

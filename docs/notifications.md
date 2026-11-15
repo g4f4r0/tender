@@ -1,6 +1,6 @@
 # Notifications
 
-The hub checks every machine once a minute and tells your channels, such as an email address, Slack or a webhook, when a backup fails, a machine goes quiet, a disk fills up or a service has trouble.
+The hub checks every machine once a minute and tells your channels, such as an email address, Slack or a webhook, when a backup fails, a machine goes quiet, a disk fills up, a service has trouble or logs stop reaching a sink.
 
 This page explains how notifications work and lists every event the hub can send. To get them, see [Set up email alerts](guides/set-up-email-alerts.md), or [Adapters](adapters.md) for Slack, webhooks and your own programs.
 
@@ -39,12 +39,13 @@ Every event the hub can send is in this table. A new event can't be added withou
 | `service.unhealthy` | `warning` | Two reports in a row find a service's health check failing. | A report finds it healthy, its notifications are turned off, or it is gone. |
 | `service.memory_high` | `warning` | Two reports in a row find a service using more than 90% of its container's memory limit. | A report finds it below, its notifications are turned off, or it is gone. |
 | `docker.unreachable` | `critical` | Two reports in a row say the daemon can't reach Docker, or the machine still reports usage but its daemon has sent no services report for 5 minutes after it had sent one. | A report reaches Docker again. |
+| `logs.shipping_failing` | `warning` | Sending a machine's logs to an enabled sink has failed for 15 minutes, or the daemon dropped records since its last send that worked. | Every sink in it takes a send again. |
 | `channel.failing` | `warning` | Every try to deliver to an enabled channel has failed for 1 hour. | A delivery or a test to the channel gets through, or it is turned off or removed. |
 | `notification.test` | `info` | You send a test with `tender channels test`, `POST /v1/notifications/test` or `send_test_notification`. | Never: a test is a single message. |
 
 `backup.failed` and `backup.stale` apply only to machines with backup settings.
 
-While a machine is silent, its Docker and its services add nothing, because the hub can't tell what is happening on it. Its backup and disk problems still start and resolve from what the hub last heard.
+While a machine is silent, its Docker, its services and its log shipping add nothing, and their open problems stay as they are, because the hub can't tell what is happening on it. Its backup and disk problems still start and resolve from what the hub last heard.
 
 ## Service events
 
@@ -57,6 +58,10 @@ A service should be running when it exited with an error, or when its restart po
 `docker.unreachable` says why in words, from the report's `docker_reason`, such as `Docker on apps can't be reached: its socket refuses connections, so Docker is stopped.` [Services](services.md#when-docker-cant-be-reached) lists the reasons. While Docker is unreachable, the machine's other service problems neither start nor resolve. The count of reports in a row starts again once Docker answers.
 
 A removed service's problems resolve, because its counts start again. See [Removed services](services.md#removed-services).
+
+## Log shipping events
+
+A machine has one `logs.shipping_failing` problem for all its sinks. Its message names each failing sink and why, such as `Log shipping from apps to otel has failed since 2026-11-15 12:04 UTC (16 minutes): the sink answered 503 Service Unavailable. It resolves after a send to the sink works.` It never holds a log line. [Log shipping](log-shipping.md#when-a-sink-is-down) explains when a daemon drops records.
 
 ## Channel events
 

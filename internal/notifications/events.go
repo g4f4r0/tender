@@ -96,6 +96,12 @@ func eventType(event string) (EventType, bool) {
 	return t, ok
 }
 
+// builtin says whether event is one of the hub's own rules', not another domain's: a problem
+// another domain finds stays as it is while its machine is silent.
+func builtin(event string) bool { return builtins[channels.Base(event)] }
+
+var builtins = map[string]bool{}
+
 func validSeverityName(s string) bool {
 	return s == SeverityInfo || s == SeverityWarning || s == SeverityCritical
 }
@@ -135,6 +141,9 @@ func init() {
 		EventType{Name: EventTest, Severities: []string{SeverityInfo}, Title: "test", Tool: "send_test_notification",
 			Fires: "Someone sends a test with tender channels test, POST /v1/notifications/test or send_test_notification."},
 	)
+	for _, t := range Events() {
+		builtins[t.Name] = true
+	}
 }
 
 // matches says whether a channel's events patterns take the event name event: "*" takes every

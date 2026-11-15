@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -115,6 +116,7 @@ func TestErrorTextHidesSecretsAndIsCapped(t *testing.T) {
 	msg := "Fatal: bad key " + secret + " " + strings.Repeat("x", 3000)
 	r := fakeRunner(t, "AWS_ACCESS_KEY_ID="+secret, "FAKE_CODE=1",
 		`FAKE_STDERR={"message_type":"exit_error","code":1,"message":"`+msg+`"}`)
+	r.Secrets = []string{secret}
 	o := r.Backup(context.Background(), []string{"/src"}, nil)
 	if strings.Contains(o.Error, secret) {
 		t.Errorf("error leaks the secret: %q", o.Error[:60])
@@ -127,6 +129,7 @@ func TestErrorTextHidesSecretsAndIsCapped(t *testing.T) {
 	msg = strings.Repeat("x", maxErrorBytes-10) + secret + " tail"
 	r = fakeRunner(t, "AWS_ACCESS_KEY_ID="+secret, "FAKE_CODE=1",
 		`FAKE_STDERR={"message_type":"exit_error","code":1,"message":"`+msg+`"}`)
+	r.Secrets = []string{secret}
 	if o := r.Backup(context.Background(), []string{"/src"}, nil); strings.Contains(o.Error, secret[:10]) {
 		t.Errorf("error keeps the start of a secret cut by the limit: %q", o.Error[len(o.Error)-20:])
 	}
@@ -263,4 +266,48 @@ func lookRestic(t *testing.T) string {
 		t.Skip("restic is not installed")
 	}
 	return bin
+}
+
+// A destination test and a backup that both find no repository don't both run restic init: the
+// second finds the repository the first made. Without InitMu, both init, and one fails.
+func TestConcurrentOpensMakeOneRepository(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "restic")
+	script := `#!/bin/sh
+case "$1 $2" in
+"cat config") [ -e "` + dir + `/config" ] && exit 0; exit 10 ;;
+init*) [ -e "` + dir + `/config" ] && { echo "Fatal: create key in repository failed: repository already contains keys" >&2; exit 1; }
+  sleep 0.3; touch "` + dir + `/config"; exit 0 ;;
+esac
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	made := make(chan bool, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := &Restic{Bin: bin, Repository: "/nowhere", PasswordFile: "/nowhere/pw", Host: "m1", CacheDir: filepath.Join(dir, "cache"), StateDir: t.TempDir(), InitMu: &mu}
+			created, o := r.Open(context.Background())
+			if o.Status != StatusCompleted {
+				t.Errorf("Open = %+v, want completed", o)
+			}
+			made <- created
+		}()
+	}
+	wg.Wait()
+	close(made)
+	n := 0
+	for c := range made {
+		if c {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d opens made the repository, want 1", n)
+	}
 }

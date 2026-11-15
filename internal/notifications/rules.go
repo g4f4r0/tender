@@ -69,7 +69,7 @@ const (
 
 // keeps reports whether an open problem of m stays open though its finding doesn't hold now.
 //
-// A silent machine's Docker and service alerts, and service alerts while its Docker is
+// A silent machine's Docker and service problems and the problems other domains find, and service problems while its Docker is
 // unreachable, are about a state nobody can see. A service alert also stays while the latest
 // report still finds the service so, because after an outage its count of reports in a row starts
 // again: it resolves once a report doesn't. The alerts of a service whose alerts are off, or
@@ -86,7 +86,7 @@ func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 		}
 		base := channels.Base(n.Event)
 		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.event == base })
-	case channels.Base(n.Event) == EventDockerUnreachable:
+	case channels.Base(n.Event) == EventDockerUnreachable, !builtin(n.Event):
 		return silent
 	}
 	return false
@@ -196,15 +196,15 @@ func evaluate(m Machine, now time.Time) []finding {
 		out = append(out, finding{EventDiskFull, severity, fmt.Sprintf("The disk on %s is %s%% full.", m.Name, strings.TrimSuffix(percent, ".0")), ""})
 	}
 
+	// A silent machine already alerts. Its services, and the problems other domains find from
+	// its reports, are as old as its last report, so they don't.
+	if len(out) > 0 && out[0].event == EventMachineSilent {
+		return out
+	}
 	for _, f := range m.Findings {
 		if t, ok := eventType(f.Event); ok && t.Name == f.Event && slices.Contains(t.Severities, f.Severity) {
 			out = append(out, finding{f.Event, f.Severity, f.Message, f.Service})
 		}
-	}
-
-	// A silent machine already alerts; its services, whose state is as old as its last report, don't.
-	if len(out) > 0 && out[0].event == EventMachineSilent {
-		return out
 	}
 	switch {
 	case m.DockerUnreachableReports >= serviceReports:
@@ -301,6 +301,13 @@ func formatBytes(n int64) string {
 
 // formatTime is 2026-11-14 03:31 UTC.
 func formatTime(t time.Time) string { return t.UTC().Format("2006-01-02 15:04") + " UTC" }
+
+// FormatTime shows t as the hub's messages do, such as "2026-11-15 12:04 UTC", for the problems
+// other domains find.
+func FormatTime(t time.Time) string { return formatTime(t) }
+
+// FormatDuration shows d as the hub's messages do, such as "3 hours 12 minutes".
+func FormatDuration(d time.Duration) string { return formatDuration(d) }
 
 // formatDuration shows the largest two units, such as "3 hours 12 minutes". A zero second unit is left out.
 func formatDuration(d time.Duration) string {

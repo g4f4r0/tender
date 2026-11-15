@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -38,8 +39,14 @@ type Restic struct {
 	PasswordFile string
 	Host         string   // the machine name; scopes every command to this machine's snapshots
 	Env          []string // extra KEY=VALUE for the child only, such as the S3 keys
+	Options      []string // restic -o options, such as sftp.args; never secret
+	Secrets      []string // values hidden in error text, such as keys
 	CacheDir     string
 	StateDir     string // holds the exclude file and TMPDIR
+	// InitMu, when set, is held while making a repository, so a destination test and a backup that
+	// both find none don't make one at once: two restic init runs on one repository can leave it
+	// with the keys of one and the config of the other. The second finds the first's instead.
+	InitMu *sync.Mutex
 }
 
 // Backup runs restic backup, creating the repository first if restic says it doesn't exist.
@@ -65,7 +72,7 @@ func (r *Restic) Backup(ctx context.Context, paths, exclude []string) Outcome {
 			return failed(err)
 		}
 		if code == 10 && !initialized { // repository doesn't exist yet
-			if o := r.init(ctx); o.Status != StatusCompleted {
+			if _, o := r.create(ctx); o.Status != StatusCompleted {
 				return o
 			}
 			continue
@@ -78,12 +85,39 @@ func (r *Restic) Backup(ctx context.Context, paths, exclude []string) Outcome {
 	}
 }
 
-func (r *Restic) init(ctx context.Context) Outcome {
+// create makes the repository with restic init, unless another run made it meanwhile. made says
+// this run made it.
+func (r *Restic) create(ctx context.Context) (made bool, o Outcome) {
+	if r.InitMu != nil {
+		r.InitMu.Lock()
+		defer r.InitMu.Unlock()
+		p, code, err := r.run(ctx, io.Discard, "cat", "config")
+		if err != nil {
+			return false, failed(err)
+		}
+		if code != 10 {
+			return false, r.outcome(code, p, false)
+		}
+	}
 	p, code, err := r.run(ctx, io.Discard, "init")
 	if err != nil {
-		return failed(err)
+		return false, failed(err)
 	}
-	return r.outcome(code, p, false)
+	o = r.outcome(code, p, false)
+	return o.Status == StatusCompleted, o
+}
+
+// Open checks that the repository is there and opens with the password, with restic cat config,
+// and makes it when there is none yet. created says it made one.
+func (r *Restic) Open(ctx context.Context) (created bool, o Outcome) {
+	p, code, err := r.run(ctx, io.Discard, "cat", "config")
+	if err != nil {
+		return false, failed(err)
+	}
+	if code == 10 { // repository doesn't exist yet
+		return r.create(ctx)
+	}
+	return false, r.outcome(code, p, false)
 }
 
 // Cleanup forgets this machine's snapshots older than retentionDays and prunes.
@@ -162,10 +196,10 @@ func (r *Restic) outcome(code int, p *stderrParser, partialOK bool) Outcome {
 	return Outcome{Status: StatusFailed, Error: truncate(r.scrub(p.failureMessage(code)))}
 }
 
-// scrub hides the child's secret values in text that came from restic.
+// scrub hides the secret values in text that came from restic.
 func (r *Restic) scrub(s string) string {
-	for _, kv := range r.Env {
-		if _, v, ok := strings.Cut(kv, "="); ok && len(v) >= 8 {
+	for _, v := range r.Secrets {
+		if len(v) >= 4 {
 			s = strings.ReplaceAll(s, v, "***")
 		}
 	}
@@ -186,7 +220,11 @@ func (r *Restic) run(ctx context.Context, stdout io.Writer, args ...string) (*st
 	if bin == "" {
 		bin = "restic"
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	full := make([]string, 0, 2*len(r.Options)+len(args))
+	for _, o := range r.Options {
+		full = append(full, "-o", o)
+	}
+	cmd := exec.CommandContext(ctx, bin, append(full, args...)...)
 	cmd.Env = append([]string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + r.StateDir,

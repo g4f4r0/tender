@@ -1,6 +1,6 @@
 # CLI
 
-The `tender` command manages the hub, its machines, backups, services and notifications, and installs Tender on a machine.
+The `tender` command manages the hub, its machines, backups, services, log sinks and notifications, and installs Tender on a machine.
 
 ## Prerequisites
 
@@ -272,7 +272,7 @@ Give it to the daemon on that machine: sudo tender install daemon --token-file P
 
 ## `tender destinations`
 
-Manage the S3 buckets backups go to, with the keys and the repository password the hub keeps for them. To change a destination's endpoint, bucket, path or keys, use the API or the MCP tool `update_destination`.
+Manage the places backups go, with the keys and the repository password the hub keeps for them. [Backups](backups.md#destination-types) explains each type.
 
 ### `tender destinations list`
 
@@ -297,11 +297,12 @@ tender destinations list
 ```
 
 ```text
-NAME   TYPE   ENDPOINT                                        BUCKET       PATH
-r2     s3     https://<account-id>.r2.cloudflarestorage.com   my-backups   tender
+NAME   TYPE   LOCATION
+nas    sftp   sftp://tender@nas.example.com:22//srv/restic
+r2     s3     s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender
 ```
 
-With no destinations, it prints `No destinations yet. Add one with: tender destinations add NAME --endpoint URL --bucket BUCKET` and exits 0.
+`LOCATION` is the restic repository. Each machine's repository is a folder named after the machine in it. With no destinations, it prints `No destinations yet. Add one with: tender destinations add NAME --type TYPE ... (run tender destinations add --help for the types)` and exits 0.
 
 #### Errors
 
@@ -315,12 +316,12 @@ With no destinations, it prints `No destinations yet. Add one with: tender desti
 
 ### `tender destinations add`
 
-Adds a destination. It asks for the access key ID, the secret access key and the repository password with typing hidden, or reads each from a file.
+Adds a destination. It asks for the type's secrets and the repository password with typing hidden, or reads each from a file.
 
 #### Usage
 
 ```sh
-tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH] [--hub URL]
+tender destinations add NAME [--type TYPE] [OPTIONS] [--password-file PATH] [--hub URL]
 ```
 
 #### Options
@@ -328,16 +329,23 @@ tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH] [--hub
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `NAME` | string | Yes | The destination's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
-| `--endpoint` | URL | Yes | The S3 endpoint, such as `https://<account-id>.r2.cloudflarestorage.com`. |
-| `--bucket` | string | Yes | The bucket name. |
-| `--path` | string | No | A folder inside the bucket. The default is the bucket's root. Each machine gets its own folder under it. |
-| `--type` | string | No | The kind of destination. Only `s3`, the default. |
-| `--access-key-id-file` | path | No | A file with the access key ID, instead of asking. |
-| `--secret-access-key-file` | path | No | A file with the secret access key, instead of asking. |
+| `--type` | string | No | `s3`, the default, `local`, `sftp`, `rest` or `rclone`. |
+| `--endpoint` | URL | For `s3` | The S3 endpoint, such as `https://<account-id>.r2.cloudflarestorage.com`. |
+| `--bucket` | string | For `s3` | The bucket name. |
+| `--path` | string | For `local` and `sftp` | For `s3`, an optional folder inside the bucket, the bucket's root by default. For `local`, an absolute folder on each machine. For `sftp`, the folder on the server, absolute or relative to the user's home. |
+| `--host` | string | For `sftp` | The SSH server's host name or IP address. |
+| `--port` | number | No | For `sftp`, the SSH port. The default is 22. |
+| `--user` | string | For `sftp` | The SSH user. |
+| `--url` | URL | For `rest` | The rest-server's address, such as `https://backup.example.com:8000`. |
+| `--username` | string | No | For `rest`, the login, when the server has logins. It then asks for the password. |
+| `--remote` | string | For `rclone` | The rclone remote and a folder in it, such as `gdrive:backups`. |
+| `--access-key-id-file` | path | No | For `s3`, a file with the access key ID, instead of asking. |
+| `--secret-access-key-file` | path | No | For `s3`, a file with the secret access key, instead of asking. |
+| `--rest-password-file` | path | No | For `rest` with `--username`, a file with the login's password, instead of asking. |
 | `--password-file` | path | No | A file with the repository password, instead of asking. |
 | `--hub` | URL | No | The hub's address. |
 
-Leave the password empty when it asks, and the hub makes a strong one and shows it once. Without a terminal, the keys must come from files, and the hub makes the password unless `--password-file` gives one.
+Each machine gets its own folder under the place you give. Leave the password empty when it asks, and the hub makes a strong one and shows it once. Without a terminal, the secrets must come from files, and the hub makes the password unless `--password-file` gives one.
 
 #### Example
 
@@ -355,14 +363,15 @@ Save it in a password manager now. Every machine's backups at this destination a
 it, and without it they cannot be restored. Tender cannot show it again.
 ```
 
-Save the password in a password manager. It can't change later, and without it nobody can restore the backups at this destination.
+Save the password in a password manager. It can't change later, and without it nobody can restore the backups at this destination. An SFTP server takes `tender destinations add nas --type sftp --host nas.example.com --user tender --path /srv/restic`, once each machine has its SSH key, as [Backups](backups.md#sftp) shows.
 
 #### Errors
 
 1. `destinations add needs --endpoint and --bucket. Run "tender destinations add --help" for usage.`
-2. `there is no terminal to ask for the access key ID. Save it in a file and add --access-key-id-file PATH.`
-3. `A destination with this name or this endpoint, bucket and path already exists. Choose another name, or use the existing one.`
-4. `endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.`
+2. `--host is not for a s3 destination. Run "tender destinations add --help" for usage.`, for an option of another type.
+3. `there is no terminal to ask for the access key ID. Save it in a file and add --access-key-id-file PATH.`
+4. `A destination with this name or this location (...) already exists. Choose another name, or use the existing one.`
+5. The hub's sentence for a field that isn't valid, such as `config.endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.`
 
 #### Equivalents
 
@@ -370,12 +379,100 @@ Save the password in a password manager. It can't change later, and without it n
 | --- | --- |
 | `POST /v1/backups/destinations` | `add_destination` |
 
+### `tender destinations update`
+
+Changes where a destination is, or its keys. Only the options you give change.
+
+New secrets come from the files you name, never from a prompt. The type and the repository password can't change. Move the data yourself before you point a destination at another place. Daemons pick up the change within 10 minutes.
+
+#### Usage
+
+```sh
+tender destinations update NAME [OPTIONS] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The destination to change. |
+| `OPTIONS` | | Yes, one or more | The place and secret-file options of [`tender destinations add`](#tender-destinations-add) for the destination's type, except `--type` and `--password-file`. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender destinations update r2 --access-key-id-file ./key-id --secret-access-key-file ./secret-key
+```
+
+```text
+Updated destination r2: s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender.
+```
+
+#### Errors
+
+1. `destinations update needs an option to change. Run "tender destinations update --help" for usage.`
+2. `--remote is not for a s3 destination. Run "tender destinations update --help" for usage.`
+3. `Destination "r2" doesn't exist.`
+4. `Another destination already uses .... Use that one, or choose another location.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/backups/destinations/{destination}` | `update_destination` |
+
+### `tender destinations test`
+
+Tries a destination from a machine. The machine's daemon opens its repository at the destination, which checks the address, the login and the password, or makes the repository when there is none yet.
+
+It waits up to 60 seconds for the daemon. Run it after you add a destination and before you point a machine's backups at it.
+
+#### Usage
+
+```sh
+tender destinations test NAME MACHINE [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The destination to try. |
+| `MACHINE` | string | Yes | The machine whose daemon tries it. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender destinations test nas apps
+```
+
+```text
+Reached sftp://tender@nas.example.com:22//srv/restic/apps from apps. It had no repository for apps yet, so the test made one with the destination's password.
+```
+
+A second run prints `Reached ... Its repository opens with the destination's password.`
+
+#### Errors
+
+1. `destinations test needs a destination name and a machine name. Run "tender destinations test --help" for usage.`
+2. `Destination "nas" doesn't exist.`
+3. `Machine "apps" doesn't exist. Run tender machines list to see the names.`
+4. `Could not reach the destination nas from apps: ...`, with restic's reason or what the machine lacks, and the command exits 1.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/backups/destinations/{destination}/test` | `test_destination` |
+
 ### `tender destinations remove`
 
 Removes a destination that no machine backs up to.
 
 > [!WARNING]
-> The hub forgets the destination's keys and password. The backups already in the bucket stay there, so keep the password in your password manager to restore them.
+> The hub forgets the destination's keys and password. The backups already at the destination stay there, so keep the password in your password manager to restore them.
 
 #### Usage
 
@@ -397,7 +494,7 @@ tender destinations remove r2
 ```
 
 ```text
-Removed destination r2. The backups already in its bucket stay there.
+Removed destination r2. The backups already in it stay there.
 ```
 
 #### Errors
@@ -857,6 +954,242 @@ With no matching entries, it prints `apps has no logs.` and exits 0.
 | REST route | MCP tool |
 | --- | --- |
 | `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `get_machine_logs` |
+
+## `tender sinks`
+
+Manage the log sinks, where each machine's daemon sends its journal and its Docker containers' logs, straight from the machine. [Log shipping](log-shipping.md) explains how sending works.
+
+### `tender sinks list`
+
+Lists the sinks, with how sending to each goes. Their secrets are never shown.
+
+#### Usage
+
+```sh
+tender sinks list [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks list
+```
+
+```text
+NAME   TYPE      SENDS TO                                MACHINES   STATUS
+hook   webhook   https://logs.example.com/tender         apps       ok
+otel   otlp      https://otel.example.com:4318/v1/logs   all        failing on web
+```
+
+`STATUS` is `ok` when every machine's last report says sending works, `failing on` the machines where it fails, `dropped on` the machines that dropped records, `no report yet` before the first report, and `disabled` for a disabled sink. With no sinks, it prints `No log sinks yet. Add one with: tender sinks add NAME --type otlp --endpoint URL` and exits 0.
+
+#### Errors
+
+1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/logs/sinks` | `list_log_sinks` |
+
+### `tender sinks add`
+
+Adds a sink. Each machine's daemon starts sending to it within a minute, with the logs from then on. Secrets come from files, so they stay out of your shell history.
+
+#### Usage
+
+```sh
+tender sinks add NAME --type TYPE [OPTIONS] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
+| `--type` | string | Yes | `otlp` or `webhook`. |
+| `--endpoint` | URL | For `otlp` | The collector's OTLP/HTTP logs URL, such as `https://otel.example.com:4318/v1/logs`. |
+| `--headers-file` | path | No | For `otlp`, a file of HTTP headers to send, one `Name: value` a line, such as `Authorization: Bearer <key>`. Blank lines and lines starting with `#` are skipped. |
+| `--url` | URL | For `webhook` | Where to POST the batches. |
+| `--secret-file` | path | No | For `webhook`, a file with the signing secret, at least 16 characters. Without it, the hub makes one and shows it once. |
+| `--units` | list | No | The journal's systemd units, comma-separated, such as `nginx.service,tenderd.service`, or `all`, the default. |
+| `--min-priority` | string | No | The journal's least severe priority sent: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info`, the default, or `debug`. |
+| `--services` | list | No | The Docker containers, comma-separated, or `all`, the default. |
+| `--no-journal` | flag | No | Send no journal. |
+| `--no-services` | flag | No | Send no container logs. |
+| `--machines` | list | No | The machines that send, comma-separated, or `all`, the default. |
+| `--disabled` | flag | No | Add it without sending to it yet. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks add hook --type webhook --url https://logs.example.com/tender --machines apps
+```
+
+```text
+Added log sink hook. Machines start sending to it within a minute.
+
+The signing secret, made by the hub and shown only now:
+  <secret>
+
+Give it to the receiver, which checks each batch's Tender-Signature header with it. Tender cannot
+show it again; to replace it, run tender sinks update hook --secret-file PATH.
+```
+
+An OpenTelemetry collector takes `tender sinks add otel --type otlp --endpoint https://otel.example.com:4318/v1/logs --headers-file ./otel-headers`, which prints only the first line.
+
+#### Errors
+
+1. `sinks add needs --type otlp or --type webhook. Run "tender sinks add --help" for usage.`
+2. `line 1 of ./otel-headers isn't a header. Write one "Name: value" a line, such as Authorization: Bearer KEY`
+3. `config.endpoint is required: an http or https URL, such as https://otel.example.com:4318/v1/logs.`
+4. `config has endpoint, which a webhook sink doesn't take. It takes url, secret.`, for an option of the other type.
+5. `sources must name journal, services or both, or the sink gets nothing. Leave sources out for both.`, for `--no-journal --no-services`.
+6. `A log sink called hook already exists. Choose another name, or change that one.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/logs/sinks` | `add_log_sink` |
+
+### `tender sinks show`
+
+Shows a sink and how sending to it goes on each machine. Its secrets are never shown.
+
+#### Usage
+
+```sh
+tender sinks show NAME [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink to show. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks show otel
+```
+
+```text
+NAME       otel
+TYPE       otlp
+SENDS TO   https://otel.example.com:4318/v1/logs
+ENABLED    yes
+SOURCES    journal (warning and up)
+MACHINES   all
+
+MACHINE   SENT    DROPPED   LAST SENT     PROBLEM
+web       18342   120       3 hours ago   failing since 3 hours ago: the sink answered 503 Service Unavailable
+```
+
+`SENT` and `DROPPED` count records since the daemon first sent to the sink. Before any machine reports, the table is replaced by `No machine has reported on it yet. Daemons report every minute.`
+
+#### Errors
+
+1. `Log sink "otel" doesn't exist.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/logs/sinks/{sink}` | `list_log_sinks` |
+
+### `tender sinks update`
+
+Changes a sink. Only the options you give change, and daemons pick the change up within a minute. The name and the type can't change.
+
+#### Usage
+
+```sh
+tender sinks update NAME [OPTIONS] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink to change. |
+| `OPTIONS` | | Yes, one or more | The options of [`tender sinks add`](#tender-sinks-add) except `--type` and `--disabled`. `--units`, `--min-priority` and `--services` turn their source back on. |
+| `--enable` | flag | No | Send to it. |
+| `--disable` | flag | No | Stop sending to it, and keep it. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks update otel --min-priority warning --no-services
+```
+
+```text
+Updated log sink otel. Machines pick the change up within a minute.
+```
+
+#### Errors
+
+1. `sinks update needs an option to change. Run "tender sinks update --help" for usage.`
+2. `--enable and --disable can't go together. Run "tender sinks update --help" for usage.`
+3. `Log sink "otel" doesn't exist.`
+4. The hub's sentence for a sink that isn't valid, as for `tender sinks add`.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/logs/sinks/{sink}` | `update_log_sink` |
+
+### `tender sinks remove`
+
+Removes a sink.
+
+> [!WARNING]
+> Daemons stop sending to the sink within a minute. They keep the logs they buffered for it for 7 days, then delete them, and nothing sends them anywhere: a sink added again is a new sink. The logs already sent stay at the sink.
+
+#### Usage
+
+```sh
+tender sinks remove NAME [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink to remove. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks remove hook
+```
+
+```text
+Removed log sink hook. The logs already sent stay at the sink.
+```
+
+#### Errors
+
+1. `Log sink "hook" doesn't exist.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/logs/sinks/{sink}` | `remove_log_sink` |
 
 ## `tender actions`
 
@@ -1573,7 +1906,7 @@ tender mcp --stdio [--database PATH]
 | `--stdio` | flag | Yes | Serve over standard input and output. |
 | `--database` | path | No | The hub's database. The default is `TENDER_DATABASE`, else `/var/lib/tender/hub/hub.db`. |
 
-Run it as the `tender` user, which owns `/var/lib/tender/hub`. The hub must have run once on the same version, so the database has the current schema. The tools that store destination keys need `TENDER_ENCRYPTION_KEY`, and `send_test_email` needs the `TENDER_SMTP_` variables. [Connect an AI client](guides/connect-an-ai-client.md#connect-over-stdio-on-the-hub-machine) explains what `sudo` and root change.
+Run it as the `tender` user, which owns `/var/lib/tender/hub`. The hub must have run once on the same version, so the database has the current schema. The tools that store destination keys need `TENDER_ENCRYPTION_KEY`, and `send_test_notification` needs the `TENDER_SMTP_` variables for email channels. [Connect an AI client](guides/connect-an-ai-client.md#connect-over-stdio-on-the-hub-machine) explains what `sudo` and root change.
 
 #### Example
 

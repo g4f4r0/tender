@@ -29,7 +29,7 @@ func fakeDaemon(t *testing.T, as *actions.Store, finish func(actions.Action) act
 			}
 			for _, a := range list {
 				if as.Claim(ctx, 1, a.ID) == nil {
-					_ = as.Finish(ctx, 1, a.ID, finish(a))
+					_ = as.Finish(ctx, 1, a.ID, finish(a.Action))
 				}
 			}
 		}
@@ -47,7 +47,7 @@ func TestServiceTools(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fakeDaemon(t, newActions(d), func(a actions.Action) actions.Patch {
+	fakeDaemon(t, newActions(d, testKey), func(a actions.Action) actions.Patch {
 		switch {
 		case a.Service != nil && *a.Service == "worker":
 			return actions.Patch{Status: actions.StatusFailed, Output: ptr("Could not " + a.Type + " worker: Docker answered 500: boom.")}

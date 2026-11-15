@@ -8,7 +8,7 @@ This guide puts the hub and the daemon on the same machine, called `apps`, and b
 
 1. A Linux machine on x86_64 with systemd, and `sudo`.
 2. [Tailscale](https://tailscale.com) on the machine, so the installer can publish the hub privately on your tailnet.
-3. An S3 bucket and an access key that can read and write it. Any S3-compatible storage works; only the endpoint changes.
+3. An S3 bucket and an access key that can read and write it. Any S3-compatible storage works; only the endpoint changes. [Backups](backups.md#destination-types) covers SFTP, rest-server, rclone and local folders instead.
 
 ## 1. Install the hub
 

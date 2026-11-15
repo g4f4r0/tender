@@ -138,12 +138,12 @@ func TestDestinationsAskForSecretsWithEchoOff(t *testing.T) {
 	if err := json.Unmarshal([]byte(reqs[len(reqs)-1].Body), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.AccessKeyID != secretKeyID || body.SecretAccessKey != secretKey || body.Password != "" || body.Type != "s3" || body.Path != "tender" {
+	if body.Config["access_key_id"] != secretKeyID || body.Config["secret_access_key"] != secretKey || body.Password != "" || body.Type != "s3" || body.Config["path"] != "tender" {
 		t.Errorf("the hub got %+v", body)
 	}
 
 	ls := mustRun(t, h, a, "destinations", "list")
-	if want := "NAME   TYPE   ENDPOINT                  BUCKET    PATH\nr2     s3     https://acct.r2.example   backups   tender\n"; ls != want {
+	if want := "NAME   TYPE   LOCATION\nr2     s3     s3:https://acct.r2.example/backups/tender\n"; ls != want {
 		t.Errorf("list =\n%s\nwant\n%s", ls, want)
 	}
 	for _, secret := range []string{secretKeyID, secretKey, "generated"} {
@@ -180,7 +180,7 @@ func TestDestinationsAddFromFilesNeedsNoTerminal(t *testing.T) {
 	if len(a.labels) != 0 {
 		t.Errorf("asked for %v although files were given", a.labels)
 	}
-	if got := h.secrets["r2"]; got.AccessKeyID != secretKeyID || got.SecretAccessKey != secretKey || got.Password != secretPasswd {
+	if got := h.secrets["r2"]; got.Config["access_key_id"] != secretKeyID || got.Config["secret_access_key"] != secretKey || got.Password != secretPasswd {
 		t.Errorf("the hub got %+v", got)
 	}
 	if out != "Added destination r2.\n" {
@@ -229,7 +229,7 @@ func TestDestinationsRemove(t *testing.T) {
 	mustRun(t, h, a, "backups", "set", "web-1", "--destination", "r2", "--schedule", "30 3 * * *", "--retention-days", "30")
 	mustFail(t, h, a, `Destination "r2" is used by web-1. Run "tender backups unset web-1" first.`, "destinations", "remove", "r2")
 	mustRun(t, h, a, "backups", "unset", "web-1")
-	if out := mustRun(t, h, a, "destinations", "remove", "r2"); out != "Removed destination r2. The backups already in its bucket stay there.\n" {
+	if out := mustRun(t, h, a, "destinations", "remove", "r2"); out != "Removed destination r2. The backups already in it stay there.\n" {
 		t.Errorf("output = %q", out)
 	}
 	if out := mustRun(t, h, a, "destinations", "list"); !strings.HasPrefix(out, "No destinations yet.") {
@@ -374,7 +374,7 @@ func TestHubErrorWithoutAProblemBody(t *testing.T) {
 }
 
 func TestGroupsPrintUsage(t *testing.T) {
-	for _, group := range []string{"machines", "destinations", "backups", "channels"} {
+	for _, group := range []string{"machines", "destinations", "backups", "channels", "sinks"} {
 		var out bytes.Buffer
 		run := hubCommands[group]
 		if err := run(nil, session{out: &out}); !errors.Is(err, errUsageShown) || !strings.HasPrefix(out.String(), "Usage: tender "+group+" COMMAND\n") {
@@ -393,7 +393,8 @@ func TestGroupsPrintUsage(t *testing.T) {
 func TestEveryHubCommandHasUsageThatFits(t *testing.T) {
 	for _, args := range [][]string{
 		{"status"}, {"machines", "list"}, {"machines", "add"}, {"machines", "remove"}, {"machines", "rotate-token"},
-		{"destinations", "list"}, {"destinations", "add"}, {"destinations", "remove"},
+		{"destinations", "list"}, {"destinations", "add"}, {"destinations", "update"}, {"destinations", "test"}, {"destinations", "remove"},
+		{"sinks", "list"}, {"sinks", "add"}, {"sinks", "show"}, {"sinks", "update"}, {"sinks", "remove"},
 		{"backups", "status"}, {"backups", "set"}, {"backups", "unset"},
 		{"channels", "list"}, {"channels", "add"}, {"channels", "show"}, {"channels", "update"}, {"channels", "remove"}, {"channels", "test"},
 	} {
@@ -412,7 +413,7 @@ func TestEveryHubCommandHasUsageThatFits(t *testing.T) {
 			}
 		}
 	}
-	for _, text := range []string{machinesUsage, destinationsUsage, backupsUsage, channelsUsage} {
+	for _, text := range []string{machinesUsage, destinationsUsage, backupsUsage, channelsUsage, sinksUsage, usage} {
 		for _, line := range strings.Split(text, "\n") {
 			if len(line) > 99 {
 				t.Errorf("line over 99 characters: %q", line)

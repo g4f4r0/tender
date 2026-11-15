@@ -8,6 +8,7 @@ import (
 
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/metrics"
 	"github.com/g4f4r0/tender/internal/notifications"
@@ -25,7 +26,7 @@ func metricSources(d *db.DB) []metricSource {
 		serviceMetrics(services.NewStore(d)),
 		backupMetrics(backups.NewStore(d, nil)),
 		problemMetrics(notifications.NewStore(d, nil)),
-		// The log-shipping counters join here.
+		logMetrics(logs.NewStore(d, nil)),
 	}
 }
 
@@ -166,5 +167,36 @@ func problemMetrics(s *notifications.Store) metricSource {
 			open.Add(float64(c.Count), "event", c.Event, "severity", c.Severity)
 		}
 		return []*metrics.Family{open}, nil
+	}
+}
+
+// logMetrics are each daemon's counters for each enabled log sink it sends to, as it last
+// reported them. A sink no daemon reported on has no series.
+func logMetrics(s *logs.Store) metricSource {
+	return func(ctx context.Context, now time.Time) ([]*metrics.Family, error) {
+		health, err := s.Health(ctx)
+		if err != nil {
+			return nil, err
+		}
+		sent := metrics.New("tender_log_records_sent_total", metrics.Counter, "The log records the sink took from the machine, since its daemon first sent to it.")
+		dropped := metrics.New("tender_log_records_dropped_total", metrics.Counter,
+			"The log records the machine's daemon dropped for the sink, because its buffer was full or the sink refused them for good.")
+		last := metrics.New("tender_log_last_sent_timestamp_seconds", metrics.Gauge, "When a send to the sink last worked, in Unix seconds.")
+		failing := metrics.New("tender_log_shipping_failing", metrics.Gauge,
+			"1 while the machine's sending to the sink is a logs.shipping_failing problem: failing for 15 minutes, or records dropped since the last send that worked.")
+		for _, h := range health {
+			l := []string{"machine", h.Machine, "sink", h.Sink}
+			sent.Add(float64(h.RecordsSent), l...)
+			dropped.Add(float64(h.RecordsDropped), l...)
+			if h.LastSentAt != nil {
+				last.Add(unix(*h.LastSentAt), l...)
+			}
+			v := 0.0
+			if shippingFails(h, now) {
+				v = 1
+			}
+			failing.Add(v, l...)
+		}
+		return []*metrics.Family{sent, dropped, last, failing}, nil
 	}
 }

@@ -93,15 +93,21 @@ The machine numbers come from its latest reading, which the daemon sends once a 
 
 ### Log shipping
 
-<!-- Helper b: the log-shipping counters go in this section. -->
+Each machine's daemon reports its counters for each enabled [log sink](log-shipping.md) once a minute. A sink no daemon has reported on has no series.
 
-The log-shipping counters are listed here once log shipping lands.
+| Metric | Labels | What it holds |
+| --- | --- | --- |
+| `tender_log_records_sent_total` | `machine`, `sink` | A counter of the records the sink took from the machine, since its daemon first sent to it. |
+| `tender_log_records_dropped_total` | `machine`, `sink` | A counter of the records the daemon dropped for the sink, because its buffer was full or the sink refused them for good. |
+| `tender_log_last_sent_timestamp_seconds` | `machine`, `sink` | When a send last worked, in Unix seconds. It has no series before the first one. |
+| `tender_log_shipping_failing` | `machine`, `sink` | `1` while sending to the sink counts toward `logs.shipping_failing`: it has failed for 15 minutes, or records were dropped since the last send that worked. Else `0`. |
 
 ## Example queries
 
 1. A machine without a snapshot for 26 hours: `tender_backup_last_age_seconds > 26 * 3600`.
 2. Services that stopped: `tender_service_state{state="exited"} == 1`.
 3. Any critical problem: `sum(tender_problems_open{severity="critical"}) > 0`.
+4. Log records dropped in the last hour: `increase(tender_log_records_dropped_total[1h]) > 0`.
 
 ## Next steps
 

@@ -1,6 +1,9 @@
 package actions
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Action types and statuses. They match the CHECK constraints in migrations/001_actions.sql.
 const (
@@ -8,6 +11,7 @@ const (
 	TypeStop    = "stop"
 	TypeRestart = "restart"
 	TypeLogs    = "logs"
+	TypeTest    = "test" // tries a backup destination from the machine
 
 	StatusPending    = "pending"
 	StatusInProgress = "in_progress"
@@ -30,14 +34,15 @@ var Priorities = []string{"emerg", "alert", "crit", "err", "warning", "notice", 
 // Summary is an action without its output, as GET /v1/machines/{machine}/actions lists them.
 type Summary struct {
 	ID            int64     `json:"id"`
-	Machine       string    `json:"machine"`  // the machine's name
-	Type          string    `json:"type"`     // start, stop, restart or logs
-	Service       *string   `json:"service"`  // the service's name; null for the machine's journal
-	Unit          *string   `json:"unit"`     // machine logs only: the systemd unit, or null for every unit
-	Priority      *string   `json:"priority"` // machine logs only: this priority and the more severe ones, or null for all
-	Since         *string   `json:"since"`    // logs only: how far back, such as 1h, or null for no limit
-	Lines         *int      `json:"lines"`    // logs only: at most this many of the newest lines
-	Status        string    `json:"status"`   // pending, in_progress, completed or failed
+	Machine       string    `json:"machine"`     // the machine's name
+	Type          string    `json:"type"`        // start, stop, restart or logs
+	Service       *string   `json:"service"`     // the service's name; null for the machine's journal
+	Unit          *string   `json:"unit"`        // machine logs only: the systemd unit, or null for every unit
+	Priority      *string   `json:"priority"`    // machine logs only: this priority and the more severe ones, or null for all
+	Since         *string   `json:"since"`       // logs only: how far back, such as 1h, or null for no limit
+	Lines         *int      `json:"lines"`       // logs only: at most this many of the newest lines
+	Destination   *string   `json:"destination"` // test only: the backup destination it tries
+	Status        string    `json:"status"`      // pending, in_progress, completed or failed
 	OutputCleared bool      `json:"output_cleared"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -47,6 +52,14 @@ type Summary struct {
 type Action struct {
 	Summary
 	Output *string `json:"output"` // the logs, or why it failed; null when cleared or when there is none
+}
+
+// Handout is an action as the hub hands it to the machine's daemon. Target is the destination a
+// test action tries, with its secrets: only the machine's own daemon gets it, and it is never
+// stored with the action.
+type Handout struct {
+	Action
+	Target json.RawMessage `json:"target,omitempty"`
 }
 
 // Finished reports whether the action ended, well or not.
@@ -60,6 +73,9 @@ type Input struct {
 	Priority *string `json:"priority,omitempty"` // machine logs only
 	Since    *string `json:"since,omitempty"`    // logs only, such as 30m, 1h or 7d, at most 7d
 	Lines    *int    `json:"lines,omitempty"`    // logs only, 1 to 2000, default 200
+	// Destination is the backup destination a test action tries. POST
+	// /v1/backups/destinations/{destination}/test sets it; the actions collection doesn't take it.
+	Destination *string `json:"-"`
 }
 
 // Patch is the body of PATCH /v1/machines/{machine}/actions/{id}, with which the daemon reports

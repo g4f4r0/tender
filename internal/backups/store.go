@@ -2,21 +2,15 @@ package backups
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
 	"github.com/g4f4r0/tender/internal/db"
-	"github.com/g4f4r0/tender/internal/secret"
 	"github.com/g4f4r0/tender/internal/server"
 )
 
@@ -58,278 +52,6 @@ func noSettingsIfNone(err error) error {
 	return err
 }
 
-// Destinations
-
-const destinationColumns = `d.id, d.name, d.type, d.endpoint, d.bucket, d.path, d.created_at, d.updated_at`
-
-func scanDestination(row scanner) (Destination, error) {
-	var d Destination
-	var created, updated int64
-	err := row.Scan(&d.ID, &d.Name, &d.Type, &d.Endpoint, &d.Bucket, &d.Path, &created, &updated)
-	d.CreatedAt, d.UpdatedAt = at(created), at(updated)
-	return d, err
-}
-
-// errNoKey is what a process without TENDER_ENCRYPTION_KEY answers when asked for credentials.
-var errNoKey = &server.Error{Status: http.StatusServiceUnavailable,
-	Detail: "This process has no TENDER_ENCRYPTION_KEY, so it can't store or read destination credentials. Set it to the hub's key and run the command again."}
-
-func (s *Store) seal(v string) ([]byte, error) {
-	if len(s.key) == 0 {
-		return nil, errNoKey
-	}
-	b, err := secret.Seal(s.key, []byte(v))
-	if err != nil {
-		return nil, fmt.Errorf("seal destination credentials: %w", err)
-	}
-	return b, nil
-}
-
-func (s *Store) open(sealed []byte) (string, error) {
-	if len(s.key) == 0 {
-		return "", errNoKey
-	}
-	v, err := secret.Open(s.key, sealed)
-	if err != nil {
-		return "", fmt.Errorf("open destination credentials: %w. Start the hub with the TENDER_ENCRYPTION_KEY it first stored them with", err)
-	}
-	return string(v), nil
-}
-
-// newPassword returns 32 random bytes, base64 encoded: the repository password the hub makes
-// when the owner doesn't bring one.
-func newPassword() (string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(raw), nil
-}
-
-// errPasswordFixed refuses a change of the repository password.
-var errPasswordFixed = server.Invalid("The password can't change: every repository at this destination is encrypted with it. " +
-	"Add a new destination with the new password and move the machines to it.")
-
-// trimPath removes the slashes around a path inside the bucket.
-func trimPath(p string) string { return strings.Trim(p, "/") }
-
-// validateLocation is a 422 unless the endpoint, bucket and name can address a repository.
-func validateLocation(endpoint, bucket string) error {
-	u, err := url.Parse(endpoint)
-	switch {
-	case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "":
-		return server.Invalid("endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.")
-	case bucket == "":
-		return server.Invalid("bucket is required.")
-	}
-	return nil
-}
-
-// AddDestination stores a destination and its credentials, sealed. Without a password it makes one
-// and returns it in the result: that is the only time anyone can read it.
-func (s *Store) AddDestination(ctx context.Context, in DestinationInput) (DestinationCreated, error) {
-	var out DestinationCreated
-	if in.Type == "" {
-		in.Type = "s3"
-	}
-	in.Path = trimPath(in.Path)
-	switch {
-	case !server.ValidName(in.Name):
-		return out, server.Invalid("Destination names are lowercase letters, digits and hyphens, up to 63 characters.")
-	case in.Type != "s3":
-		return out, server.Invalid("type must be s3.")
-	case in.AccessKeyID == "":
-		return out, server.Invalid("access_key_id is required.")
-	case in.SecretAccessKey == "":
-		return out, server.Invalid("secret_access_key is required.")
-	}
-	if err := validateLocation(in.Endpoint, in.Bucket); err != nil {
-		return out, err
-	}
-	if in.Password == "" {
-		p, err := newPassword()
-		if err != nil {
-			return out, err
-		}
-		in.Password, out.Password = p, p
-	}
-	sealed := make([][]byte, 3)
-	for i, v := range []string{in.AccessKeyID, in.SecretAccessKey, in.Password} {
-		b, err := s.seal(v)
-		if err != nil {
-			return DestinationCreated{}, err
-		}
-		sealed[i] = b
-	}
-
-	now := time.Now().Unix()
-	res, err := s.db.Write.ExecContext(ctx,
-		`INSERT INTO backup_destinations (name, type, endpoint, bucket, path, access_key_id, secret_access_key, password, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		in.Name, in.Type, in.Endpoint, in.Bucket, in.Path, sealed[0], sealed[1], sealed[2], now, now)
-	if err != nil {
-		return DestinationCreated{}, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return DestinationCreated{}, err
-	}
-	if n == 0 {
-		return DestinationCreated{}, server.Conflict("A destination with this name or this endpoint, bucket and path already exists. Choose another name, or use the existing one.")
-	}
-	out.Destination, err = s.Destination(ctx, in.Name)
-	return out, err
-}
-
-// PatchDestination changes the location or the keys of a destination; fields left nil stay as they are.
-func (s *Store) PatchDestination(ctx context.Context, name string, p DestinationPatch) (Destination, error) {
-	switch {
-	case p.Endpoint != nil && *p.Endpoint == "", p.Bucket != nil && *p.Bucket == "":
-		return Destination{}, server.Invalid("endpoint and bucket can't be empty.")
-	case p.AccessKeyID != nil && *p.AccessKeyID == "", p.SecretAccessKey != nil && *p.SecretAccessKey == "":
-		return Destination{}, server.Invalid("access_key_id and secret_access_key can't be empty. Leave a key out to keep it.")
-	}
-	tx, err := s.db.Write.BeginTx(ctx, nil)
-	if err != nil {
-		return Destination{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	d, err := scanDestination(tx.QueryRowContext(ctx, `SELECT `+destinationColumns+` FROM backup_destinations d WHERE d.name = ?`, name))
-	if err != nil {
-		return d, notFoundIfNone(err, "Destination %q doesn't exist.", name)
-	}
-	if p.Endpoint != nil {
-		d.Endpoint = *p.Endpoint
-	}
-	if p.Bucket != nil {
-		d.Bucket = *p.Bucket
-	}
-	if p.Path != nil {
-		d.Path = trimPath(*p.Path)
-	}
-	if err := validateLocation(d.Endpoint, d.Bucket); err != nil {
-		return d, err
-	}
-	var taken int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM backup_destinations WHERE endpoint = ? AND bucket = ? AND path = ? AND id != ?`,
-		d.Endpoint, d.Bucket, d.Path, d.ID).Scan(&taken)
-	if err != nil {
-		return d, err
-	}
-	if taken > 0 {
-		return d, server.Conflict("Another destination already uses this endpoint, bucket and path. Use that one, or choose another location.")
-	}
-
-	d.UpdatedAt = at(time.Now().Unix())
-	_, err = tx.ExecContext(ctx, `UPDATE backup_destinations SET endpoint = ?, bucket = ?, path = ?, updated_at = ? WHERE id = ?`,
-		d.Endpoint, d.Bucket, d.Path, d.UpdatedAt.Unix(), d.ID)
-	if err != nil {
-		return d, err
-	}
-	for column, v := range map[string]*string{"access_key_id": p.AccessKeyID, "secret_access_key": p.SecretAccessKey} {
-		if v == nil {
-			continue
-		}
-		sealed, err := s.seal(*v)
-		if err != nil {
-			return d, err
-		}
-		// The column name comes from the map above, never from the request.
-		if _, err := tx.ExecContext(ctx, `UPDATE backup_destinations SET `+column+` = ? WHERE id = ?`, sealed, d.ID); err != nil {
-			return d, err
-		}
-	}
-	return d, tx.Commit()
-}
-
-// DeleteDestination removes a destination that no machine uses. Its repositories stay where they are.
-func (s *Store) DeleteDestination(ctx context.Context, name string) error {
-	tx, err := s.db.Write.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var id int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM backup_destinations WHERE name = ?`, name).Scan(&id); err != nil {
-		return notFoundIfNone(err, "Destination %q doesn't exist.", name)
-	}
-	rows, err := tx.QueryContext(ctx,
-		`SELECT m.name FROM backup_settings s JOIN machines m ON m.id = s.machine_id WHERE s.destination_id = ? ORDER BY m.name`, id)
-	if err != nil {
-		return err
-	}
-	var users []string
-	for rows.Next() {
-		var machine string
-		if err := rows.Scan(&machine); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		users = append(users, machine)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	if len(users) > 0 {
-		return server.Conflict("Destination %q is used by %s. Stop their backups first (delete their backup settings), then remove the destination.",
-			name, strings.Join(users, ", "))
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM backup_destinations WHERE id = ?`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// CheckKey is an error unless the store's key opens every secret already stored. The hub and
-// "tender mcp" run it at start, so a wrong key stops them there instead of failing every daemon
-// later, or storing new secrets that the hub can't open.
-func (s *Store) CheckKey(ctx context.Context) error {
-	rows, err := s.db.Read.QueryContext(ctx, `SELECT name, access_key_id, secret_access_key, password FROM backup_destinations ORDER BY id`)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var name string
-		var keyID, secretKey, password []byte
-		if err := rows.Scan(&name, &keyID, &secretKey, &password); err != nil {
-			return err
-		}
-		for _, sealed := range [][]byte{keyID, secretKey, password} {
-			if _, err := s.open(sealed); err != nil {
-				return fmt.Errorf("destination %q: %w", name, err)
-			}
-		}
-	}
-	return rows.Err()
-}
-
-// Destination returns the destination called name.
-func (s *Store) Destination(ctx context.Context, name string) (Destination, error) {
-	d, err := scanDestination(s.db.Read.QueryRowContext(ctx,
-		`SELECT `+destinationColumns+` FROM backup_destinations d WHERE d.name = ?`, name))
-	return d, notFoundIfNone(err, "Destination %q doesn't exist.", name)
-}
-
-// Destinations returns every destination by name.
-func (s *Store) Destinations(ctx context.Context) ([]Destination, error) {
-	rows, err := s.db.Read.QueryContext(ctx, `SELECT `+destinationColumns+` FROM backup_destinations d ORDER BY d.name`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	out := []Destination{}
-	for rows.Next() {
-		d, err := scanDestination(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
-}
-
 // Settings
 
 // SetSettings sets a machine's destination, schedule and retention, replacing any earlier settings.
@@ -358,22 +80,6 @@ func (s *Store) SetSettings(ctx context.Context, machineID int64, destination, s
 	return s.Settings(ctx, machineID)
 }
 
-// Settings returns a machine's settings, or a NotFound error before they are set.
-func (s *Store) Settings(ctx context.Context, machineID int64) (Settings, error) {
-	var st Settings
-	var created, updated, dcreated, dupdated int64
-	d := &st.Destination
-	err := s.db.Read.QueryRowContext(ctx,
-		`SELECT d.id, d.name, d.type, d.endpoint, d.bucket, d.path, d.created_at, d.updated_at,
-		        s.schedule, s.retention_days, s.created_at, s.updated_at
-		 FROM backup_settings s JOIN backup_destinations d ON d.id = s.destination_id WHERE s.machine_id = ?`, machineID).
-		Scan(&d.ID, &d.Name, &d.Type, &d.Endpoint, &d.Bucket, &d.Path, &dcreated, &dupdated,
-			&st.Schedule, &st.RetentionDays, &created, &updated)
-	d.CreatedAt, d.UpdatedAt = at(dcreated), at(dupdated)
-	st.CreatedAt, st.UpdatedAt = at(created), at(updated)
-	return st, noSettingsIfNone(err)
-}
-
 // DeleteSettings removes a machine's backup settings: its daemon stops backing up. Its snapshots
 // and history stay. It is a NotFound error when the machine has none.
 func (s *Store) DeleteSettings(ctx context.Context, machineID int64) error {
@@ -387,28 +93,6 @@ func (s *Store) DeleteSettings(ctx context.Context, machineID int64) error {
 		return server.NotFound("This machine has no backup settings. There is nothing to remove.")
 	}
 	return nil
-}
-
-// Credentials returns the keys and password of the destination a machine backs up to, decrypted.
-// Only the machine's own daemon may be given them.
-func (s *Store) Credentials(ctx context.Context, machineID int64) (Credentials, error) {
-	var sealed [3][]byte
-	err := s.db.Read.QueryRowContext(ctx,
-		`SELECT d.access_key_id, d.secret_access_key, d.password
-		 FROM backup_settings s JOIN backup_destinations d ON d.id = s.destination_id WHERE s.machine_id = ?`, machineID).
-		Scan(&sealed[0], &sealed[1], &sealed[2])
-	if err != nil {
-		return Credentials{}, noSettingsIfNone(err)
-	}
-	var plain [3]string
-	for i, b := range sealed {
-		v, err := s.open(b)
-		if err != nil {
-			return Credentials{}, err
-		}
-		plain[i] = v
-	}
-	return Credentials{AccessKeyID: plain[0], SecretAccessKey: plain[1], Password: plain[2]}, nil
 }
 
 // Snapshots

@@ -45,6 +45,11 @@ func queueAction(hub *hubAPI, machine string, in actions.Input) (actions.Action,
 	if err := hub.do(http.MethodPost, machinePath(machine, "/actions"), in, &a); err != nil {
 		return a, err
 	}
+	return awaitAction(hub, machine, a)
+}
+
+// awaitAction waits for the daemon to finish a queued action, as queueAction says.
+func awaitAction(hub *hubAPI, machine string, a actions.Action) (actions.Action, error) {
 	deadline := time.Now().Add(actionWait)
 	for !a.Finished() && time.Now().Before(deadline) {
 		time.Sleep(min(actionCheck, time.Until(deadline)))
@@ -164,6 +169,9 @@ func actionsList(args []string, s session) error {
 func describe(a actions.Summary) string {
 	if a.Service != nil {
 		return *a.Service
+	}
+	if a.Destination != nil {
+		return "destination " + *a.Destination
 	}
 	parts := []string{"journal"}
 	if a.Unit != nil {

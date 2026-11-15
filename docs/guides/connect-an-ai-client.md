@@ -63,7 +63,7 @@ A client on the hub machine can run the tools as a local process with `tender mc
 
 The client starts the command without a terminal, so `sudo` must not ask for a password there. Don't run it as root while the hub is stopped, because files root creates next to the database lock the hub out.
 
-The tools that store destination keys need `TENDER_ENCRYPTION_KEY`, and `send_test_email` needs the `TENDER_SMTP_` variables, all from `/etc/tender/hub.env`. `sudo` clears the environment by default, so with the command above those tools say what is missing. Every other tool works.
+The tools that store destination keys need `TENDER_ENCRYPTION_KEY`, and `send_test_notification` needs the `TENDER_SMTP_` variables for email channels, all from `/etc/tender/hub.env`. `sudo` clears the environment by default, so with the command above those tools say what is missing. Every other tool works.
 
 ## Ask it something
 
@@ -78,7 +78,7 @@ Try questions like these:
 Each tool tells the client whether it only reads, changes something or removes something, so the client can ask you before a removal or a stop.
 
 > [!WARNING]
-> Logs and anything else a tool returns go to the client's model provider. Keys you give `add_destination` pass through the conversation too. For real bucket keys, use `tender destinations add`, which asks for them with typing hidden.
+> Logs and anything else a tool returns go to the client's model provider. Keys you give `add_destination` pass through the conversation too. For real destination keys, use `tender destinations add`, which asks for them with typing hidden.
 
 ## Next steps
 

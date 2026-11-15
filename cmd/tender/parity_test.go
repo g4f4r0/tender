@@ -36,6 +36,7 @@ var mcpCoverage = map[string]string{
 	"GET /v1/backups/destinations/{destination}":        "list_destinations",
 	"PATCH /v1/backups/destinations/{destination}":      "update_destination",
 	"DELETE /v1/backups/destinations/{destination}":     "remove_destination",
+	"POST /v1/backups/destinations/{destination}/test":  "test_destination",
 	"GET /v1/notifications":                             "list_notifications",
 	"GET /v1/machines/{machine}/notifications":          "list_notifications",
 	"GET /v1/machines/{machine}/notifications/{id}":     "list_notifications",
@@ -52,8 +53,13 @@ var mcpCoverage = map[string]string{
 	"POST /v1/machines/{machine}/actions":               "start_service, stop_service, restart_service, get_service_logs, get_machine_logs",
 	"GET /v1/machines/{machine}/actions":                "list_actions",
 	"GET /v1/machines/{machine}/actions/{id}":           "get_action",
-	"POST /mcp":    "none: it is the MCP endpoint itself",
-	"GET /metrics": "none: it is for Prometheus scrapers, and the typed tools already return the same data",
+	"GET /v1/logs/sinks":                                "list_log_sinks",
+	"POST /v1/logs/sinks":                               "add_log_sink",
+	"GET /v1/logs/sinks/{sink}":                         "list_log_sinks",
+	"PATCH /v1/logs/sinks/{sink}":                       "update_log_sink",
+	"DELETE /v1/logs/sinks/{sink}":                      "remove_log_sink",
+	"POST /mcp":                                         "none: it is the MCP endpoint itself",
+	"GET /metrics":                                      "none: it is for Prometheus scrapers, and the typed tools already return the same data",
 }
 
 func toolNames(t *testing.T) []string {

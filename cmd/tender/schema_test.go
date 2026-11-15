@@ -65,11 +65,12 @@ func rows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 func TestSchemaAppliesTwice(t *testing.T) {
 	d := schema(t)
-	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 12 {
-		t.Fatalf("migrations rows = %d, want 12 (machines, backups twice, notifications four times, services twice, actions, server twice)", n)
+	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 15 {
+		t.Fatalf("migrations rows = %d, want 15 (machines, backups three times, notifications four times, services twice, actions twice, logs, server twice)", n)
 	}
 	for _, table := range []string{"machines", "machine_usage", "backup_destinations", "backup_settings",
-		"backup_snapshots", "backup_history", "notifications", "notification_channels", "notification_deliveries", "service_engines", "services", "actions", "idempotency_keys"} {
+		"backup_snapshots", "backup_history", "notifications", "notification_channels", "notification_deliveries", "service_engines", "services", "actions",
+		"log_sinks", "log_sink_status", "idempotency_keys"} {
 		if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table); n != 1 {
 			t.Errorf("table %s missing", table)
 		}
@@ -105,15 +106,15 @@ func TestEveryTableHasIDAndTimestamps(t *testing.T) {
 func TestSchemaConstraints(t *testing.T) {
 	d := schema(t)
 	must(t, d, `INSERT INTO machines (id, name, token_hash, created_at, updated_at) VALUES (1, 'g4f4r0-apps', x'00', 1, 1)`)
-	must(t, d, `INSERT INTO backup_destinations (id, name, type, endpoint, bucket, access_key_id, secret_access_key, password, created_at, updated_at)
-	            VALUES (1, 'r2', 's3', 'https://example.r2.cloudflarestorage.com', 'g4f4r0-backups-apps', x'01', x'02', x'03', 1, 1)`)
+	must(t, d, `INSERT INTO backup_destinations (id, name, type, config, secrets, password, location, created_at, updated_at)
+	            VALUES (1, 'r2', 's3', '{}', '{}', x'03', 's3:https://example.r2.cloudflarestorage.com/g4f4r0-backups-apps', 1, 1)`)
 
 	bad := map[string]string{
 		"STRICT rejects text in an integer column": `INSERT INTO machine_usage (machine_id, uptime_seconds, created_at, updated_at) VALUES (1, 'soon', 1, 1)`,
 		"history status must be a known word":      `INSERT INTO backup_history (machine_id, type, status, created_at, updated_at) VALUES (1, 'backup', 'done', 1, 1)`,
 		"history type must be a known word":        `INSERT INTO backup_history (machine_id, type, status, created_at, updated_at) VALUES (1, 'prune', 'pending', 1, 1)`,
-		"destination type must be s3":              `INSERT INTO backup_destinations (name, type, endpoint, bucket, access_key_id, secret_access_key, password, created_at, updated_at) VALUES ('x', 'ftp', 'e', 'b', x'01', x'02', x'03', 1, 1)`,
-		"destinations need their credentials":      `INSERT INTO backup_destinations (name, type, endpoint, bucket, created_at, updated_at) VALUES ('y', 's3', 'e2', 'b', 1, 1)`,
+		"destination locations are unique":         `INSERT INTO backup_destinations (name, type, config, secrets, password, location, created_at, updated_at) VALUES ('x', 's3', '{}', '{}', x'03', 's3:https://example.r2.cloudflarestorage.com/g4f4r0-backups-apps', 1, 1)`,
+		"destinations need their password":         `INSERT INTO backup_destinations (name, type, config, secrets, location, created_at, updated_at) VALUES ('y', 's3', '{}', '{}', 'l', 1, 1)`,
 		"retention must be positive":               `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 1, '30 3 * * *', 0, 1, 1)`,
 		"settings need an existing destination":    `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 99, '30 3 * * *', 30, 1, 1)`,
 		"severity must be a known word":            `INSERT INTO notifications (event, severity, status, message, created_at, updated_at) VALUES ('disk.full', 'high', 'pending', 'c', 1, 1)`,

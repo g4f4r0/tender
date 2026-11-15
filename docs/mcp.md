@@ -1,6 +1,6 @@
 # MCP tools
 
-The hub serves 29 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
+The hub serves 34 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
 
 ## Prerequisites
 
@@ -16,10 +16,10 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 1. Every result is JSON. It comes as `structuredContent` and as the same JSON in a text block, for clients that read only text. A list is `{"data": [...]}`, with `next_cursor` when there is another page.
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
 3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
-4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_notification`, which sends to the channels, sets it to `true`.
-5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs` and `get_machine_logs`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with `get_action`.
+4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_notification`, which sends to the channels, and `test_destination`, which reaches a backup destination, set it to `true`.
+5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` and `test_destination`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-7. No tool returns bucket keys or repository passwords. No tool returns a channel's secret, such as a Slack webhook URL. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, and a webhook channel's signing secret.
+7. No tool returns destination keys, repository passwords, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
@@ -47,6 +47,7 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `POST /v1/backups/destinations` | `add_destination` |
 | `GET /v1/backups/destinations/{destination}` | `list_destinations` |
 | `PATCH /v1/backups/destinations/{destination}` | `update_destination` |
+| `POST /v1/backups/destinations/{destination}/test` | `test_destination` |
 | `DELETE /v1/backups/destinations/{destination}` | `remove_destination` |
 | `GET /v1/notifications` | `list_notifications` |
 | `GET /v1/machines/{machine}/notifications` | `list_notifications` |
@@ -64,6 +65,11 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` |
 | `GET /v1/machines/{machine}/actions` | `list_actions` |
 | `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
+| `GET /v1/logs/sinks` | `list_log_sinks` |
+| `POST /v1/logs/sinks` | `add_log_sink` |
+| `GET /v1/logs/sinks/{sink}` | `list_log_sinks` |
+| `PATCH /v1/logs/sinks/{sink}` | `update_log_sink` |
+| `DELETE /v1/logs/sinks/{sink}` | `remove_log_sink` |
 | `GET /metrics` | None. It is for Prometheus scrapers, and the typed tools return the same data. |
 | `POST /mcp` | None. It is the MCP endpoint itself. |
 
@@ -411,9 +417,16 @@ None.
           "id": 1,
           "name": "r2",
           "type": "s3",
-          "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-          "bucket": "my-backups",
-          "path": "tender",
+          "config": {
+            "access_key_id": "***",
+            "access_key_id_set": true,
+            "bucket": "my-backups",
+            "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+            "path": "tender",
+            "secret_access_key": "***",
+            "secret_access_key_set": true
+          },
+          "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
           "created_at": "2026-11-15T11:27:26Z",
           "updated_at": "2026-11-15T11:27:26Z"
         },
@@ -644,9 +657,16 @@ None.
     "id": 1,
     "name": "r2",
     "type": "s3",
-    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-    "bucket": "my-backups",
-    "path": "tender",
+    "config": {
+      "access_key_id": "***",
+      "access_key_id_set": true,
+      "bucket": "my-backups",
+      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+      "path": "tender",
+      "secret_access_key": "***",
+      "secret_access_key_set": true
+    },
+    "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
     "created_at": "2026-11-15T11:27:26Z",
     "updated_at": "2026-11-15T11:27:26Z"
   },
@@ -719,6 +739,8 @@ None.
 
 ## Destinations
 
+A destination has a `type` and a `config` with the type's fields. [Backups](backups.md#destination-types) explains each type, and the [API reference](api.md#destinations) lists their fields.
+
 ### `list_destinations`
 
 Lists the places backups go, by name.
@@ -735,7 +757,7 @@ None.
 
 #### Returns
 
-`data`, the destinations, each with `id`, `name`, `type` (`s3`), `endpoint`, `bucket`, `path` (the folder inside the bucket, empty for its top) and the timestamps. Each machine's repository is a folder named after the machine under `path`. Keys and passwords are never shown.
+`data`, the destinations, each with `id`, `name`, `type` (`s3`, `local`, `sftp`, `rest` or `rclone`), `config`, `location` and the timestamps. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set. `location` is the restic repository; each machine's repository is a folder named after the machine in it. Passwords are never shown.
 
 #### Limits
 
@@ -756,9 +778,16 @@ None. The list isn't paged.
       "id": 1,
       "name": "r2",
       "type": "s3",
-      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-      "bucket": "my-backups",
-      "path": "tender",
+      "config": {
+        "access_key_id": "***",
+        "access_key_id_set": true,
+        "bucket": "my-backups",
+        "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+        "path": "tender",
+        "secret_access_key": "***",
+        "secret_access_key_set": true
+      },
+      "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
     }
@@ -778,9 +807,9 @@ None besides the hub's own failure.
 
 ### `add_destination`
 
-Adds a place to send backups: an S3-compatible bucket, such as Cloudflare R2. Each machine gets its own folder in it.
+Adds a place to send backups. Each machine gets its own folder in it.
 
-The keys and the password you pass go through the AI conversation, and so to the client's model provider. For real keys, run `tender destinations add` instead, which asks for them with typing hidden. The hub stores them encrypted, and no tool, route or log shows them again.
+The keys and the password you pass go through the AI conversation, and so to the client's model provider. For real keys, run `tender destinations add` instead, which asks for them with typing hidden. The hub stores them encrypted, and no tool, route or log shows them again. The `sftp` and `rclone` types take no secrets, because their logins stay on each machine.
 
 #### Annotations
 
@@ -795,12 +824,8 @@ A second call with the same name fails.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes | The new destination's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
-| `type` | string | No | Only `s3`, the default, for any S3-compatible bucket. |
-| `endpoint` | string | Yes | The S3 endpoint URL, such as `https://<account-id>.r2.cloudflarestorage.com`. |
-| `bucket` | string | Yes | The bucket's name. |
-| `path` | string | No | The folder inside the bucket. Leave it out for the bucket's top. |
-| `access_key_id` | string | Yes | The S3 access key ID. |
-| `secret_access_key` | string | Yes | The S3 secret access key. |
+| `type` | string | No | `s3`, the default, `local`, `sftp`, `rest` or `rclone`. |
+| `config` | object | Yes | The type's fields, as the [API reference](api.md#destinations) lists them, such as `endpoint`, `bucket`, `path`, `access_key_id` and `secret_access_key` for `s3`. |
 | `password` | string | No | The restic repository password for every machine at this destination. Leave it out and the hub makes one. |
 
 #### Returns
@@ -817,12 +842,9 @@ None.
 {
   "name": "add_destination",
   "arguments": {
-    "name": "r2",
-    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-    "bucket": "my-backups",
-    "path": "tender",
-    "access_key_id": "<access key ID>",
-    "secret_access_key": "<secret access key>"
+    "name": "nas",
+    "type": "sftp",
+    "config": {"host": "nas.example.com", "user": "tender", "path": "/srv/restic"}
   }
 }
 ```
@@ -831,14 +853,18 @@ None.
 
 ```json
 {
-  "id": 1,
-  "name": "r2",
-  "type": "s3",
-  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-  "bucket": "my-backups",
-  "path": "tender",
-  "created_at": "2026-11-15T11:27:26Z",
-  "updated_at": "2026-11-15T11:27:26Z",
+  "id": 2,
+  "name": "nas",
+  "type": "sftp",
+  "config": {
+    "host": "nas.example.com",
+    "path": "/srv/restic",
+    "port": 22,
+    "user": "tender"
+  },
+  "location": "sftp://tender@nas.example.com:22//srv/restic",
+  "created_at": "2026-11-15T11:30:02Z",
+  "updated_at": "2026-11-15T11:30:02Z",
   "password": "<password>"
 }
 ```
@@ -846,24 +872,26 @@ None.
 #### Errors
 
 1. `Destination names are lowercase letters, digits and hyphens, up to 63 characters.`
-2. `type must be s3.`
-3. `endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.`
-4. `bucket is required.`
-5. `access_key_id is required.` The same goes for `secret_access_key`.
-6. `A destination with this name or this endpoint, bucket and path already exists. Choose another name, or use the existing one.`
-7. `This process has no TENDER_ENCRYPTION_KEY, so it can't store or read destination credentials. Set it to the hub's key and run the command again.` This happens only over stdio.
+2. `type must be one of local, rclone, rest, s3, sftp.`
+3. `config is required: the sftp destination's host, port, user, path.`
+4. `config.host is required: ...`, for any required field, with what it holds.
+5. `config has region, which a s3 destination doesn't take. It takes endpoint, bucket, path, access_key_id, secret_access_key.`
+6. A sentence naming the field that isn't valid, such as `config.endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.` or `config.username and config.password go together: give both, or neither for a server without logins.`
+7. `config.secret_access_key is "***", which is how the hub hides a secret. Give the secret itself.`
+8. `A destination with this name or this location (sftp://tender@nas.example.com:22//srv/restic) already exists. Choose another name, or use the existing one.`
+9. `This process has no TENDER_ENCRYPTION_KEY, so it can't store or read destination credentials. Set it to the hub's key and run the command again.` This happens only over stdio.
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/backups/destinations` | `tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH]` |
+| `POST /v1/backups/destinations` | `tender destinations add NAME [--type TYPE] [OPTIONS]` |
 
 ### `update_destination`
 
-Changes a destination's endpoint, bucket, path or keys. Anything you leave out stays as it is.
+Changes fields of a destination's config. Anything you leave out stays as it is.
 
-New keys you pass go through the AI conversation. The password can't change, because every repository at the destination is encrypted with it.
+New keys you pass go through the AI conversation. The type and the password can't change, because the repositories depend on them.
 
 #### Annotations
 
@@ -876,25 +904,22 @@ New keys you pass go through the AI conversation. The password can't change, bec
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `destination` | string | Yes | The destination's name, as `list_destinations` shows it. |
-| `endpoint` | string | No | The new S3 endpoint URL. |
-| `bucket` | string | No | The new bucket's name. |
-| `path` | string | No | The new folder inside the bucket. |
-| `access_key_id` | string | No | The new S3 access key ID. |
-| `secret_access_key` | string | No | The new S3 secret access key. |
+| `config` | object | No | The fields to change. `null` removes an optional field, and a secret given as `"***"` stays as it is, so you can pass back what `list_destinations` shows. |
 | `password` | string | No | Not accepted. A call with it fails. |
+| `type` | string | No | Not accepted. A call with it fails. |
 
 #### Returns
 
-The destination, as `list_destinations` shows it, without its keys.
+The destination, as `list_destinations` shows it.
 
 #### Limits
 
-None.
+None. Daemons pick up the new config within 10 minutes. Move the data yourself before you point a destination at another place.
 
 #### Example call
 
 ```json
-{"name": "update_destination", "arguments": {"destination": "r2", "path": "tender-2026"}}
+{"name": "update_destination", "arguments": {"destination": "r2", "config": {"path": "tender-2026"}}}
 ```
 
 #### Example result
@@ -904,9 +929,16 @@ None.
   "id": 1,
   "name": "r2",
   "type": "s3",
-  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-  "bucket": "my-backups",
-  "path": "tender-2026",
+  "config": {
+    "access_key_id": "***",
+    "access_key_id_set": true,
+    "bucket": "my-backups",
+    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+    "path": "tender-2026",
+    "secret_access_key": "***",
+    "secret_access_key_set": true
+  },
+  "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender-2026",
   "created_at": "2026-11-15T11:27:26Z",
   "updated_at": "2026-11-15T12:02:41Z"
 }
@@ -916,22 +948,89 @@ None.
 
 1. `Destination "r2" doesn't exist.`
 2. `The password can't change: every repository at this destination is encrypted with it. Add a new destination with the new password and move the machines to it.`
-3. `endpoint and bucket can't be empty.`
-4. `access_key_id and secret_access_key can't be empty. Leave a key out to keep it.`
-5. `Another destination already uses this endpoint, bucket and path. Use that one, or choose another location.`
+3. `The type can't change: the repositories are where the type put them. Add a new destination of the other type and move the machines to it.`
+4. The sentences of `add_destination` for a config that isn't valid, such as `config.bucket is required: ...` after `{"bucket": null}`.
+5. `Another destination already uses s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender-2026. Use that one, or choose another location.`
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `PATCH /v1/backups/destinations/{destination}` | None. The CLI can't change a destination yet. |
+| `PATCH /v1/backups/destinations/{destination}` | `tender destinations update NAME [OPTIONS]` |
+
+### `test_destination`
+
+Tries a destination from one machine, through the daemon there. The daemon opens that machine's repository at the destination with `restic cat config`, which checks the address, the login and the password. When there is no repository yet, it makes one with `restic init`, as the first backup would. Call it after `add_destination` and before `set_backup`.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `true` |
+
+It reaches a server outside the hub, and a second call finds the repository the first one made.
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `destination` | string | Yes | The destination's name, as `list_destinations` shows it. |
+| `machine` | string | Yes | The machine whose daemon tries it, as `list_machines` shows it. |
+
+#### Returns
+
+The action, with the type `test` and the status `completed`, or `pending` or `in_progress` if the daemon hasn't finished within 60 seconds. `output` says which repository the daemon reached and whether it made it.
+
+#### Limits
+
+The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 minutes fails.
+
+#### Example call
+
+```json
+{"name": "test_destination", "arguments": {"destination": "nas", "machine": "apps"}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 12,
+  "machine": "apps",
+  "type": "test",
+  "service": null,
+  "unit": null,
+  "priority": null,
+  "since": null,
+  "lines": null,
+  "destination": "nas",
+  "status": "completed",
+  "output_cleared": false,
+  "created_at": "2026-11-15T12:02:11Z",
+  "updated_at": "2026-11-15T12:02:13Z",
+  "output": "Reached sftp://tender@nas.example.com:22//srv/restic/apps from apps. It had no repository for apps yet, so the test made one with the destination's password.\n"
+}
+```
+
+#### Errors
+
+1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
+2. `destination is required. Call list_destinations to see the names.`
+3. `Destination "nas" doesn't exist. Call list_destinations to see the names.`
+4. `Could not reach the destination nas from apps: ...`, with the reason, when the daemon tried and failed. The reason is restic's, or what the machine lacks, such as `the sftp destination needs /etc/tender/ssh/id_ed25519 on this machine, and it isn't there`.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/backups/destinations/{destination}/test`, then `GET /v1/machines/{machine}/actions/{id}` | `tender destinations test NAME MACHINE` |
 
 ### `remove_destination`
 
 Removes a destination that no machine backs up to.
 
 > [!WARNING]
-> The hub forgets the destination's keys and password. The backups already in the bucket stay there, so keep the password in your password manager to restore them.
+> The hub forgets the destination's keys and password. The backups already at the destination stay there, so keep the password in your password manager to restore them.
 
 #### Annotations
 
@@ -1548,7 +1647,7 @@ None.
 
 ## Actions
 
-The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart` or `logs`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart`, `logs` or `test`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `destination` (tests only, from [`test_destination`](#test_destination)), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `start_service`
 
@@ -1593,6 +1692,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "priority": null,
   "since": null,
   "lines": null,
+  "destination": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:09Z",
@@ -1661,6 +1761,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "priority": null,
   "since": null,
   "lines": null,
+  "destination": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:08Z",
@@ -1731,6 +1832,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "priority": null,
   "since": null,
   "lines": null,
+  "destination": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:07Z",
@@ -1803,6 +1905,7 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
   "priority": null,
   "since": null,
   "lines": 2,
+  "destination": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:12Z",
@@ -1877,6 +1980,7 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
   "priority": "warning",
   "since": null,
   "lines": 5,
+  "destination": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -1943,6 +2047,7 @@ None.
   "priority": "warning",
   "since": "1h",
   "lines": 2,
+  "destination": null,
   "status": "completed",
   "output_cleared": true,
   "created_at": "2026-11-15T11:28:13Z",
@@ -2008,6 +2113,7 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "priority": "warning",
       "since": null,
       "lines": 5,
+      "destination": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:15Z",
@@ -2022,6 +2128,7 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "priority": null,
       "since": "10m",
       "lines": 3,
+      "destination": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:14Z",
@@ -2040,6 +2147,302 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
 | REST route | CLI command |
 | --- | --- |
 | `GET /v1/machines/{machine}/actions` | `tender actions list MACHINE` |
+
+## Log sinks
+
+A log sink is a place each machine's daemon sends its journal and its Docker containers' logs to, straight from the machine. The logs never reach the hub, so no tool returns them from a sink. [Log shipping](log-shipping.md) explains the sources, the batches and the buffer, and the [API reference](api.md#log-sinks) lists each type's fields.
+
+### `list_log_sinks`
+
+Lists the log sinks, by name, with how sending to each goes on each machine.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+`data`, the sinks, each with `id`, `name`, `type` (`otlp` or `webhook`), `config`, `enabled`, `sources`, `machines`, `status` and the timestamps. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set, and the query string of `url` or `endpoint` shows as `?***`. `machines` is empty for every machine. `status` has one entry per machine that reported on the sink, with `machine`, `records_sent`, `records_dropped`, `last_sent_at`, `last_error`, `failing_since`, `last_dropped_at`, `created_at` (its first report) and `updated_at` (its latest). `last_error` and `failing_since` are `null` while sending works.
+
+#### Limits
+
+None. The list isn't paged. Daemons report every minute, so a status can be up to a minute old.
+
+#### Example call
+
+```json
+{"name": "list_log_sinks", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "otel",
+      "type": "otlp",
+      "config": {
+        "endpoint": "https://otel.example.com:4318/v1/logs",
+        "headers": "***",
+        "headers_set": true
+      },
+      "enabled": true,
+      "sources": {
+        "journal": {"units": [], "min_priority": "info"},
+        "services": {"names": []}
+      },
+      "machines": [],
+      "status": [
+        {
+          "machine": "apps",
+          "records_sent": 18342,
+          "records_dropped": 0,
+          "last_sent_at": "2026-11-15T12:04:10Z",
+          "last_error": null,
+          "failing_since": null,
+          "last_dropped_at": null,
+          "created_at": "2026-11-15T11:31:02Z",
+          "updated_at": "2026-11-15T12:04:12Z"
+        }
+      ],
+      "created_at": "2026-11-15T11:30:41Z",
+      "updated_at": "2026-11-15T11:30:41Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+None besides the hub's own failure.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/logs/sinks` and `GET /v1/logs/sinks/{sink}` | `tender sinks list` and `tender sinks show NAME` |
+
+### `add_log_sink`
+
+Adds a place for every machine's daemon, or the named machines', to send logs to. Daemons start sending within a minute, with the logs from then on.
+
+The secrets you pass go through the AI conversation, and so to the client's model provider. For real keys, run `tender sinks add` instead, which reads them from files. The hub stores them encrypted, and no tool, route or log shows them again.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `false` |
+
+A second call with the same name fails.
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The new sink's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
+| `type` | string | Yes | `otlp` or `webhook`. |
+| `config` | object | Yes | For `otlp`, `endpoint`, the collector's OTLP/HTTP logs URL, and `headers`, a secret object of HTTP headers. For `webhook`, `url` and `secret`, at least 16 characters; leave `secret` out and the hub makes one. |
+| `enabled` | boolean | No | Whether daemons send to it. The default is `true`. |
+| `sources` | object | No | Which logs go: `journal` with `units` and `min_priority`, and `services` with `names`. An empty or left-out list means all, and a source left out sends nothing. Leave `sources` out for every unit's journal from `info` up and every container. |
+| `machines` | array | No | The machines that send to it, by name. Leave it out for every machine. |
+
+#### Returns
+
+The sink, as `list_log_sinks` shows it, with an empty `status`. For a `webhook` sink without a `secret` input, the result also has `secret`, the one the hub made, shown only this once. Give it to whoever runs the receiver, which checks each batch's signature with it.
+
+#### Limits
+
+None. Logs from before the sink was added aren't sent.
+
+#### Example call
+
+```json
+{
+  "name": "add_log_sink",
+  "arguments": {
+    "name": "hook",
+    "type": "webhook",
+    "config": {"url": "https://logs.example.com/tender"},
+    "sources": {"journal": {"units": ["nginx.service"], "min_priority": "warning"}, "services": {"names": ["web"]}},
+    "machines": ["apps"]
+  }
+}
+```
+
+#### Example result
+
+```json
+{
+  "id": 2,
+  "name": "hook",
+  "type": "webhook",
+  "config": {
+    "secret": "***",
+    "secret_set": true,
+    "url": "https://logs.example.com/tender"
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": ["nginx.service"], "min_priority": "warning"},
+    "services": {"names": ["web"]}
+  },
+  "machines": ["apps"],
+  "status": [],
+  "created_at": "2026-11-15T11:32:08Z",
+  "updated_at": "2026-11-15T11:32:08Z",
+  "secret": "<secret>"
+}
+```
+
+#### Errors
+
+1. `Log sink names are lowercase letters, digits and hyphens, up to 63 characters.`
+2. `type must be one of otlp, webhook.`
+3. `config is required: the otlp sink's endpoint, headers.`
+4. `config.endpoint is required: an http or https URL, such as https://otel.example.com:4318/v1/logs.`
+5. `config has token, which a otlp sink doesn't take. It takes endpoint, headers.`
+6. A sentence naming the field that isn't valid, such as `config.secret must be at least 16 characters. Leave it out and the hub makes one.` or `config.headers can't set Content-Type: Tender sets it.`
+7. `config.secret is "***", which is how the hub hides a secret. Give the secret itself.`
+8. `sources.journal.min_priority must be one of emerg, alert, crit, err, warning, notice, info, debug.`
+9. `machines has "db", which is not a machine. Run tender machines list to see the names, or leave machines empty for all.`
+10. `A log sink called hook already exists. Choose another name, or change that one.`
+11. `This process has no TENDER_ENCRYPTION_KEY, so it can't store or read log sink secrets. Set it to the hub's key and run the command again.` This happens only over stdio.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/logs/sinks` | `tender sinks add NAME --type TYPE [OPTIONS]` |
+
+### `update_log_sink`
+
+Changes a sink's config, whether it is enabled, its sources or its machines. Anything you leave out stays as it is.
+
+New secrets you pass go through the AI conversation. The name and the type can't change.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | The sink's name, as `list_log_sinks` shows it. |
+| `config` | object | No | The config fields to change. `null` removes an optional field, and a secret given as `"***"` stays as it is, so you can pass back what `list_log_sinks` shows. |
+| `enabled` | boolean | No | Whether daemons send to it. |
+| `sources` | object | No | The sources, as for `add_log_sink`. They replace the old ones as a whole, so a source left out sends nothing. |
+| `machines` | array | No | The machines that send to it, replacing the list. An empty list is every machine. |
+
+#### Returns
+
+The sink, as `list_log_sinks` shows it.
+
+#### Limits
+
+None. Daemons pick the change up within a minute.
+
+#### Example call
+
+```json
+{"name": "update_log_sink", "arguments": {"sink": "otel", "sources": {"journal": {"min_priority": "warning"}}}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 1,
+  "name": "otel",
+  "type": "otlp",
+  "config": {
+    "endpoint": "https://otel.example.com:4318/v1/logs",
+    "headers": "***",
+    "headers_set": true
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": [], "min_priority": "warning"},
+    "services": null
+  },
+  "machines": [],
+  "status": [],
+  "created_at": "2026-11-15T11:30:41Z",
+  "updated_at": "2026-11-15T12:30:02Z"
+}
+```
+
+#### Errors
+
+1. `Log sink "otel" doesn't exist.`
+2. `Give config, enabled, sources or machines to change.`
+3. The sentences of `add_log_sink` for a sink that isn't valid, such as `config.endpoint is required: ...` after `{"endpoint": null}`.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/logs/sinks/{sink}` | `tender sinks update NAME [OPTIONS]` |
+
+### `remove_log_sink`
+
+Removes a sink.
+
+> [!WARNING]
+> Daemons stop sending to the sink within a minute. They keep the logs they buffered for it for 7 days, then delete them, and nothing sends them anywhere: a sink added again is a new sink. The logs already sent stay at the sink.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | The sink's name, as `list_log_sinks` shows it. |
+
+#### Returns
+
+`removed`, the name of the sink that was removed.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "remove_log_sink", "arguments": {"sink": "otel"}}
+```
+
+#### Example result
+
+```json
+{"removed": "otel"}
+```
+
+#### Errors
+
+1. `Log sink "otel" doesn't exist.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/logs/sinks/{sink}` | `tender sinks remove NAME` |
 
 ## Next steps
 

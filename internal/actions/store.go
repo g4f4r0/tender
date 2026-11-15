@@ -3,8 +3,10 @@ package actions
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -20,10 +22,21 @@ type Services interface {
 	Finished(ctx context.Context, machineID int64, service, typ string) error
 }
 
+// Destinations is what the queue needs from the backups domain on the hub, for test actions.
+// cmd/tender wires it.
+type Destinations interface {
+	// Check returns nil when the destination exists, else a 404 server.Error.
+	Check(ctx context.Context, name string) error
+	// Target returns the destination with its secrets, as JSON, for the daemon that tests it.
+	Target(ctx context.Context, name string) (json.RawMessage, error)
+}
+
 // Store reads and writes the actions.
 type Store struct {
 	db       *db.DB
 	services Services
+	// Destinations checks and hands out the destination of a test action; without it, tests are refused.
+	Destinations Destinations
 	// Keep is how long a logs action keeps its output after it finished. Logs can hold secrets.
 	Keep time.Duration
 
@@ -57,7 +70,7 @@ const (
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 // selectSummaries leaves out the output, which can be 256 KiB an action, for the list.
 const (
-	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.status, a.output_cleared, a.created_at, a.updated_at`
+	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.destination, a.status, a.output_cleared, a.created_at, a.updated_at`
 	selectSummaries = `SELECT ` + summaryColumns + ` FROM actions a JOIN machines m ON m.id = a.machine_id`
 	selectActions   = `SELECT ` + summaryColumns + `, a.output FROM actions a JOIN machines m ON m.id = a.machine_id`
 )
@@ -67,7 +80,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Action, error) {
 	var a Action
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Status, &a.OutputCleared,
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Destination, &a.Status, &a.OutputCleared,
 		&created, &updated, &a.Output)
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return a, err
@@ -76,7 +89,7 @@ func scan(row scanner) (Action, error) {
 func scanSummary(row scanner) (Summary, error) {
 	var a Summary
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Status, &a.OutputCleared,
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Destination, &a.Status, &a.OutputCleared,
 		&created, &updated)
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return a, err
@@ -93,12 +106,20 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, 
 			return Action{}, err
 		}
 	}
+	if in.Destination != nil {
+		if s.Destinations == nil {
+			return Action{}, server.Invalid("This hub can't test destinations.")
+		}
+		if err := s.Destinations.Check(ctx, *in.Destination); err != nil {
+			return Action{}, err
+		}
+	}
 	now := time.Now().Unix()
 	var id int64
 	err := s.db.Write.QueryRowContext(ctx,
-		`INSERT INTO actions (machine_id, type, service, unit, priority, since, lines, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id`,
-		machineID, in.Type, in.Service, in.Unit, in.Priority, in.Since, in.Lines, now, now).Scan(&id)
+		`INSERT INTO actions (machine_id, type, service, unit, priority, since, lines, destination, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id`,
+		machineID, in.Type, in.Service, in.Unit, in.Priority, in.Since, in.Lines, in.Destination, now, now).Scan(&id)
 	if err != nil {
 		return Action{}, err
 	}
@@ -109,6 +130,17 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, 
 		return Action{}, err
 	}
 	return s.get(ctx, machineID, id)
+}
+
+// machineID is the id of the machine called name, or a 422. It reads the machines table, which
+// the schema already ties this domain to.
+func (s *Store) machineID(ctx context.Context, name string) (int64, error) {
+	var id int64
+	err := s.db.Read.QueryRowContext(ctx, `SELECT id FROM machines WHERE name = ?`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, server.Invalid("Machine %q doesn't exist. Run tender machines list to see the names.", name)
+	}
+	return id, err
 }
 
 // List returns a machine's actions, newest first, without their output: at most the 100 it keeps.
@@ -240,7 +272,7 @@ func (s *Store) Await(ctx context.Context, machineID, id int64, timeout time.Dur
 // none. It stays pending: the daemon claims it with Claim before it runs it, and one it doesn't
 // claim in time is handed out again. It hands out one at a time because the daemon runs them one
 // at a time: the others wait, so none of them expires as unanswered while it waits its turn.
-func (s *Store) Take(ctx context.Context, machineID int64) ([]Action, error) {
+func (s *Store) Take(ctx context.Context, machineID int64) ([]Handout, error) {
 	if err := s.tidy(ctx, machineID, time.Now()); err != nil {
 		return nil, err
 	}
@@ -250,29 +282,43 @@ func (s *Store) Take(ctx context.Context, machineID int64) ([]Action, error) {
 // available is a pending action of machine ?1 that may be handed out at ?2.
 const available = `machine_id = ?1 AND status = 'pending' AND (handed_out_at IS NULL OR handed_out_at <= ?2 - ` + handOutAgain + `)`
 
-func (s *Store) takeOne(ctx context.Context, machineID int64) ([]Action, error) {
+func (s *Store) takeOne(ctx context.Context, machineID int64) ([]Handout, error) {
 	var id int64
 	now := time.Now().Unix()
 	err := s.db.Write.QueryRowContext(ctx,
 		`UPDATE actions SET handed_out_at = ?2 WHERE id = (SELECT id FROM actions WHERE `+available+` ORDER BY id LIMIT 1) RETURNING id`,
 		machineID, now).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return []Action{}, nil
+		return []Handout{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	a, err := s.get(ctx, machineID, id)
+	got, err := s.get(ctx, machineID, id)
 	if err != nil {
 		return nil, err
 	}
-	return []Action{a}, nil
+	a := Handout{Action: got}
+	// A test's destination goes to the daemon with its secrets. When it is gone, the daemon gets
+	// none and reports that.
+	if a.Destination != nil && s.Destinations != nil {
+		a.Target, err = s.Destinations.Target(ctx, *a.Destination)
+		if err != nil && !isNotFound(err) {
+			return nil, err
+		}
+	}
+	return []Handout{a}, nil
+}
+
+func isNotFound(err error) bool {
+	var e *server.Error
+	return errors.As(err, &e) && e.Status == http.StatusNotFound
 }
 
 // Wait is Take, but when nothing is pending it waits up to wait for an action, looking again every
 // half second with a read, and writing only to take one. It answers early, with nothing, when ctx
 // ends or stop closes.
-func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, stop <-chan struct{}) ([]Action, error) {
+func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, stop <-chan struct{}) ([]Handout, error) {
 	deadline := time.Now().Add(wait)
 	if err := s.tidy(ctx, machineID, time.Now()); err != nil {
 		return nil, err
@@ -290,13 +336,13 @@ func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, s
 			}
 		}
 		if !time.Now().Before(deadline) {
-			return []Action{}, nil
+			return []Handout{}, nil
 		}
 		select {
 		case <-ctx.Done():
-			return []Action{}, nil
+			return []Handout{}, nil
 		case <-stop:
-			return []Action{}, nil
+			return []Handout{}, nil
 		case <-time.After(min(pollEvery, time.Until(deadline))):
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/metrics"
 	"github.com/g4f4r0/tender/internal/services"
 )
@@ -25,6 +26,26 @@ func TestMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := services.NewStore(d).Apply(ctx, 2, services.UnreachableReport("refused")); err != nil {
+		t.Fatal(err)
+	}
+
+	// One sink that works for the code machine and one whose records were dropped; an off sink has no series.
+	ls := logs.NewStore(d, testKey)
+	otel, err := ls.AddSink(ctx, logs.SinkInput{Name: "otel", Type: "otlp", Config: map[string]any{"endpoint": "https://otel.example.com/v1/logs"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	quietSink, err := ls.AddSink(ctx, logs.SinkInput{Name: "off", Type: "otlp", Config: map[string]any{"endpoint": "https://otel.example.com/v1/logs"}, Enabled: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentAt := time.Date(2026, 11, 15, 3, 59, 0, 0, time.UTC)
+	droppedAt := sentAt.Add(30 * time.Second)
+	if err := ls.SetStatus(ctx, 1, logs.StatusReport{Data: []logs.StatusInput{
+		{SinkID: otel.ID, RecordsSent: 1200, RecordsDropped: 7, LastSentAt: &sentAt, LastDroppedAt: &droppedAt},
+		{SinkID: quietSink.ID, RecordsSent: 5},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,6 +88,10 @@ func TestMetrics(t *testing.T) {
 		`tender_problems_open{event="backup.failed",severity="critical"} 1`,
 		`tender_problems_open{event="disk.full",severity="warning"} 0`,
 		`tender_problems_open{event="hub.restarted",severity="info"} 1`,
+		`tender_log_records_sent_total{machine="g4f4r0-code",sink="otel"} 1200`,
+		`tender_log_records_dropped_total{machine="g4f4r0-code",sink="otel"} 7`,
+		`tender_log_last_sent_timestamp_seconds{machine="g4f4r0-code",sink="otel"} 1794715140`,
+		`tender_log_shipping_failing{machine="g4f4r0-code",sink="otel"} 1`,
 	} {
 		if !strings.Contains(page, "\n"+want+"\n") {
 			t.Errorf("no line %s", want)
@@ -74,7 +99,7 @@ func TestMetrics(t *testing.T) {
 	}
 	// No reading, no snapshot size, no run: no series, not a made-up zero.
 	for _, absent := range []string{`tender_machine_cpu_load{machine="g4f4r0-apps"}`, `tender_backup_last_size_bytes{`,
-		`tender_backup_last_run_failed{machine="g4f4r0-apps"}`, `tender_service_memory_bytes{machine="g4f4r0-code",service="old"}`} {
+		`tender_backup_last_run_failed{machine="g4f4r0-apps"}`, `tender_service_memory_bytes{machine="g4f4r0-code",service="old"}`, `sink="off"`, `tender_log_records_sent_total{machine="g4f4r0-apps"`} {
 		if strings.Contains(page, absent) {
 			t.Errorf("has %s", absent)
 		}

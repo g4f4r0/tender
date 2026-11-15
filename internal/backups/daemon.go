@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/g4f4r0/tender/internal/backups/destinations"
 	"github.com/g4f4r0/tender/internal/client"
 	"github.com/g4f4r0/tender/internal/server"
 )
@@ -33,7 +35,8 @@ type Runner interface {
 }
 
 // Daemon runs this machine's backups on the hub's schedule and reports to the hub.
-// Set the exported fields after NewDaemon. Run drives one goroutine; nothing else touches the daemon.
+// Set the exported fields after NewDaemon. Run drives one goroutine; TestDestination, from the
+// actions goroutine, shares only initMu with it.
 type Daemon struct {
 	Hub       *client.Client
 	Machine   string
@@ -42,15 +45,19 @@ type Daemon struct {
 	StateDir  string
 	ResticBin string // default "restic" on PATH
 	Log       *slog.Logger
+	// Host is what this machine offers a destination: the SSH key folder for sftp and rclone's
+	// config. NewDaemon sets the defaults.
+	Host destinations.Host
 
 	newRunner  func(Settings) (Runner, error)
 	now        func() time.Time
 	queue      pendingQueue
 	settings   *Settings
 	schedule   cron.Schedule
-	settingsAt time.Time // last time the hub was asked for settings
-	waiting    bool      // a backup is due but the hub has sent no credentials yet
-	unusable   string    // the last unusable settings the hub sent, logged once
+	settingsAt time.Time  // last time the hub was asked for settings
+	waiting    bool       // a backup is due but the hub has sent no credentials yet
+	unusable   string     // the last unusable settings the hub sent, logged once
+	initMu     sync.Mutex // held while making a repository; destination tests run beside Run
 }
 
 // NewDaemon returns a daemon that keeps its state under stateDir.
@@ -59,6 +66,7 @@ func NewDaemon(hub *client.Client, machine, stateDir string, log *slog.Logger) *
 		Hub: hub, Machine: machine, StateDir: stateDir, Log: log,
 		now:   time.Now,
 		queue: pendingQueue{dir: filepath.Join(stateDir, "queue")},
+		Host:  destinations.Host{SSHDir: DefaultSSHDir, RcloneConfig: DefaultRcloneConfig},
 	}
 	a.newRunner = a.newRestic
 	return a
@@ -146,12 +154,12 @@ func (a *Daemon) loadSavedSettings() {
 	if errors.Is(err, os.ErrNotExist) {
 		return
 	}
-	var s Settings
+	var ds DaemonSettings
 	if err == nil {
-		err = json.Unmarshal(b, &s)
+		err = json.Unmarshal(b, &ds)
 	}
 	if err == nil {
-		err = a.apply(s)
+		err = a.apply(ds.settings())
 	}
 	if err != nil {
 		a.Log.Error("ignoring the saved settings", "error", err)
@@ -182,8 +190,9 @@ func (a *Daemon) apply(s Settings) error {
 // stops backing up but keeps its files: they may hold the only copy of the repository password.
 func (a *Daemon) refreshSettings(ctx context.Context) {
 	a.settingsAt = a.now()
-	var s Settings
-	err := a.Hub.Do(ctx, http.MethodGet, a.path("backups/settings"), "", nil, &s)
+	var ds DaemonSettings
+	err := a.Hub.Do(ctx, http.MethodGet, a.path("backups/settings"), "", nil, &ds)
+	s := ds.settings()
 	var he *client.Error
 	switch {
 	case err == nil:
@@ -375,32 +384,110 @@ func (a *Daemon) syncSnapshots(ctx context.Context, run *daemonRun) error {
 	return nil
 }
 
+// The places on a daemon's machine that destinations read, installed by its admin.
+const (
+	DefaultSSHDir       = "/etc/tender/ssh"
+	DefaultRcloneConfig = "/etc/tender/rclone.conf"
+)
+
 // errNoCredentials means the hub's settings carry no destination credentials.
 var errNoCredentials = errors.New("the hub sent no credentials for this destination")
 
-// newRestic builds the real runner for the settings' destination. The repository password goes
-// to restic through a 0600 file in the state folder; the S3 keys go in the child's environment
-// only. Neither ever appears on a command line.
-func (a *Daemon) newRestic(s Settings) (Runner, error) {
-	c := s.Credentials
-	if c == nil || c.AccessKeyID == "" || c.SecretAccessKey == "" || c.Password == "" {
+// destinationConfig is the whole config of the settings' destination, from the credentials.
+func destinationConfig(s Settings) (map[string]any, error) {
+	if c := s.Credentials; c == nil || c.Password == "" || c.Config == nil {
 		return nil, errNoCredentials
 	}
+	return s.Credentials.Config, nil
+}
+
+// newRestic builds the real runner for the settings' destination. The repository password goes
+// to restic through a 0600 file in the state folder; keys go in the child's environment only.
+// Neither ever appears on a command line.
+func (a *Daemon) newRestic(s Settings) (Runner, error) {
+	config, err := destinationConfig(s)
+	if err != nil {
+		return nil, err
+	}
+	typ := s.Destination.Type
+	if typ == "" {
+		typ = "s3"
+	}
 	password := a.passwordFile()
-	if err := writeFileAtomic(password, []byte(c.Password)); err != nil {
+	if err := writeFileAtomic(password, []byte(s.Credentials.Password)); err != nil {
 		return nil, fmt.Errorf("save the repository password: %w", err)
+	}
+	return a.restic(typ, config, password)
+}
+
+// restic returns a runner for this machine's repository at a destination of type typ.
+func (a *Daemon) restic(typ string, config map[string]any, passwordFile string) (*Restic, error) {
+	t, ok := destinations.Get(typ)
+	if !ok {
+		return nil, fmt.Errorf("this daemon doesn't know the destination type %q. Update Tender on this machine", typ)
+	}
+	repo, err := t.Open(config, a.Machine, a.Host)
+	if err != nil {
+		return nil, err
 	}
 	cache := os.Getenv("RESTIC_CACHE_DIR")
 	if cache == "" {
 		cache = filepath.Join(a.StateDir, "cache")
 	}
+	var secrets []string
+	for _, f := range t.Secrets() {
+		if v, _ := config[f].(string); v != "" {
+			secrets = append(secrets, v)
+		}
+	}
 	return &Restic{
 		Bin:          a.ResticBin,
-		Repository:   s.Destination.Repository(a.Machine),
-		PasswordFile: password,
+		Repository:   repo.Repository,
+		PasswordFile: passwordFile,
 		Host:         a.Machine,
-		Env:          []string{"AWS_ACCESS_KEY_ID=" + c.AccessKeyID, "AWS_SECRET_ACCESS_KEY=" + c.SecretAccessKey},
+		Env:          repo.Env,
+		Options:      repo.Options,
+		Secrets:      secrets,
 		CacheDir:     cache,
 		StateDir:     a.StateDir,
+		InitMu:       &a.initMu,
 	}, nil
+}
+
+// TestDestination tries a destination from this machine, for a test action: it opens this
+// machine's repository there with restic cat config, or makes it when there is none. target is
+// the Target the hub handed over with the action; it is never logged or kept. The result says
+// what it found. It touches none of the daemon's backup state, so it can run beside a backup; the
+// two take turns only to make a repository.
+func (a *Daemon) TestDestination(ctx context.Context, target json.RawMessage) (string, error) {
+	var tg Target
+	if len(target) == 0 || json.Unmarshal(target, &tg) != nil || tg.Name == "" {
+		return "", errors.New("the hub sent no settings for this destination; it may have been removed")
+	}
+	if tg.Password == "" {
+		return "", errors.New("the hub sent no password for this destination")
+	}
+	dir := filepath.Join(a.StateDir, "test")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	password := filepath.Join(dir, "password-"+client.NewKey())
+	if err := writeFileAtomic(password, []byte(tg.Password)); err != nil {
+		return "", fmt.Errorf("save the repository password: %w", err)
+	}
+	defer func() { _ = os.Remove(password) }()
+	r, err := a.restic(tg.Type, tg.Config, password)
+	if err != nil {
+		return "", err
+	}
+	r.Secrets = append(r.Secrets, tg.Password)
+	created, o := r.Open(ctx)
+	switch {
+	case o.Status != StatusCompleted:
+		return "", errors.New(o.Error)
+	case created:
+		return fmt.Sprintf("Reached %s from %s. It had no repository for %s yet, so the test made one with the destination's password.\n",
+			r.Repository, a.Machine, a.Machine), nil
+	}
+	return fmt.Sprintf("Reached %s from %s. Its repository opens with the destination's password.\n", r.Repository, a.Machine), nil
 }

@@ -24,12 +24,13 @@ Each guide does one task.
 
 ## Concepts
 
-1. [Backups](backups.md) explains what a backup covers, retention, the weekly check and encryption.
+1. [Backups](backups.md) explains the destination types, what a backup covers, retention, the weekly check and encryption.
 2. [Services](services.md) explains what the daemon reports about each container and how actions reach a machine.
-3. [Notifications](notifications.md) lists every event and when it fires and resolves.
-4. [Adapters](adapters.md) explains channel types, the event they get, and how to write a webhook receiver or an exec adapter.
-5. [Metrics](metrics.md) lists what the hub serves to Prometheus at `/metrics`.
-6. [Security](security.md) explains who can reach the hub, how secrets are stored and what the daemon can do.
+3. [Log shipping](log-shipping.md) sends each machine's journal and container logs to an OpenTelemetry collector or a webhook, with the webhook contract.
+4. [Notifications](notifications.md) lists every event and when it fires and resolves.
+5. [Adapters](adapters.md) explains channel types, the event they get, and how to write a webhook receiver or an exec adapter.
+6. [Metrics](metrics.md) lists what the hub serves to Prometheus at `/metrics`.
+7. [Security](security.md) explains who can reach the hub, how secrets are stored and what the daemon can do.
 
 ## Reference
 

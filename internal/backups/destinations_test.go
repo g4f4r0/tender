@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,21 +32,26 @@ func TestCreateDestinationRoute(t *testing.T) {
 	h := newHub(t)
 
 	// With a password of the owner's: it is stored, not returned.
-	code, out := h.create(backups.DestinationInput{Name: "r2-code", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "code", Path: "/hosts/",
-		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "mine"})
-	if code != 201 || out["name"] != "r2-code" || out["type"] != "s3" || out["path"] != "hosts" || out["id"] == nil || out["created_at"] == nil {
+	code, out := h.create(backups.DestinationInput{Name: "r2-code", Password: "mine", Config: map[string]any{
+		"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code", "path": "/hosts/", "access_key_id": "key-id", "secret_access_key": "key-secret"}})
+	config, _ := out["config"].(map[string]any)
+	if code != 201 || out["name"] != "r2-code" || out["type"] != "s3" || config["path"] != "hosts" || out["id"] == nil || out["created_at"] == nil ||
+		out["location"] != "s3:https://acct.r2.cloudflarestorage.com/code/hosts" {
 		t.Fatalf("create: %d %v", code, out)
 	}
-	for _, field := range []string{"password", "access_key_id", "secret_access_key"} {
-		if _, ok := out[field]; ok {
-			t.Errorf("response has %s: %v", field, out)
+	if _, ok := out["password"]; ok {
+		t.Errorf("response has the password: %v", out)
+	}
+	for _, field := range []string{"access_key_id", "secret_access_key"} {
+		if config[field] != "***" || config[field+"_set"] != true {
+			t.Errorf("config.%s = %v, %s_set = %v; want *** and true", field, config[field], field, config[field+"_set"])
 		}
 	}
 
 	// Without one: the hub makes 32 random bytes and returns them once, here.
 	var made backups.DestinationCreated
-	res := h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "b-two", "endpoint": "https://x.example.com", "bucket": "b",
-		"access_key_id": "key-id-2", "secret_access_key": "key-secret-2"}, &made)
+	res := h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "b-two", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
+		"access_key_id": "key-id-2", "secret_access_key": "key-secret-2"}}, &made)
 	if res.StatusCode != 201 || res.Header.Get("Location") != "/v1/backups/destinations/b-two" {
 		t.Fatalf("create without password: %d location %q", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -72,14 +78,21 @@ func TestCreateDestinationRoute(t *testing.T) {
 func TestCreateDestinationRejects(t *testing.T) {
 	h := newHub(t)
 	good := func() map[string]any {
-		return map[string]any{"name": "r2", "endpoint": "https://x.example.com", "bucket": "b", "access_key_id": "k", "secret_access_key": "s"}
+		return map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}}
 	}
 	if code, _ := h.create(good()); code != 201 {
 		t.Fatalf("good destination: %d", code)
 	}
 	with := func(k string, v any) map[string]any {
 		m := good()
-		m[k] = v
+		switch {
+		case k == "name" || k == "type" || k == "region":
+			m[k] = v
+		case strings.HasPrefix(k, "config."):
+			m["config"].(map[string]any)[strings.TrimPrefix(k, "config.")] = v
+		default:
+			m["config"].(map[string]any)[k] = v
+		}
 		return m
 	}
 	for _, c := range []struct {
@@ -96,7 +109,11 @@ func TestCreateDestinationRejects(t *testing.T) {
 		{"no key id", with("access_key_id", ""), 422},
 		{"no secret key", with("secret_access_key", ""), 422},
 		{"unknown field", with("region", "auto"), 400},
+		{"unknown config field", with("config.region", "auto"), 422},
+		{"config field of another type", with("host", "x"), 422},
 		{"wrong type", with("bucket", 5), 422},
+		{"a hidden secret", with("secret_access_key", "***"), 422},
+		{"no config", map[string]any{"name": "r3"}, 422},
 	} {
 		var p problem
 		if res := h.do("POST", "/v1/backups/destinations", "", c.body, &p); res.StatusCode != c.want || p.Detail == "" {
@@ -114,13 +131,15 @@ func TestCreateDestinationRejects(t *testing.T) {
 func TestDaemonCredentials(t *testing.T) {
 	h := newHub(t)
 	var made backups.DestinationCreated
-	h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "r2", "endpoint": "https://x.example.com", "bucket": "b",
-		"access_key_id": "marker-key-id", "secret_access_key": "marker-secret-key"}, &made)
+	h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
+		"access_key_id": "marker-key-id", "secret_access_key": "marker-secret-key"}}, &made)
 	h.status(200, "PUT", "/v1/machines/a/backups/settings", "", backups.SettingsInput{Destination: "r2", Schedule: "30 3 * * *", RetentionDays: 30})
 
-	var st backups.Settings
+	var st backups.DaemonSettings
 	if res := h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st); res.StatusCode != 200 || st.Credentials == nil ||
-		*st.Credentials != (backups.Credentials{AccessKeyID: "marker-key-id", SecretAccessKey: "marker-secret-key", Password: made.Password}) {
+		st.Credentials.AccessKeyID != "marker-key-id" || st.Credentials.SecretAccessKey != "marker-secret-key" || st.Credentials.Password != made.Password ||
+		st.Credentials.Config["secret_access_key"] != "marker-secret-key" || st.Credentials.Config["bucket"] != "bkt" ||
+		st.Destination.Endpoint != "https://x.example.com" || st.Destination.Bucket != "bkt" {
 		t.Fatalf("daemon settings: %d %+v", res.StatusCode, st.Credentials)
 	}
 
@@ -136,15 +155,28 @@ func TestDaemonCredentials(t *testing.T) {
 	h.status(403, "GET", "/v1/machines/a/backups/settings", "tok-b", nil)
 	h.status(401, "GET", "/v1/machines/a/backups/settings", "wrong", nil)
 
+	// People never see the old flat fields; only the daemon's own settings carry them.
+	if d, _ := plain["destination"].(map[string]any); d["endpoint"] != nil || d["bucket"] != nil {
+		t.Errorf("people settings carry the legacy fields: %v", d)
+	}
+
 	// What the database holds is sealed: no plaintext, a nonce and a tag around it.
-	var keyID, secretKey, password []byte
-	err := h.db.Read.QueryRow(`SELECT access_key_id, secret_access_key, password FROM backup_destinations WHERE name = 'r2'`).Scan(&keyID, &secretKey, &password)
+	var config, secrets string
+	var password []byte
+	err := h.db.Read.QueryRow(`SELECT config, secrets, password FROM backup_destinations WHERE name = 'r2'`).Scan(&config, &secrets, &password)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, v := range map[string][]byte{"access_key_id": keyID, "secret_access_key": secretKey, "password": password} {
+	var sealed map[string]string
+	if err := json.Unmarshal([]byte(secrets), &sealed); err != nil || len(sealed) != 2 {
+		t.Fatalf("secrets column = %q, want two sealed fields", secrets)
+	}
+	if strings.Contains(config, "marker") || strings.Contains(secrets, "marker") {
+		t.Errorf("config %q or secrets %q hold plaintext", config, secrets)
+	}
+	for name, v := range map[string][]byte{"access_key_id": hexBytes(t, sealed["access_key_id"]), "secret_access_key": hexBytes(t, sealed["secret_access_key"]), "password": password} {
 		if len(v) < 12+16 || bytes.Contains(v, []byte("marker")) || bytes.Contains(v, []byte(made.Password)) {
-			t.Errorf("%s column holds %d bytes that look like plaintext", name, len(v))
+			t.Errorf("%s holds %d bytes that look like plaintext", name, len(v))
 		}
 	}
 }
@@ -163,7 +195,7 @@ func TestWrongKeyFailsCleanly(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "r2-code") || !strings.Contains(err.Error(), "wrong key") {
 		t.Errorf("the wrong key: %v, want an error that names the destination and the key", err)
 	}
-	_, err = wrong.Credentials(ctx, 1)
+	_, err = wrong.DaemonSettings(ctx, 1)
 	var e *server.Error
 	if err == nil || errors.As(err, &e) || !strings.Contains(err.Error(), "TENDER_ENCRYPTION_KEY") || strings.Contains(err.Error(), "repo-password") {
 		t.Errorf("Credentials with the wrong key: %v, want a plain error that names the key and shows no secret", err)
@@ -186,7 +218,7 @@ func TestWrongKeyFailsCleanly(t *testing.T) {
 
 	// A store with no key at all refuses writes with a sentence that says what to set.
 	none := backups.NewStore(h.db, nil)
-	_, err = none.AddDestination(ctx, input("x", "https://y.example.com", "b", ""))
+	_, err = none.AddDestination(ctx, input("x", "https://y.example.com", "bkt", ""))
 	if !errors.As(err, &e) || e.Status != 503 || !strings.Contains(e.Detail, "TENDER_ENCRYPTION_KEY") {
 		t.Errorf("no key: %v, want 503 naming TENDER_ENCRYPTION_KEY", err)
 	}
@@ -201,26 +233,35 @@ func TestPatchDestinationRoute(t *testing.T) {
 	h := newHub(t)
 	h.setup()
 	h.status(201, "POST", "/v1/backups/destinations", "", input("second", "https://y.example.com", "other", ""))
+	patch := func(body map[string]any, out any) *http.Response {
+		return h.do("PATCH", "/v1/backups/destinations/r2-code", "", map[string]any{"config": body}, out)
+	}
 
 	var d backups.Destination
-	res := h.do("PATCH", "/v1/backups/destinations/r2-code", "", map[string]any{"bucket": "code-2", "path": "/new/"}, &d)
-	if res.StatusCode != 200 || d.Bucket != "code-2" || d.Path != "new" || d.Endpoint != "https://x.r2.cloudflarestorage.com" || d.Name != "r2-code" {
+	res := patch(map[string]any{"bucket": "code-2", "path": "/new/"}, &d)
+	if res.StatusCode != 200 || d.Config["bucket"] != "code-2" || d.Config["path"] != "new" || d.Config["endpoint"] != "https://x.r2.cloudflarestorage.com" ||
+		d.Name != "r2-code" || d.Location != "s3:https://x.r2.cloudflarestorage.com/code-2/new" {
 		t.Fatalf("patch location: %d %+v", res.StatusCode, d)
 	}
 
-	// New keys replace the old; the password stays. Nothing but the destination comes back.
+	// New keys replace the old; the password stays. A secret echoed back as *** stays as it is.
 	var raw map[string]any
-	res = h.do("PATCH", "/v1/backups/destinations/r2-code", "", map[string]any{"access_key_id": "new-id", "secret_access_key": "new-secret"}, &raw)
-	if res.StatusCode != 200 || raw["access_key_id"] != nil || raw["secret_access_key"] != nil || raw["password"] != nil {
+	res = patch(map[string]any{"access_key_id": "new-id", "secret_access_key": "***"}, &raw)
+	if res.StatusCode != 200 || raw["password"] != nil || bytes.Contains(mustJSON(t, raw), []byte("new-id")) || bytes.Contains(mustJSON(t, raw), []byte("key-secret")) {
 		t.Fatalf("patch keys: %d %v", res.StatusCode, raw)
 	}
 	var st backups.Settings
 	h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st)
-	if st.Credentials == nil || *st.Credentials != (backups.Credentials{AccessKeyID: "new-id", SecretAccessKey: "new-secret", Password: "repo-password"}) {
-		t.Errorf("credentials after the patch = %+v, want the new keys and the same password", st.Credentials)
+	if st.Credentials == nil || st.Credentials.AccessKeyID != "new-id" || st.Credentials.SecretAccessKey != "key-secret" || st.Credentials.Password != "repo-password" {
+		t.Errorf("credentials after the patch = %+v, want the new key id, the same secret and the same password", st.Credentials)
 	}
-	if st.Destination.Bucket != "code-2" {
-		t.Errorf("settings show bucket %q, want code-2", st.Destination.Bucket)
+	if st.Destination.Config["bucket"] != "code-2" {
+		t.Errorf("settings show bucket %v, want code-2", st.Destination.Config["bucket"])
+	}
+	// null removes an optional field.
+	res = patch(map[string]any{"path": nil}, &d)
+	if res.StatusCode != 200 || d.Config["path"] != "" || d.Location != "s3:https://x.r2.cloudflarestorage.com/code-2" {
+		t.Errorf("patch path null: %d %+v", res.StatusCode, d)
 	}
 
 	for _, c := range []struct {
@@ -230,14 +271,16 @@ func TestPatchDestinationRoute(t *testing.T) {
 		says       string
 	}{
 		{"password change", "r2-code", map[string]any{"password": "new"}, 422, "encrypted with it"},
-		{"password with other fields", "r2-code", map[string]any{"bucket": "x", "password": "new"}, 422, "can't change"},
-		{"empty key id", "r2-code", map[string]any{"access_key_id": ""}, 422, "can't be empty"},
-		{"empty bucket", "r2-code", map[string]any{"bucket": ""}, 422, "can't be empty"},
-		{"bad endpoint", "r2-code", map[string]any{"endpoint": "nope"}, 422, "endpoint"},
-		{"another destination's location", "r2-code", map[string]any{"endpoint": "https://y.example.com", "bucket": "other", "path": ""}, 409, "Use that one"},
-		{"unknown destination", "nope", map[string]any{"bucket": "x"}, 404, "nope"},
+		{"password with other fields", "r2-code", map[string]any{"config": map[string]any{"bucket": "x"}, "password": "new"}, 422, "can't change"},
+		{"type change", "r2-code", map[string]any{"type": "local"}, 422, "type can't change"},
+		{"empty key id", "r2-code", map[string]any{"config": map[string]any{"access_key_id": ""}}, 422, "access_key_id is required"},
+		{"removed bucket", "r2-code", map[string]any{"config": map[string]any{"bucket": nil}}, 422, "bucket is required"},
+		{"bad endpoint", "r2-code", map[string]any{"config": map[string]any{"endpoint": "nope"}}, 422, "endpoint"},
+		{"another destination's location", "r2-code", map[string]any{"config": map[string]any{"endpoint": "https://y.example.com", "bucket": "other", "path": ""}}, 409, "Use that one"},
+		{"unknown destination", "nope", map[string]any{"config": map[string]any{"bucket": "x"}}, 404, "nope"},
 		{"unknown field", "r2-code", map[string]any{"name": "renamed"}, 400, ""},
-		{"wrong type", "r2-code", map[string]any{"bucket": 5}, 422, ""},
+		{"unknown config field", "r2-code", map[string]any{"config": map[string]any{"region": "auto"}}, 422, "It takes endpoint"},
+		{"wrong type", "r2-code", map[string]any{"config": map[string]any{"bucket": 5}}, 422, ""},
 	} {
 		var p problem
 		if res := h.do("PATCH", "/v1/backups/destinations/"+c.path, "", c.body, &p); res.StatusCode != c.want || !strings.Contains(p.Detail, c.says) || p.Detail == "" {
@@ -246,9 +289,27 @@ func TestPatchDestinationRoute(t *testing.T) {
 	}
 	// A refused patch changes nothing, and the password is what it was.
 	h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st)
-	if st.Destination.Bucket != "code-2" || st.Credentials.Password != "repo-password" {
+	if st.Destination.Config["bucket"] != "code-2" || st.Credentials.Password != "repo-password" {
 		t.Errorf("after refused patches: %+v %+v", st.Destination, st.Credentials)
 	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func hexBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("%q is not hex: %v", s, err)
+	}
+	return b
 }
 
 func TestDeleteDestinationRoute(t *testing.T) {
@@ -276,7 +337,7 @@ func TestDeleteDestinationRoute(t *testing.T) {
 
 func TestSettingsRoutes(t *testing.T) {
 	h := newHub(t)
-	h.status(201, "POST", "/v1/backups/destinations", "", input("r2", "https://x.example.com", "b", ""))
+	h.status(201, "POST", "/v1/backups/destinations", "", input("r2", "https://x.example.com", "bkt", ""))
 	body := backups.SettingsInput{Destination: "r2", Schedule: "30 3 * * *", RetentionDays: 30}
 
 	var st backups.Settings
@@ -334,7 +395,7 @@ func TestSettingsRoutes(t *testing.T) {
 
 func TestDestinationJSONHasNoSecretFields(t *testing.T) {
 	// The wire types of every people response carry no secret field, whatever a handler sets.
-	for _, v := range []any{backups.Destination{}, backups.Summary{}, backups.DestinationPatch{}} {
+	for _, v := range []any{backups.Destination{}, backups.Summary{}, backups.DestinationPatch{}, backups.Settings{}} {
 		b, err := json.Marshal(v)
 		if err != nil {
 			t.Fatal(err)

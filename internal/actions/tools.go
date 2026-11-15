@@ -38,6 +38,11 @@ type actionInput struct {
 	ID      int64  `json:"id" jsonschema:"the action's id, from the tool that queued it or list_actions"`
 }
 
+type testInput struct {
+	Destination string `json:"destination" jsonschema:"destination name, as list_destinations shows it"`
+	Machine     string `json:"machine" jsonschema:"the machine whose daemon tries it, as list_machines shows it"`
+}
+
 type listInput struct {
 	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
 }
@@ -46,8 +51,8 @@ const waitText = "It waits up to 60 seconds for the machine's daemon. If the dae
 	"pending or in_progress. A pending action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. " +
 	"An in_progress one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with get_action."
 
-const actionFields = "The result is the action: id, machine, type (start, stop, restart or logs), service (null for the machine's logs), " +
-	"unit, priority, since and lines (logs only), status (pending, in_progress, completed or failed), output, output_cleared, " +
+const actionFields = "The result is the action: id, machine, type (start, stop, restart, logs or test), service (null for the machine's logs), " +
+	"unit, priority, since and lines (logs only), destination (test only), status (pending, in_progress, completed or failed), output, output_cleared, " +
 	"created_at and updated_at (RFC 3339 UTC). "
 
 const logsLimits = "At most 2000 lines and 256 KiB, the newest kept, in output. Logs can hold secrets: the hub clears a completed logs action's " +
@@ -89,6 +94,24 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 				Lines: in.Lines, Since: opt(in.Since)})
 		})
 
+	mcp.AddWrite(m, "test_destination", "Test a backup destination",
+		"Try a backup destination from one machine, through the daemon there: it opens that machine's repository at the destination "+
+			"with restic cat config, which checks the address, the login and the password, or makes the repository when there is none "+
+			"yet, as the first backup would. Use it after add_destination, before set_backup. On success, output says which "+
+			"repository it reached and whether it made it; a failure is the tool's error, with restic's reason. "+actionFields+waitText,
+		mcp.WriteOptions{Idempotent: true, OpenWorld: true},
+		func(ctx context.Context, in testInput) (Action, error) {
+			if in.Destination == "" {
+				return Action{}, server.Invalid("destination is required. Call list_destinations to see the names.")
+			}
+			a, err := s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeTest, Destination: &in.Destination})
+			var e *server.Error
+			if errors.As(err, &e) && e.Status == http.StatusNotFound && a.ID == 0 {
+				return a, server.NotFound("%s Call list_destinations to see the names.", e.Detail)
+			}
+			return a, err
+		})
+
 	mcp.AddReadOnly(m, "get_action", "Get an action",
 		"Get one action on a machine by id, with its output: to check one that was still pending or in_progress when a tool stopped "+
 			"waiting. "+actionFields+"A completed logs action's output is cleared 1 hour after it finished.",
@@ -101,7 +124,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 	mcp.AddReadOnly(m, "list_actions", "List actions",
 		"List a machine's last 100 actions, newest first, without their output (get_action has it): id, machine, type, service, unit, "+
-			"priority, since, lines, status, output_cleared, created_at and updated_at.",
+			"priority, since, lines, destination, status, output_cleared, created_at and updated_at.",
 		func(ctx context.Context, in listInput) (server.List[Summary], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {

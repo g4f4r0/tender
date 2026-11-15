@@ -4,7 +4,7 @@ Learn who can reach the hub, how Tender stores your keys and passwords, and what
 
 ## The hub has no login
 
-The hub has no login in this version. Anyone who can reach it can add, change and remove machines, destinations and notification channels, stop and restart services, read service and journal logs, and read the metrics at `/metrics`. Keep it on your tailnet or behind your own access control, and never expose it to the internet.
+The hub has no login in this version. Anyone who can reach it can add, change and remove machines, destinations, log sinks and notification channels, stop and restart services, read service and journal logs, and read the metrics at `/metrics`. Keep it on your tailnet or behind your own access control, and never expose it to the internet.
 
 The installer publishes the hub on your tailnet with Tailscale Serve, so only devices on your tailnet reach it. The hub itself listens on `127.0.0.1:8080` only.
 
@@ -15,13 +15,19 @@ Web pages can't use the hub through your browser:
 
 ## How Tender stores secrets
 
-The hub keeps bucket keys, repository passwords and the secrets of notification channels, such as a Slack webhook URL or a webhook's signing secret, in its SQLite database, encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY` from `/etc/tender/hub.env`. The hub refuses to start with a key that doesn't open them.
+The hub keeps destination keys, repository passwords and the secrets of notification channels, such as a Slack webhook URL or a webhook's signing secret, in its SQLite database, encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY` from `/etc/tender/hub.env`. The hub refuses to start with a key that doesn't open them.
 
 A channel's secrets never come back out: every route, tool and command shows them as `"***"` with a `<field>_set` field. A webhook's signing secret is shown once, when the hub makes it. A failed delivery's error never holds the URL it was sent to.
 
-The hub sends a destination's keys and password to one caller only: the daemon of a machine that backs up to that destination, signed in with its own token. No other route, MCP tool, CLI command or log line shows them.
+The hub sends a destination's keys and password only to a machine's daemon, signed in with its own token: the daemon of a machine that backs up to that destination, or of the machine you named in a [destination test](backups.md#test-a-destination), with that test. No other route, MCP tool, CLI command or log line shows them. The SFTP key and the rclone remotes stay on each machine and never reach the hub.
 
-Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in the database, and the hub won't start while it stores any destination.
+Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in the database, and the hub won't start while it stores any destination, log sink or channel secret.
+
+## Log sink secrets
+
+A log sink's secrets are an OTLP sink's `headers`, a webhook sink's signing `secret`, and the query string of either one's URL, which can carry a key and shows as `?***`. The hub stores them in its database encrypted under the same key, and every route, MCP tool and CLI command shows them as `"***"`. The only time one is shown is a webhook secret the hub made, once, in the answer that added the sink.
+
+The hub sends a sink's whole config, secrets included, only to the daemons of the machines the sink applies to, signed in with their own tokens. Each daemon keeps the list in `/var/lib/tender/daemon/logs/sinks.json`, which only the daemon's user can read, so it can go on sending while the hub is down. `last_error` never holds a sink's answer or its URL.
 
 ## Machine tokens
 
@@ -73,14 +79,14 @@ Service logs and the journal can hold tokens, passwords or customer data that an
 1. Logs come back only as the output of the logs action that asked for them. Like every route, that output is open to anyone who can reach the hub.
 2. The hub clears the output of every completed logs action 1 hour after it finishes. A failed logs action holds why it failed, not logs, so it keeps its output.
 3. Cleared logs leave no bytes in the hub's database files, `hub.db`, `hub.db-wal` and `hub.db-shm`. The hub runs SQLite with `secure_delete`, which zeroes what a write frees, and after a pass that clears logs it empties the write-ahead log with `wal_checkpoint(TRUNCATE)`. A checkpoint that a reader holds up is tried again by the next minute's pass.
-4. The daemon never writes logs to disk. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
-5. Logs never go into the hub's or the daemon's own logs, into notifications, or into the events that channels get.
+4. The daemon writes logs to disk only to send them to a [log sink](log-shipping.md): each sink's batches wait in `/var/lib/tender/daemon/logs/`, a folder only the daemon's user can read, up to 64 MiB, until the sink takes them. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
+5. Logs never go into the hub's or the daemon's own logs, into notifications, or into the events that channels get. Logs sent to a sink go from the daemon straight to it and never reach the hub.
 
 An AI client that reads logs sends them to its model provider. Ask for the narrowest logs you need, with `--unit`, `--priority` and `--since`.
 
 ## Keys you give an AI client
 
-The MCP tools never return bucket keys or passwords. Keys you pass to `add_destination` go through the AI conversation, though. For real keys, `tender destinations add` is safer: it asks for them with typing hidden.
+The MCP tools and routes never return destination keys, passwords or log sink secrets; a secret shows as `"***"`. Keys you pass to `add_destination` or `add_log_sink` go through the AI conversation, though. For real keys, `tender destinations add` is safer: it asks for them with typing hidden. `tender sinks add` reads them from files.
 
 ## Next steps
 

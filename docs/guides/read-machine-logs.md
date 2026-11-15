@@ -78,3 +78,4 @@ After that hour, `actions show` says when the logs were cleared. The action stay
 1. [Control a service](control-a-service.md) to read one container's logs.
 2. [MCP reference](../mcp.md#get_machine_logs) to let an AI client read the journal.
 3. [Security](../security.md#logs-can-hold-secrets) explains how Tender handles logs.
+4. [Log shipping](../log-shipping.md) to send the journal to an OpenTelemetry collector or a webhook all the time.

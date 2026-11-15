@@ -48,6 +48,14 @@ func (in *Input) validate() error {
 			return server.Invalid("unit, priority, since and lines are only for a logs action.")
 		}
 		return nil
+	case TypeTest:
+		switch {
+		case in.Destination == nil || *in.Destination == "":
+			return server.Invalid("A test names its destination: POST /v1/backups/destinations/{destination}/test.")
+		case in.Service != nil, in.Unit != nil, in.Priority != nil, in.Since != nil, in.Lines != nil:
+			return server.Invalid("service, unit, priority, since and lines are not for a test action.")
+		}
+		return nil
 	case TypeLogs:
 	default:
 		return server.Invalid("type must be start, stop, restart or logs.")

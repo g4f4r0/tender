@@ -25,6 +25,36 @@ func (s *Store) Routes(srv *server.Server) {
 	}))
 	srv.Handle("GET /v1/machines/{machine}/actions/{id}", srv.People(s.getOne))
 	srv.Handle("PATCH /v1/machines/{machine}/actions/{id}", srv.Daemon(s.finish))
+	srv.Handle("POST /v1/backups/destinations/{destination}/test", srv.People(s.test))
+}
+
+// TestInput is the body of POST /v1/backups/destinations/{destination}/test.
+type TestInput struct {
+	Machine string `json:"machine"` // the machine whose daemon tries the destination
+}
+
+// test queues a test of a destination on the machine the body names: its daemon opens that
+// machine's repository there, or makes it.
+func (s *Store) test(w http.ResponseWriter, r *http.Request) error {
+	var in TestInput
+	if err := server.Decode(w, r, &in); err != nil {
+		return err
+	}
+	if in.Machine == "" {
+		return server.Invalid("machine is required: the machine whose daemon tries the destination.")
+	}
+	id, err := s.machineID(r.Context(), in.Machine)
+	if err != nil {
+		return err
+	}
+	destination := r.PathValue("destination")
+	a, err := s.Create(r.Context(), id, Input{Type: TypeTest, Destination: &destination})
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Location", "/v1/machines/"+in.Machine+"/actions/"+strconv.FormatInt(a.ID, 10))
+	server.WriteJSON(w, http.StatusAccepted, a)
+	return nil
 }
 
 func (s *Store) create(w http.ResponseWriter, r *http.Request) error {
@@ -81,7 +111,7 @@ func (s *Store) take(w http.ResponseWriter, r *http.Request, stop <-chan struct{
 	if err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.List[Action]{Data: list})
+	server.WriteJSON(w, http.StatusOK, server.List[Handout]{Data: list})
 	return nil
 }
 
