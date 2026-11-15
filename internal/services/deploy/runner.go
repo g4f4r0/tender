@@ -276,8 +276,10 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 	if err := d.compose(ctx, dir, config, "config", out, &rendered, "-p", dep.Name, "-f", "compose.yaml", "config", "--format", "json"); err != nil {
 		return "", fmt.Errorf("docker compose could not read the compose file: %v:\n%s", err, out.String())
 	}
+	// The rendered config holds the env, interpolated: it lives only in memory and in the deploy's
+	// own DOCKER_CONFIG folder, which is deleted afterwards.
+	defer clear(rendered.Bytes())
 	r, err := ParseRendered(rendered.Bytes())
-	rendered.Reset() // it holds the env, interpolated
 	if err != nil {
 		return "", err
 	}
@@ -307,9 +309,19 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 			return "", err
 		}
 	}
-	files := []string{"-p", dep.Name, "-f", "compose.yaml", "-f", "compose.tender.yaml"}
+	// Pull and up run on the config Tender checked, not on the compose file again, which a container
+	// could have changed meanwhile. It is in the deploy's own folder outside the service's, which
+	// no container can reach.
+	checked := filepath.Join(config, "compose.checked.json")
+	if err := os.WriteFile(checked, rendered.Bytes(), 0o600); err != nil {
+		return "", err
+	}
+	files := []string{"-p", dep.Name, "--project-directory", dir, "-f", checked, "-f", filepath.Join(dir, "compose.tender.yaml")}
 	if err := d.compose(ctx, dir, config, "pull", out, nil, append(files, "pull")...); err != nil {
 		return out.String(), fmt.Errorf("%v: it could not pull the images. The end of its output:\n%s", err, out.String())
+	}
+	if err := CheckLinks(r, dir); err != nil {
+		return out.String(), err
 	}
 	if err := d.compose(ctx, dir, config, "up", out, nil, append(files, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout",
 		strconv.Itoa(waitTimeoutSeconds))...); err != nil {

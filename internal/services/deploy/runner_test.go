@@ -29,7 +29,7 @@ func fakeDocker(t *testing.T, rendered, fail string) (bin, log string) {
 	}
 	bin = filepath.Join(dir, "docker")
 	script := `#!/bin/sh
-echo "$(pwd) | $* | $(cat "$DOCKER_CONFIG/config.json" 2>/dev/null)" >> ` + log + `
+echo "$(pwd) | $* | $(cat "$DOCKER_CONFIG/config.json" 2>/dev/null) | checked=$(tr -d '\n\t' < "$DOCKER_CONFIG/compose.checked.json" 2>/dev/null)" >> ` + log + `
 for a in "$@"; do last="$a"; done
 for a in "$@"; do
   case "$a" in
@@ -130,11 +130,20 @@ func TestDeploy(t *testing.T) {
 	}
 	for i, want := range []string{
 		folder + " | compose -p notes -f compose.yaml config --format json | ",
-		folder + " | compose -p notes -f compose.yaml -f compose.tender.yaml pull | ",
-		folder + " | compose -p notes -f compose.yaml -f compose.tender.yaml up -d --remove-orphans --wait --wait-timeout 300 | ",
+		folder + " | compose -p notes --project-directory " + folder + " -f ",
+		folder + " | compose -p notes --project-directory " + folder + " -f ",
 	} {
 		if !strings.HasPrefix(got[i], want) {
 			t.Errorf("call %d = %q, want %q...", i, got[i], want)
+		}
+	}
+	// Pull and up run on the config Tender checked, from a file of its own outside the folder, with
+	// the override; never on the compose file again, which a container could have changed.
+	for i, step := range []string{"pull", "up -d --remove-orphans --wait --wait-timeout 300"} {
+		line := got[i+1]
+		if !strings.Contains(line, "/compose.checked.json -f "+folder+"/compose.tender.yaml "+step+" | ") || strings.Contains(line, "-f compose.yaml") ||
+			strings.Contains(line, folder+"/compose.checked.json") || !strings.HasSuffix(line, "checked="+strings.NewReplacer("\n", "", "\t", "").Replace(goodRendered)) {
+			t.Errorf("%s = %q; want it on the checked config", step, line)
 		}
 	}
 	// Only the logins of the images' registries reach compose, and only for pull and up.
@@ -190,6 +199,28 @@ func TestDeployRefused(t *testing.T) {
 	}
 	if got := calls(t, log); len(got) != 1 || ts.got != nil {
 		t.Errorf("after a refused deploy: calls %q, exposed %v", got, ts.got)
+	}
+
+	// A bind through a symbolic link in the folder, which a container could have made, is refused
+	// before up.
+	folder := filepath.Join(r.Dir, "notes")
+	if err := os.MkdirAll(filepath.Join(folder, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/", filepath.Join(folder, "data", "x")); err != nil {
+		t.Fatal(err)
+	}
+	docker, log = fakeDocker(t, `{"services":{"web":{"image":"nginx","mem_limit":"1","volumes":[{"type":"bind","source":"`+folder+`/data/x/etc","target":"/etc"}]}}}`, "never")
+	r.Docker = docker
+	_, err = r.Deploy(context.Background(), deployment(t, Deployment{Name: "notes", Compose: "x"}))
+	if err == nil || !strings.Contains(err.Error(), "service web in the compose file mounts "+folder+"/data/x/etc, and "+folder+"/data/x in its folder is a symbolic link") {
+		t.Errorf("a bind through a link: %v", err)
+	}
+	if got := calls(t, log); len(got) != 2 || !strings.Contains(got[1], " pull | ") {
+		t.Errorf("a bind through a link reached up: %q", got)
+	}
+	if err := os.Remove(filepath.Join(folder, "data", "x")); err != nil {
+		t.Fatal(err)
 	}
 
 	docker, _ = fakeDocker(t, goodRendered, "up")
