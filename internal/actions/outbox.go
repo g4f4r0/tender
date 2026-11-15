@@ -29,6 +29,11 @@ type sent struct {
 	Key   string `json:"key"`
 	Type  string `json:"type"`
 	Patch *Patch `json:"patch,omitempty"`
+	// An update's report waits for the job's result: its release and when it started.
+	Version string    `json:"version,omitempty"`
+	Started time.Time `json:"started,omitzero"`
+	// An upgrade's packages, for the daemon that picks it up after a restart.
+	Packages string `json:"packages,omitempty"`
 }
 
 func (d *Daemon) outbox() string {
@@ -118,6 +123,8 @@ func (d *Daemon) load() {
 		}
 		var out string
 		switch {
+		case r.Patch == nil && r.Type == TypeUpdate: // the job restarted the daemon; deliver sends its result
+		case r.Patch == nil && r.Type == TypeUpgrade: // it runs on in its unit; resumeUpgrades waits for it
 		case r.Patch == nil:
 			out = stoppedWhileRunning
 		case r.Type == TypeLogs:
@@ -134,14 +141,21 @@ func (d *Daemon) load() {
 func (d *Daemon) deliver(ctx context.Context) {
 	ids := make([]int64, 0, len(d.waiting))
 	for id, r := range d.waiting {
+		if r.Patch == nil && r.Type == TypeUpdate && !d.updateResult(ctx, r) {
+			continue
+		}
 		if r.Patch != nil {
 			ids = append(ids, id)
 		}
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		if !d.send(ctx, d.waiting[id]) {
+		r := d.waiting[id]
+		if !d.send(ctx, r) {
 			return
+		}
+		if r.Type == TypeUpdate && d.System != nil {
+			d.System.ClearUpdateResult()
 		}
 	}
 }

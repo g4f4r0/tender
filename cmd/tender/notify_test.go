@@ -64,7 +64,8 @@ func TestLoadMachines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := loadMachines(ms, bs, ss, ls)(ctx)
+	load := loadMachines(ms, bs, ss, ls, newSecurity(d, ms), newUpdates(d, ms, newActions(d, testKey)))
+	got, err := load(ctx)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -89,7 +90,7 @@ func TestLoadMachines(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, err := loadMachines(ms, bs, ss, ls)(ctx); err != nil || got[0].Docker != "unreachable" || got[0].DockerUnreachableReports != 2 ||
+	if got, err := load(ctx); err != nil || got[0].Docker != "unreachable" || got[0].DockerUnreachableReports != 2 ||
 		got[0].Services[0].State != "unknown" {
 		t.Errorf("after two unreachable reports: %+v, %v", got[0], err)
 	}

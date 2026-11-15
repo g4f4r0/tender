@@ -114,7 +114,7 @@ func TestRoutes(t *testing.T) {
 	}{
 		{"GET", "/v1/machines/a/actions", "", nil, 200, `{"data":[]}`},
 		{"GET", "/v1/machines/nope/actions", "", nil, 404, `Machine \"nope\" doesn't exist.`},
-		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "explode"}, 422, "type must be start, stop, restart or logs."},
+		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "explode"}, 422, "type must be start, stop, restart, logs or upgrade."},
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "restart"}, 422, "service is required for restart."},
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "restart", "service": "web", "lines": 5}, 422, "only for a logs action"},
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "logs", "service": "web", "priority": "err"}, 422, "only for the machine's logs"},
@@ -128,6 +128,11 @@ func TestRoutes(t *testing.T) {
 			`"service":null,"unit":"tenderd","priority":"warning","since":"1h","lines":50`},
 		// A service may be called "actions": actions aren't under /services, so nothing is in its way.
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "logs", "service": "actions"}, 202, `"service":"actions"`},
+		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "upgrade"}, 202, `"version":null,"packages":"security"`},
+		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "upgrade", "packages": "most"}, 422, "packages must be security"},
+		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "upgrade", "service": "web"}, 422, "An upgrade takes only packages"},
+		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "logs", "packages": "all"}, 422, "packages is only for an upgrade"},
+		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "update"}, 422, "POST /v1/updates/rollouts"},
 		{"GET", "/v1/machines/a/actions", "", nil, 200, `"id":3`},
 		{"GET", "/v1/machines/a/actions?wait=5", "", nil, 400, "wait is only for the machine's daemon"},
 		{"GET", "/v1/machines/a/actions/1", "", nil, 200, `"type":"restart"`},

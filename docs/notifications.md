@@ -1,6 +1,6 @@
 # Notifications
 
-The hub checks every machine once a minute and tells your channels, such as an email address, Slack or a webhook, when a backup fails, a machine goes quiet, a disk fills up, a service has trouble or logs stop reaching a sink.
+The hub checks every machine once a minute and tells your channels, such as an email address, Slack or a webhook, when a backup fails, a machine goes quiet, a disk fills up, a service has trouble, logs stop reaching a sink, a security check finds a hole or an update of Tender fails.
 
 This page explains how notifications work and lists every event the hub can send. To get them, see [Set up email alerts](guides/set-up-email-alerts.md), or [Adapters](adapters.md) for Slack, webhooks and your own programs.
 
@@ -40,12 +40,19 @@ Every event the hub can send is in this table. A new event can't be added withou
 | `service.memory_high` | `warning` | Two reports in a row find a service using more than 90% of its container's memory limit. | A report finds it below, its notifications are turned off, or it is gone. |
 | `docker.unreachable` | `critical` | Two reports in a row say the daemon can't reach Docker, or the machine still reports usage but its daemon has sent no services report for 5 minutes after it had sent one. | A report reaches Docker again. |
 | `logs.shipping_failing` | `warning` | Sending a machine's logs to an enabled sink has failed for 15 minutes, or the daemon dropped records since its last send that worked. | Every sink in it takes a send again. |
+| `security.firewall_off` | `critical` | Two security reports in a row find no active firewall that denies incoming traffic by default: ufw is inactive or allows by default, or without ufw no nftables or iptables input policy drops. | A report finds a firewall that denies by default. |
+| `security.port_exposed` | `warning` | Two security reports in a row find a TCP or UDP port listening on an address other than loopback, link-local or the tailnet, and not on the machine's allowlist. Each port is its own problem, with the port, such as `8080/tcp`, as its `service`. | A report finds the port closed or on loopback or the tailnet, or it is added to the allowlist. |
+| `security.ssh_weak` | `warning` | Two security reports in a row find `sshd -T` saying `PasswordAuthentication yes`, so anyone can try a password, and with `PermitRootLogin yes` root too. Root login with a key only is not weak. | A report finds password login off. |
+| `security.updates_pending` | `warning` | Security updates have been pending for more than 3 days, so unattended-upgrades isn't installing them. | A report finds none pending. |
+| `security.auto_updates_off` | `warning` | Two security reports in a row find unattended-upgrades not installed, or `APT::Periodic::Unattended-Upgrade` off. | A report finds it on. |
+| `security.reboot_required` | `warning` | `/var/run/reboot-required` is more than 7 days old. Tender never reboots a machine. | A report finds no reboot required. |
+| `update.failed` | `warning` | An update of Tender on the machine failed and rolled back. The message says the version and the reason. | The machine reports that version or a newer one, after a later rollout. |
 | `channel.failing` | `warning` | Every try to deliver to an enabled channel has failed for 1 hour. | A delivery or a test to the channel gets through, or it is turned off or removed. |
 | `notification.test` | `info` | You send a test with `tender channels test`, `POST /v1/notifications/test` or `send_test_notification`. | Never: a test is a single message. |
 
 `backup.failed` and `backup.stale` apply only to machines with backup settings.
 
-While a machine is silent, its Docker, its services and its log shipping add nothing, and their open problems stay as they are, because the hub can't tell what is happening on it. Its backup and disk problems still start and resolve from what the hub last heard.
+While a machine is silent, its Docker, its services, its log shipping, its security checks and its updates add nothing, and their open problems stay as they are, because the hub can't tell what is happening on it. Its backup and disk problems still start and resolve from what the hub last heard.
 
 ## Service events
 
@@ -62,6 +69,23 @@ A removed service's problems resolve, because its counts start again. See [Remov
 ## Log shipping events
 
 A machine has one `logs.shipping_failing` problem for all its sinks. Its message names each failing sink and why, such as `Log shipping from apps to otel has failed since 2026-11-15 12:04 UTC (16 minutes): the sink answered 503 Service Unavailable. It resolves after a send to the sink works.` It never holds a log line. [Log shipping](log-shipping.md#when-a-sink-is-down) explains when a daemon drops records.
+
+## Security events
+
+The daemon runs its [security checks](security.md#security-checks) every 15 minutes. Most security problems start only when two reports in a row find them, so a change you are in the middle of doesn't page anyone. A check that couldn't run, or that says `unsupported` on a system other than Debian or Ubuntu, never starts or resolves a problem. Turning a machine's security notifications off resolves its open security problems.
+
+Silence a port that should be reachable, such as Tailscale's, with the machine's allowlist, or turn a machine's security notifications off:
+
+```sh
+tender machines set apps --allow-port 41641/udp
+tender machines set lab --security-alerts off
+```
+
+Install pending security updates with `tender machines upgrade apps`. [Security](security.md#upgrade-a-machines-packages) explains it.
+
+## Update events
+
+`update.failed` says the version and why, such as that the new version failed its health check and rolled back. [Updates](updates.md#when-an-update-fails) explains what to do.
 
 ## Channel events
 

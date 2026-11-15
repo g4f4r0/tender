@@ -3,6 +3,7 @@ package backups
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -800,5 +801,32 @@ func TestSavedSettingsFromBeforeV03(t *testing.T) {
 	}
 	if restic := r.(*Restic); restic.Repository != "s3:https://x.example/bkt/p/m1" || strings.Join(restic.Env, ",") != "AWS_ACCESS_KEY_ID=k1,AWS_SECRET_ACCESS_KEY=s1" {
 		t.Errorf("runner = %+v", restic)
+	}
+}
+
+// A due backup waits while Tender updates, and holds the daemon busy while it runs.
+func TestBackupWaitsForTheUpdate(t *testing.T) {
+	h := newHub(t)
+	a, stub := testDaemon(t, h)
+	ctx := context.Background()
+	updating, held := true, false
+	a.Busy = func() (func(), error) {
+		if updating {
+			return nil, errors.New("Tender is updating")
+		}
+		held = true
+		return func() { held = false }, nil
+	}
+	a.refreshSettings(ctx)
+	a.runDue(ctx)
+	if len(stub.calls) != 0 {
+		t.Fatalf("a backup ran during the update: %v", stub.calls)
+	}
+	updating = false
+	busyDuring := false
+	a.newRunner = func(Settings) (Runner, error) { busyDuring = busyDuring || held; return stub, nil }
+	a.runDue(ctx)
+	if strings.Join(stub.calls, ",") != "backup,cleanup,check" || !busyDuring || held {
+		t.Errorf("after the update: calls %v, busy during %v, still held %v", stub.calls, busyDuring, held)
 	}
 }

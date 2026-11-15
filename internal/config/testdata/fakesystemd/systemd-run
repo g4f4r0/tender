@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Stands in for systemd-run in tests: it starts a transient service as a process in its own session,
+# so it outlives whoever started it, and keeps the unit's state in FAKE_SYSTEMD_DIR, where the fake
+# systemctl reads it. Like Tender, it never uses --wait or --pipe, which need D-Bus.
+dir=${FAKE_SYSTEMD_DIR:-$TENDER_TEST_ROOT/run/fake-systemd}
+mkdir -p "$dir"
+unit= out=/dev/null envs=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --unit) unit=$2; shift 2 ;;
+    --property=StandardOutput=append:*) out=${1#--property=StandardOutput=append:}; shift ;;
+    --property=*) shift ;;
+    --setenv=*) envs+=("${1#--setenv=}"); shift ;;
+    --quiet|--collect) shift ;;
+    --) shift; break ;;
+    *) echo "the fake systemd-run doesn't take $1" >&2; exit 1 ;;
+  esac
+done
+echo "systemd-run --unit $unit ${envs[*]} $*" >>"$dir/log"
+st=$dir/$unit.service
+if [ -f "$st" ]; then
+  echo "Failed to start transient service unit: Unit $unit.service was already loaded or has a fragment file." >&2
+  exit 1
+fi
+printf 'LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n' >"$st"
+setsid bash -c '
+  st=$1 out=$2; shift 2
+  "$@" >>"$out" 2>&1 </dev/null
+  rc=$?
+  if [ $rc = 0 ]; then
+    printf "LoadState=loaded\nActiveState=active\nSubState=exited\nResult=success\nExecMainStatus=0\n" >"$st.new"
+  else
+    printf "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainStatus=%s\n" $rc >"$st.new"
+  fi
+  [ -f "$st" ] && mv "$st.new" "$st" || rm -f "$st.new"
+' fake "$st" "$out" env "${envs[@]}" "$@" </dev/null >/dev/null 2>&1 &
+exit 0

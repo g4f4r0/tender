@@ -1,7 +1,6 @@
 package main
 
 import (
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,13 +59,5 @@ func TestLogFindings(t *testing.T) {
 	}
 	if strings.Contains(f.Message, "fine") {
 		t.Errorf("message names a working sink: %q", f.Message)
-	}
-}
-
-// logs.shipping_failing is registered with the severity its finding uses, so the engine takes it.
-func TestLogEventRegistered(t *testing.T) {
-	i := slices.IndexFunc(notifications.Events(), func(e notifications.EventType) bool { return e.Name == eventLogsShippingFailing })
-	if i < 0 || !slices.Equal(notifications.Events()[i].Severities, []string{notifications.SeverityWarning}) {
-		t.Errorf("logs.shipping_failing is not registered as a warning: %+v", notifications.Events())
 	}
 }

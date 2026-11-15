@@ -39,6 +39,9 @@ func ParseSince(s string) (time.Duration, error) {
 
 // validate checks the input for its type and fills in the default lines of a logs action.
 func (in *Input) validate() error {
+	if in.Packages != nil && in.Type != TypeUpgrade {
+		return server.Invalid("packages is only for an upgrade action.")
+	}
 	switch in.Type {
 	case TypeStart, TypeStop, TypeRestart:
 		switch {
@@ -56,9 +59,22 @@ func (in *Input) validate() error {
 			return server.Invalid("service, unit, priority, since and lines are not for a test action.")
 		}
 		return nil
+	case TypeUpgrade:
+		switch {
+		case in.Service != nil, in.Unit != nil, in.Priority != nil, in.Since != nil, in.Lines != nil:
+			return server.Invalid("An upgrade takes only packages: security or all.")
+		case in.Packages == nil:
+			p := PackagesSecurity
+			in.Packages = &p
+		case *in.Packages != PackagesSecurity && *in.Packages != PackagesAll:
+			return server.Invalid("packages must be security (security updates only, the default) or all (every pending update).")
+		}
+		return nil
+	case TypeUpdate:
+		return server.Invalid("An update of Tender goes through a rollout, which updates one machine at a time: POST /v1/updates/rollouts with {\"machines\": [\"NAME\"]}.")
 	case TypeLogs:
 	default:
-		return server.Invalid("type must be start, stop, restart or logs.")
+		return server.Invalid("type must be start, stop, restart, logs or upgrade.")
 	}
 	if in.Service != nil {
 		if *in.Service == "" {

@@ -15,8 +15,10 @@ import (
 	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/updates"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -31,7 +33,7 @@ Usage: tender COMMAND [options]
 Work with the hub, from any machine that can reach it:
 ` + table([]row{
 	{"status", "Show the machines, their last backup, services and open problems"},
-	{"machines COMMAND", "list, add, remove, rotate-token"},
+	{"machines COMMAND", "list, add, remove, rotate-token, set, upgrade"},
 	{"destinations COMMAND", "list, add, update, test, remove"},
 	{"backups COMMAND", "status, set, unset"},
 	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
@@ -40,13 +42,16 @@ Work with the hub, from any machine that can reach it:
 	{"sinks COMMAND", "list, add, show, update, remove"},
 	{"channels COMMAND", "list, add, show, update, remove, test"},
 	{"notifications COMMAND", "list"},
+	{"security [MACHINE]", "Show the machines' security checks"},
+	{"update MACHINE ...|--all", "Update Tender on machines, through the hub"},
+	{"updates COMMAND", "show, set"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
 	{"install daemon --hub URL --machine NAME", "Install and start the daemon"},
 	{"install hub [--smtp-host HOST ...]", "Install and start the hub"},
 	{"install refresh", "Restart the installed services on this binary"},
-	{"update [--version vX.Y.Z]", "Update Tender to the latest release"},
+	{"update [--version X.Y.Z]", "Update Tender on this machine to the latest release"},
 }) + `
 Run as services:
 ` + table([]row{
@@ -76,11 +81,14 @@ var hubCommands = map[string]func([]string, session) error{
 	"sinks":         runSinks,
 	"channels":      runChannels,
 	"notifications": runNotifications,
+	"updates":       runUpdates,
+	"security":      runSecurity,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
-	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations, logs.Migrations, server.Migrations}
+	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations,
+		logs.Migrations, security.Migrations, updates.Migrations, server.Migrations}
 }
 
 func main() {
@@ -102,7 +110,7 @@ func main() {
 	case "install":
 		err = runInstall(os.Args[2:], os.Stdin, newSession())
 	case "update":
-		err = runUpdate(os.Args[2:], cleanVersion, os.Stdout)
+		err = runUpdate(os.Args[2:], cleanVersion, newSession())
 	case "version":
 		fmt.Println("Tender " + cleanVersion)
 	case "help", "-h", "--help":

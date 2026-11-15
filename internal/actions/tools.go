@@ -33,6 +33,11 @@ type machineLogsInput struct {
 	Since    string `json:"since,omitempty" jsonschema:"only entries from this far back, such as 30m, 1h or 7d, at most 7d; leave out for no limit"`
 }
 
+type upgradeInput struct {
+	Machine  string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
+	Packages string `json:"packages,omitempty" jsonschema:"security (the default): only the security updates, with unattended-upgrade; all: every package, with apt-get upgrade"`
+}
+
 type actionInput struct {
 	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
 	ID      int64  `json:"id" jsonschema:"the action's id, from the tool that queued it or list_actions"`
@@ -51,12 +56,13 @@ const waitText = "It waits up to 60 seconds for the machine's daemon. If the dae
 	"pending or in_progress. A pending action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. " +
 	"An in_progress one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with get_action."
 
-const actionFields = "The result is the action: id, machine, type (start, stop, restart, logs or test), service (null for the machine's logs), " +
-	"unit, priority, since and lines (logs only), destination (test only), status (pending, in_progress, completed or failed), output, output_cleared, " +
+const actionFields = "The result is the action: id, machine, type (start, stop, restart, logs, test, upgrade, or update from a rollout), service " +
+	"(null for the machine's logs, test, upgrade and update), unit, priority, since and lines (logs only), destination (test only), packages " +
+	"(upgrade only), version (update only), status (pending, in_progress, completed or failed), output, output_cleared, " +
 	"created_at and updated_at (RFC 3339 UTC). "
 
 const logsLimits = "At most 2000 lines and 256 KiB, the newest kept, in output. Logs can hold secrets: the hub clears a completed logs action's " +
-	"output 1 hour after it finished (output becomes null and output_cleared true), and logs never go into alerts or emails. "
+	"output 1 hour after it finished (output becomes null and output_cleared true), and logs never go into notifications or emails. "
 
 // RegisterTools adds the actions tools to m. They use the same store methods as the REST routes.
 // lookup resolves machine names to ids.
@@ -112,6 +118,18 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			return a, err
 		})
 
+	mcp.AddWrite(m, "upgrade_machine", "Upgrade a machine's packages",
+		"Upgrade a Debian or Ubuntu machine's system packages through its daemon, in the transient unit tenderupgrade: the security "+
+			"updates by default, with unattended-upgrade, or all packages, with apt-get upgrade, keeping changed config files. It "+
+			"never reboots the machine: when an upgrade needs one, get_security says so. A service may restart if its package "+
+			"upgrades. "+actionFields+"output is the end of what the upgrade printed, at most 256 KiB. A failed upgrade is the tool's "+
+			"error. An upgrade can take a while: if the daemon hasn't finished within 60 seconds, the result has status in_progress, "+
+			"and it fails if the daemon doesn't say how it ended within 45 minutes. Check it later with get_action.",
+		mcp.WriteOptions{Destructive: true, OpenWorld: true},
+		func(ctx context.Context, in upgradeInput) (Action, error) {
+			return s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeUpgrade, Packages: opt(in.Packages)})
+		})
+
 	mcp.AddReadOnly(m, "get_action", "Get an action",
 		"Get one action on a machine by id, with its output: to check one that was still pending or in_progress when a tool stopped "+
 			"waiting. "+actionFields+"A completed logs action's output is cleared 1 hour after it finished.",
@@ -124,7 +142,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 	mcp.AddReadOnly(m, "list_actions", "List actions",
 		"List a machine's last 100 actions, newest first, without their output (get_action has it): id, machine, type, service, unit, "+
-			"priority, since, lines, destination, status, output_cleared, created_at and updated_at.",
+			"priority, since, lines, destination, packages, version, status, output_cleared, created_at and updated_at.",
 		func(ctx context.Context, in listInput) (server.List[Summary], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {

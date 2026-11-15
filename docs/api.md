@@ -190,6 +190,10 @@ Content-Type: application/json
 {
   "id": 1,
   "name": "apps",
+  "version": "0.3.1",
+  "updates": "inherit",
+  "security_allowed_ports": ["41641/udp"],
+  "security_alerts": true,
   "created_at": "2026-11-15T11:27:26Z",
   "updated_at": "2026-11-15T11:27:26Z",
   "last_seen": "2026-11-15T11:36:35Z",
@@ -359,6 +363,121 @@ Content-Type: application/json
 | MCP tool | CLI command |
 | --- | --- |
 | `get_machine_usage` | None. `tender machines list` shows the latest memory and disk. |
+
+### `PATCH /v1/machines/{machine}`
+
+Changes a machine's settings: its own update mode, the ports that may listen on a public address without a notification, and whether its security alerts are on.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `updates` | string | No | Body. `inherit` follows the hub's update mode, as [Updates](updates.md#choose-auto-or-manual) explains; `auto` or `manual` is the machine's own. |
+| `security_allowed_ports` | array of strings | No | Body. The whole allowlist, which replaces the old one: ports with their protocol, such as `["41641/udp", "443/tcp"]`, at most 100. |
+| `security_alerts` | boolean | No | Body. Whether the machine's security alerts open. Off, its open ones resolve within a minute. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"security_allowed_ports": ["41641/udp"]}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "apps",
+  "version": "0.3.1",
+  "updates": "inherit",
+  "security_allowed_ports": ["41641/udp"],
+  "security_alerts": true,
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:42:10Z",
+  "last_seen": "2026-11-15T11:41:35Z",
+  "usage": null
+}
+```
+
+The response is the machine as `GET /v1/machines/{machine}` returns it, with its latest reading in `usage`.
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist. |
+| `422` | `updates` isn't `inherit`, `auto` or `manual`, a port isn't a number from 1 to 65535 with `/tcp` or `/udp`, or the list has more than 100 ports. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `update_machine` | `tender machines set apps --updates manual --allow-port 41641/udp` |
+
+### `GET /v1/machines/{machine}/security`
+
+Returns the latest security checks of a machine, which its daemon runs when it starts and every 15 minutes. [Security](security.md#security-checks) explains each check.
+
+Each check has `check`, which is `ok`, `error` (with the reason in `error`) or `unsupported` on a system other than Debian or Ubuntu. A listener on the machine's allowlist has `allowed: true`. `security_updates_since` is since when the reports have found security updates pending, or `null`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/security
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "machine": "apps",
+  "firewall": {"check": "ok", "error": null, "tool": "ufw", "active": true, "default_incoming": "deny"},
+  "listeners": {
+    "check": "ok",
+    "error": null,
+    "ports": [
+      {"protocol": "udp", "address": "0.0.0.0", "port": 41641, "process": "tailscaled", "docker": false, "service": null, "allowed": true},
+      {"protocol": "tcp", "address": "0.0.0.0", "port": 8080, "process": null, "docker": true, "service": "web", "allowed": false}
+    ]
+  },
+  "ssh": {"check": "ok", "error": null, "installed": true, "password_authentication": false, "permit_root_login": "prohibit-password"},
+  "updates": {"check": "ok", "error": null, "pending": 3, "security": 1, "unattended_upgrades": true},
+  "reboot": {"check": "ok", "error": null, "required": false, "since": null},
+  "collected_at": "2026-11-15T11:40:00Z",
+  "security_updates_since": "2026-11-15T09:40:00Z",
+  "created_at": "2026-11-14T08:00:00Z",
+  "updated_at": "2026-11-15T11:40:01Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or its daemon hasn't sent a security report yet. A daemon before v0.3.0 sends none. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_security` | `tender security apps` |
 
 ## Backups
 
@@ -2164,13 +2283,15 @@ Content-Type: application/json
 
 ## Actions
 
-An action is work for a machine's daemon: starting, stopping or restarting a service, reading a service's logs or the machine's journal, or trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)). The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+An action is work for a machine's daemon: starting, stopping or restarting a service, reading a service's logs or the machine's journal, trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)), upgrading the machine's packages, or updating Tender, which only a rollout queues. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `POST /v1/machines/{machine}/actions`
 
 Queues an action for the machine's daemon and answers at once with the action as `pending`.
 
 To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 200}`. Logs output is at most 256 KiB, dropping the oldest lines past it.
+
+To upgrade a Debian or Ubuntu machine's packages, send `{"type": "upgrade", "packages": "security"}`, or `"all"` for every package. The daemon runs it in the `tenderupgrade` unit, and the hub gives it 45 minutes instead of 15. Its output is the end of what the upgrade printed. Tender never reboots the machine.
 
 > [!WARNING]
 > A `stop` takes the service offline until something starts it again. Logs can hold secrets. The hub returns them only on `GET .../actions/{id}`, clears them 1 hour after the action completes, and never puts them in alerts or emails. See [Security](security.md#logs-can-hold-secrets).
@@ -2180,12 +2301,13 @@ To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priori
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
-| `type` | string | Yes | Body. `start`, `stop`, `restart` or `logs`. |
+| `type` | string | Yes | Body. `start`, `stop`, `restart`, `logs` or `upgrade`. An `update` comes only from `POST /v1/updates/rollouts`. |
 | `service` | string | For `start`, `stop` and `restart` | Body. The container's name. With `logs`, read this service's logs; leave it out to read the machine's journal. |
 | `unit` | string | No | Body. Machine logs only. Only this systemd unit, such as `tenderd` or `nginx.service`. |
 | `priority` | string | No | Body. Machine logs only. Only this priority and the more severe ones: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. |
 | `since` | string | No | Body. Logs only. Only entries from this far back, such as `30m`, `1h` or `7d`, at most `7d`. |
 | `lines` | integer | No | Body. Logs only. How many of the newest lines, from 1 to 2000. The default is 200. |
+| `packages` | string | No | Body. Upgrade only. `security`, the default, or `all`. |
 
 #### Example request
 
@@ -2212,6 +2334,8 @@ Location: /v1/machines/apps/actions/14
   "since": null,
   "lines": null,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "pending",
   "output_cleared": false,
   "created_at": "2026-11-15T11:40:20Z",
@@ -2227,13 +2351,13 @@ Location: /v1/machines/apps/actions/14
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
 | `404` | The machine doesn't exist, or it has no service with this name. |
 | `409` | The service was removed: Docker on the machine no longer has its container. |
-| `422` | The type isn't one of the four, a service action has no service or has a logs field, a service's logs action has `unit` or `priority`, or a logs field isn't valid. |
+| `422` | The type isn't one of the five, a service action has no service or has a logs field, a service's logs action has `unit` or `priority`, a logs field isn't valid, `packages` isn't `security` or `all` or comes without `upgrade`, or the type is `update`. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `start_service`, `stop_service`, `restart_service`, `get_service_logs` or `get_machine_logs` | `tender services start\|stop\|restart\|logs apps web`, or `tender logs apps` |
+| `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` or `upgrade_machine` | `tender services start\|stop\|restart\|logs apps web`, `tender logs apps`, or `tender machines upgrade apps` |
 
 ### `GET /v1/machines/{machine}/actions`
 
@@ -2271,6 +2395,8 @@ Content-Type: application/json
       "since": "10m",
       "lines": 3,
       "destination": null,
+      "version": null,
+      "packages": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:14Z",
@@ -2286,6 +2412,8 @@ Content-Type: application/json
       "since": "1h",
       "lines": 2,
       "destination": null,
+      "version": null,
+      "packages": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:13Z",
@@ -2301,6 +2429,8 @@ Content-Type: application/json
       "since": null,
       "lines": null,
       "destination": null,
+      "version": null,
+      "packages": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:07Z",
@@ -2358,6 +2488,8 @@ Content-Type: application/json
   "since": null,
   "lines": 5,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -2377,6 +2509,304 @@ Content-Type: application/json
 | MCP tool | CLI command |
 | --- | --- |
 | `get_action` | `tender actions show apps 8` |
+
+## Updates
+
+Tender updates itself from the hub, one machine at a time. [Updates](updates.md) explains how.
+
+### `GET /v1/updates`
+
+Returns the update settings, what the hub last learned from GitHub about the newest stable release, the rollout in progress, and each machine's version.
+
+`latest.auto` is `false` when the release's `tender-release.json` says a person must roll it out. `data[].version` is `null` for a daemon before v0.3.0. `data[].updates` is the machine's own setting, and `data[].mode` the mode that applies to it.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/updates
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "mode": "auto",
+  "window": "02:00-05:00",
+  "created_at": "2026-11-14T08:00:00Z",
+  "updated_at": "2026-11-15T09:12:00Z",
+  "latest": {"version": "0.3.1", "auto": true, "checked_at": "2026-11-15T09:12:00Z", "error": null},
+  "rollout": null,
+  "data": [
+    {"machine": "apps", "version": "0.3.0", "updates": "inherit", "mode": "auto", "update_available": true},
+    {"machine": "db", "version": "0.3.1", "updates": "manual", "mode": "manual", "update_available": false}
+  ]
+}
+```
+
+#### Errors
+
+None of its own.
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_updates` | `tender updates show` |
+
+### `GET /v1/updates/settings`
+
+Returns the hub's update settings.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/updates/settings
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "mode": "auto",
+  "window": "02:00-05:00",
+  "created_at": "2026-11-14T08:00:00Z",
+  "updated_at": "2026-11-15T09:12:00Z"
+}
+```
+
+#### Errors
+
+None of its own.
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_updates` | `tender updates show` |
+
+### `PUT /v1/updates/settings`
+
+Replaces the hub's update settings. The hub looks at GitHub again within 10 seconds.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mode` | string | Yes | Body. `auto` rolls out each new stable release by itself; `manual` waits for a rollout someone starts. |
+| `window` | string | No | Body. When auto mode may start a rollout, two UTC times such as `02:00-05:00`. It may cross midnight. Leave it out, or send `null` or `""`, for any time. |
+
+#### Example request
+
+```sh
+curl -s -X PUT https://apps.your-tailnet.ts.net/v1/updates/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"mode": "auto", "window": "02:00-05:00"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "mode": "auto",
+  "window": "02:00-05:00",
+  "created_at": "2026-11-14T08:00:00Z",
+  "updated_at": "2026-11-15T11:45:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `422` | `mode` isn't `auto` or `manual`, or `window` isn't two different times such as `02:00-05:00`. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_update_settings` | `tender updates set --mode auto --window 02:00-05:00` |
+
+### `GET /v1/updates/rollouts`
+
+Lists the rollouts the hub keeps, the newest 50, newest first. Each has its machines in the order they update.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/updates/rollouts
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 3,
+      "version": "0.3.1",
+      "status": "completed",
+      "auto": true,
+      "error": null,
+      "machines": [
+        {"machine": "db", "position": 1, "status": "completed", "action_id": 21, "error": null,
+         "created_at": "2026-11-15T02:00:04Z", "updated_at": "2026-11-15T02:01:31Z"},
+        {"machine": "apps", "position": 2, "status": "completed", "action_id": 40, "error": null,
+         "created_at": "2026-11-15T02:00:04Z", "updated_at": "2026-11-15T02:03:02Z"}
+      ],
+      "created_at": "2026-11-15T02:00:04Z",
+      "updated_at": "2026-11-15T02:03:12Z"
+    }
+  ]
+}
+```
+
+A rollout's `status` is `in_progress`, `completed` or `failed`, and `auto` is `true` when auto mode started it. A machine's `status` is `pending`, `in_progress`, `completed` or `failed`, with the reason in `error`, and `action_id` is its update action on that machine.
+
+#### Errors
+
+None of its own.
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_updates` | `tender updates show` |
+
+### `POST /v1/updates/rollouts`
+
+Starts a rollout of a stable release to the machines named, or to every machine on Tender v0.3.0 or later, and answers `202 Accepted` with the rollout. The hub's own machine goes first, because a newer hub takes the reports of older daemons. Follow it with `GET /v1/updates/rollouts/{id}`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | No | Body. The release, such as `0.3.1`. Leave it out for the latest. |
+| `machines` | array of strings | No | Body. The machines to update, by name. Leave it out, or send `[]`, for every machine. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/updates/rollouts \
+  -H 'Content-Type: application/json' \
+  -d '{"version": "0.3.1", "machines": []}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/updates/rollouts/3
+
+{
+  "id": 3,
+  "version": "0.3.1",
+  "status": "in_progress",
+  "auto": false,
+  "error": null,
+  "machines": [
+    {"machine": "db", "position": 1, "status": "pending", "action_id": null, "error": null,
+     "created_at": "2026-11-15T11:46:00Z", "updated_at": "2026-11-15T11:46:00Z"},
+    {"machine": "apps", "position": 2, "status": "pending", "action_id": null, "error": null,
+     "created_at": "2026-11-15T11:46:00Z", "updated_at": "2026-11-15T11:46:00Z"}
+  ],
+  "created_at": "2026-11-15T11:46:00Z",
+  "updated_at": "2026-11-15T11:46:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | A machine named doesn't exist. |
+| `409` | Another rollout is still in progress. |
+| `422` | The version isn't a stable release on GitHub, a machine runs a Tender before v0.3.0, or a machine runs a newer version, which an update never downgrades. |
+| `502` | The hub couldn't ask GitHub for the latest release. Name a version, or try again. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `start_update` | `tender update --all`, or `tender update apps db` |
+
+### `GET /v1/updates/rollouts/{id}`
+
+Returns one rollout with its machines, as `GET /v1/updates/rollouts` lists it.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | integer | Yes | Path. The rollout's id. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/updates/rollouts/4
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 4,
+  "version": "0.3.2",
+  "status": "failed",
+  "auto": true,
+  "error": "The rollout stopped at db, which failed to update. The machines after it were not updated.",
+  "machines": [
+    {"machine": "db", "position": 1, "status": "failed", "action_id": 52,
+     "error": "Tender v0.3.2 failed its health check, so it rolled back to Tender 0.3.1: after 2m0s, tenderd is not running.",
+     "created_at": "2026-11-16T02:00:04Z", "updated_at": "2026-11-16T02:04:40Z"},
+    {"machine": "apps", "position": 2, "status": "pending", "action_id": null, "error": null,
+     "created_at": "2026-11-16T02:00:04Z", "updated_at": "2026-11-16T02:00:04Z"}
+  ],
+  "created_at": "2026-11-16T02:00:04Z",
+  "updated_at": "2026-11-16T02:04:40Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The rollout doesn't exist. The hub keeps the newest 50. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_updates` | `tender updates show` |
 
 ## Log sinks
 
@@ -2775,7 +3205,7 @@ The daemons use these routes to report and to take their work. Each needs the ma
 
 | Route | What the daemon does with it |
 | --- | --- |
-| `POST /v1/machines/{machine}/usage` | Sends a reading of CPU load, memory, disk and uptime, once a minute. |
+| `POST /v1/machines/{machine}/usage` | Sends a reading of CPU load, memory, disk and uptime, once a minute, with the Tender `version` it runs. |
 | `GET /v1/machines/{machine}/backups/settings` | Gets the machine's settings with `credentials`: the destination's whole `config` with its secrets, and the password. For an `s3` destination it also carries `endpoint`, `bucket` and `path` in `destination`, and `access_key_id` and `secret_access_key` in `credentials`, where daemons before v0.3 read them. People get the same route without any of them. |
 | `GET /v1/machines/{machine}/actions?wait=25` (a test) | A test action comes with `target`: the destination's name, type, whole config and password, for this daemon only. |
 | `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
@@ -2785,6 +3215,7 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the oldest pending action, and gets it without changing its status. |
 | `GET /v1/machines/{machine}/logs/sinks` | Gets the enabled sinks for the machine, every 30 seconds, each with its whole `config`, secrets included, its `sources` and `updated_at`. |
 | `PUT /v1/machines/{machine}/logs/status` | Sends `{"data": [...]}`, one entry per sink with `sink_id` and the `status` fields, every minute and within seconds when sending starts or stops failing. An entry for a sink that is gone is ignored. |
+| `PUT /v1/machines/{machine}/security` | Sends the security checks, when the daemon starts and every 15 minutes, and after an upgrade. Answers `204`. |
 | `PATCH /v1/machines/{machine}/actions/{id}` | Claims an action with `{"status": "in_progress"}`, which answers `204`, or `409` when it isn't pending. Then records how it ended, with `completed` or `failed` and its `output`, which only those two take. |
 
 ## Next steps

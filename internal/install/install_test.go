@@ -39,6 +39,9 @@ type fake struct {
 	userExists bool
 	serve      string // what "tailscale serve status --json" prints
 	failOnce   string // this command fails the next time it runs
+	unhealthy  bool   // a new release's daemon never reports to the hub
+	// respond answers a command first, when it says it handled it.
+	respond func(name string, args []string) (out []byte, handled bool, err error)
 }
 
 func (f *fake) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -47,6 +50,11 @@ func (f *fake) run(_ context.Context, name string, args ...string) ([]byte, erro
 	if cmd == f.failOnce {
 		f.failOnce = ""
 		return nil, errors.New("failed on purpose")
+	}
+	if f.respond != nil {
+		if out, ok, err := f.respond(name, args); ok {
+			return out, err
+		}
 	}
 	switch {
 	case name == "id":
@@ -686,8 +694,11 @@ func TestHubServeCases(t *testing.T) {
 func TestUnitsFollowTheDecisions(t *testing.T) {
 	daemon, _ := units.ReadFile("units/tenderd.service")
 	hub, _ := units.ReadFile("units/tenderhub.service")
-	for _, want := range []string{"User=tender", "AmbientCapabilities=CAP_DAC_READ_SEARCH", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
-		"StateDirectory=tender/daemon", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
+	// The daemon is root, with the sandbox that keeps a bug from changing the system.
+	for _, want := range []string{"User=root", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE",
+		"NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes",
+		"SystemCallFilter=@system-service", "SystemCallFilter=~@privileged @resources",
+		"StateDirectory=tender/daemon", "CacheDirectory=tender", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
 		if !strings.Contains(string(daemon), want+"\n") {
 			t.Errorf("daemon unit lacks %s", want)
 		}
@@ -722,64 +733,75 @@ func TestUnitsFollowTheDecisions(t *testing.T) {
 	}
 }
 
-// With a docker group, the daemon joins it to reach Docker's socket; without one the unit stays as
-// it is embedded, since systemd won't start a unit whose group doesn't exist.
-func TestDaemonJoinsTheDockerGroup(t *testing.T) {
+// The daemon runs as root, which needs no groups, whatever groups the machine has.
+func TestDaemonUnitHasNoGroups(t *testing.T) {
 	e := newEnv(t)
 	if err := os.MkdirAll(e.path("/etc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(e.path("/etc/group"), []byte("root:x:0:\ndockerish:x:998:\n"), 0o644); err != nil {
+	if err := os.WriteFile(e.path("/etc/group"), []byte("root:x:0:\ndocker:x:999:\nsystemd-journal:x:101:\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(e.read(t, "/etc/systemd/system/tenderd.service"), "SupplementaryGroups") {
-		t.Error("the unit joins a docker group this machine doesn't have")
-	}
-
-	if err := os.WriteFile(e.path("/etc/group"), []byte("root:x:0:\ndocker:x:999:johan\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	e.in.Refreshing = true // "tender install refresh", after Docker was installed
-	if err := e.in.Daemon(ctx, DaemonOptions{}); err != nil {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	unit := e.read(t, "/etc/systemd/system/tenderd.service")
-	if !strings.Contains(unit, "Group=tender\n# Docker's socket. The docker group is root-equivalent") ||
-		strings.Count(unit, "SupplementaryGroups=docker\n") != 1 {
+	if strings.Contains(unit, "SupplementaryGroups") || strings.Contains(unit, "User=tender") {
 		t.Errorf("unit:\n%s", unit)
 	}
 }
 
-// With a systemd-journal group the daemon joins it too, to read the whole journal; with both
-// groups the unit has one SupplementaryGroups line.
-func TestDaemonJoinsTheJournalGroup(t *testing.T) {
+// "tender install refresh" on a v0.2.2 or v0.3-pre daemon moves it to root: the unit, its state and
+// cache folders, and the tender user leaves the groups only the daemon needed.
+func TestRefreshMovesTheDaemonToRoot(t *testing.T) {
 	e := newEnv(t)
-	if err := os.MkdirAll(e.path("/etc"), 0o755); err != nil {
+	ctx := context.Background()
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	for _, c := range []struct{ groups, want string }{
-		{"root:x:0:\nsystemd-journal:x:101:\n", "SupplementaryGroups=systemd-journal\n"},
-		{"root:x:0:\ndocker:x:999:\nsystemd-journal:x:101:\n", "SupplementaryGroups=docker systemd-journal\n"},
+	old := "[Service]\nUser=tender\nGroup=tender\nSupplementaryGroups=docker systemd-journal\n"
+	for p, data := range map[string]string{
+		"/etc/systemd/system/tenderd.service": old,
+		"/etc/group":                          "root:x:0:\ndocker:x:999:johan,tender\nsystemd-journal:x:101:tender\ntender:x:998:\n",
+		"/var/lib/tender/daemon/state.json":   "{}",
+		"/var/cache/tender/x":                 "cache",
 	} {
-		if err := os.WriteFile(e.path("/etc/group"), []byte(c.groups), 0o644); err != nil {
+		if err := os.MkdirAll(filepath.Dir(e.path(p)), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		e.in.Refreshing = false
-		opts := daemonOpts
-		if _, err := os.Stat(e.path("/etc/systemd/system/tenderd.service")); err == nil {
-			e.in.Refreshing, opts = true, DaemonOptions{}
-		}
-		if err := e.in.Daemon(ctx, opts); err != nil {
+		if err := os.WriteFile(e.path(p), []byte(data), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		unit := e.read(t, "/etc/systemd/system/tenderd.service")
-		if strings.Count(unit, "SupplementaryGroups=") != 1 || !strings.Contains(unit, c.want) || !strings.Contains(unit, "# The whole journal") {
-			t.Errorf("with %q, unit:\n%s", c.groups, unit)
+	}
+	e.commands()
+	if err := e.in.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(e.commands(), "\n")
+	// The test runs as a normal user, so its folders aren't root's and the chown runs.
+	for _, want := range []string{
+		"chown -R root:root " + e.path("/var/lib/tender/daemon"),
+		"chown -R root:root " + e.path("/var/cache/tender"),
+		"gpasswd --delete tender docker",
+		"gpasswd --delete tender systemd-journal",
+		"systemctl daemon-reload",
+		"systemctl restart tenderd",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refresh did not run %q:\n%s", want, got)
 		}
+	}
+	if unit := e.read(t, "/etc/systemd/system/tenderd.service"); !strings.Contains(unit, "User=root\n") {
+		t.Errorf("unit:\n%s", unit)
+	}
+	// Once the tender user is out of the groups, a refresh leaves them alone.
+	if err := os.WriteFile(e.path("/etc/group"), []byte("root:x:0:\ndocker:x:999:johan\nsystemd-journal:x:101:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.in.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(e.commands(), "\n"); strings.Contains(got, "gpasswd") {
+		t.Errorf("a second refresh changed the groups:\n%s", got)
 	}
 }

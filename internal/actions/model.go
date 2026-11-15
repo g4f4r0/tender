@@ -5,19 +5,32 @@ import (
 	"time"
 )
 
-// Action types and statuses. They match the CHECK constraints in migrations/001_actions.sql.
+// Action types and statuses. The code checks the types; the statuses match the CHECK constraint in the migrations.
 const (
 	TypeStart   = "start"
 	TypeStop    = "stop"
 	TypeRestart = "restart"
 	TypeLogs    = "logs"
-	TypeTest    = "test" // tries a backup destination from the machine
+	TypeTest    = "test"    // tries a backup destination from the machine
+	TypeUpdate  = "update"  // install a Tender release on the machine; only an update rollout queues it
+	TypeUpgrade = "upgrade" // upgrade the machine's system packages
+
+	PackagesSecurity = "security"
+	PackagesAll      = "all"
 
 	StatusPending    = "pending"
 	StatusInProgress = "in_progress"
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
 )
+
+// PackagesText names an upgrade's packages in a sentence: "the security packages" or "every package".
+func PackagesText(packages string) string {
+	if packages == PackagesAll {
+		return "every package"
+	}
+	return "the " + packages + " packages"
+}
 
 // The limits of a logs action.
 const (
@@ -35,13 +48,15 @@ var Priorities = []string{"emerg", "alert", "crit", "err", "warning", "notice", 
 type Summary struct {
 	ID            int64     `json:"id"`
 	Machine       string    `json:"machine"`     // the machine's name
-	Type          string    `json:"type"`        // start, stop, restart or logs
+	Type          string    `json:"type"`        // start, stop, restart, logs, test, update or upgrade
 	Service       *string   `json:"service"`     // the service's name; null for the machine's journal
 	Unit          *string   `json:"unit"`        // machine logs only: the systemd unit, or null for every unit
 	Priority      *string   `json:"priority"`    // machine logs only: this priority and the more severe ones, or null for all
 	Since         *string   `json:"since"`       // logs only: how far back, such as 1h, or null for no limit
 	Lines         *int      `json:"lines"`       // logs only: at most this many of the newest lines
 	Destination   *string   `json:"destination"` // test only: the backup destination it tries
+	Version       *string   `json:"version"`     // update only: the Tender release, such as 0.3.1
+	Packages      *string   `json:"packages"`    // upgrade only: security or all
 	Status        string    `json:"status"`      // pending, in_progress, completed or failed
 	OutputCleared bool      `json:"output_cleared"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -76,6 +91,7 @@ type Input struct {
 	// Destination is the backup destination a test action tries. POST
 	// /v1/backups/destinations/{destination}/test sets it; the actions collection doesn't take it.
 	Destination *string `json:"-"`
+	Packages    *string `json:"packages,omitempty"` // upgrade only: security (the default) or all
 }
 
 // Patch is the body of PATCH /v1/machines/{machine}/actions/{id}, with which the daemon reports

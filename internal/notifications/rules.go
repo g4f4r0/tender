@@ -69,13 +69,15 @@ const (
 
 // keeps reports whether an open problem of m stays open though its finding doesn't hold now.
 //
-// A silent machine's Docker and service problems and the problems other domains find, and service problems while its Docker is
-// unreachable, are about a state nobody can see. A service alert also stays while the latest
-// report still finds the service so, because after an outage its count of reports in a row starts
-// again: it resolves once a report doesn't. The alerts of a service whose alerts are off, or
-// that is gone, never stay.
+// A silent machine's Docker and service problems and the problems other domains find, and service
+// problems while its Docker is unreachable, are about a state nobody can see. A service problem
+// also stays while the latest report still finds the service so, because after an outage its
+// count of reports in a row starts again: it resolves once a report doesn't. The problems of a
+// service whose notifications are off, or that is gone, never stay.
 func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 	switch {
+	case !builtin(n.Event): // another domain's problem, whose service, if any, isn't a Docker one
+		return silent
 	case n.Service != nil:
 		i := slices.IndexFunc(m.Services, func(s Service) bool { return s.Name == *n.Service })
 		if i < 0 || !m.Services[i].AlertsEnabled {
@@ -86,7 +88,7 @@ func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 		}
 		base := channels.Base(n.Event)
 		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.event == base })
-	case channels.Base(n.Event) == EventDockerUnreachable, !builtin(n.Event):
+	case channels.Base(n.Event) == EventDockerUnreachable:
 		return silent
 	}
 	return false

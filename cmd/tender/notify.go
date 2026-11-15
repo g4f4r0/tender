@@ -10,7 +10,9 @@ import (
 	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/updates"
 )
 
 // hubName is the host name that emails say they were sent from.
@@ -35,8 +37,9 @@ func hubIdentity() notifications.Hub {
 }
 
 // loadMachines returns what the notification rules need to know about every machine, from the
-// machines, backups, services and logs stores. The notifications domain imports none of them.
-func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls *logs.Store) func(context.Context) ([]notifications.Machine, error) {
+// machines, backups, services, logs, security and updates stores. The notifications domain imports none of them.
+func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls *logs.Store, sec *security.Store,
+	up *updates.Store) func(context.Context) ([]notifications.Machine, error) {
 	return func(ctx context.Context) ([]notifications.Machine, error) {
 		overviews, err := ms.List(ctx)
 		if err != nil {
@@ -66,7 +69,8 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls 
 		if err != nil {
 			return nil, err
 		}
-		findings := logFindings(health, time.Now())
+		now := time.Now()
+		findings := logFindings(health, now)
 		byName := map[string]backups.Summary{}
 		for _, s := range summaries {
 			byName[s.Machine] = s
@@ -108,6 +112,6 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls 
 			}
 			out[i] = m
 		}
-		return out, nil
+		return out, systemRules(ctx, overviews, sec, up, out, now)
 	}
 }

@@ -9,7 +9,7 @@ The examples use a machine called `apps`, a Docker service called `web`, a desti
 ## Get started
 
 1. [Quickstart](quickstart.md) sets up a hub, backs up one machine and lists its services in about 10 minutes.
-2. [Install](install.md) covers the hub and the daemons in full, with tokens, the Docker and journal groups, updates and removal.
+2. [Install](install.md) covers the hub and the daemons in full, with tokens, the root daemon, the update to v0.3.0 and removal.
 
 ## Guides
 
@@ -30,7 +30,8 @@ Each guide does one task.
 4. [Notifications](notifications.md) lists every event and when it fires and resolves.
 5. [Adapters](adapters.md) explains channel types, the event they get, and how to write a webhook receiver or an exec adapter.
 6. [Metrics](metrics.md) lists what the hub serves to Prometheus at `/metrics`.
-7. [Security](security.md) explains who can reach the hub, how secrets are stored and what the daemon can do.
+7. [Security](security.md) explains who can reach the hub, how secrets are stored, what the daemon can do and what it checks on each machine.
+8. [Updates](updates.md) explains how Tender updates itself from the hub, one machine at a time.
 
 ## Reference
 

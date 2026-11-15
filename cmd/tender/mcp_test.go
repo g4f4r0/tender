@@ -161,9 +161,9 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_service_logs", "list_actions",
-		"list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks", "list_machines", "list_notifications",
-		"list_services"}
+	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
+		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks",
+		"list_machines", "list_notifications", "list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
@@ -173,14 +173,15 @@ func TestToolsList(t *testing.T) {
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
 		"test_destination": {false, true},
 		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
+		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
 	}
-	// The tools that reach outside the hub.
-	open := map[string]bool{"send_test_notification": true, "test_destination": true}
+	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, and the package mirrors.
+	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine"}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
-		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != open[tool.Name] {
-			t.Errorf("%s annotations = %+v, want open world only for %v", tool.Name, a, open)
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != slices.Contains(openWorld, tool.Name) {
+			t.Errorf("%s annotations = %+v, want open world only for %v", tool.Name, a, openWorld)
 			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {

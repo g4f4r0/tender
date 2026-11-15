@@ -25,7 +25,7 @@ func New(version string, log *slog.Logger) *Server {
 	impl := &sdk.Implementation{Name: "tender", Title: "Tender", Version: version}
 	opts := &sdk.ServerOptions{
 		Instructions: "The machines that run Tender: their usage, backups, Docker services and notifications, and the tools to manage them: " +
-			"machines, backup destinations and settings, services (start, stop, restart, logs, alerts), log sinks and alert recipients. " +
+			"machines, backup destinations and settings, services (start, stop, restart, logs, alerts), log sinks, notification channels, security checks and Tender updates. " +
 			"Start with list_machines. " +
 			"Secrets you pass to a tool go through this conversation; for real keys the owner is safer typing them into " +
 			"\"tender destinations add\".",
@@ -62,7 +62,7 @@ type Removed struct {
 
 // WriteOptions say how a write tool behaves, for the client to decide whether to ask first.
 type WriteOptions struct {
-	Destructive bool // deletes data or access: removing a machine, a destination, settings or a recipient
+	Destructive bool // deletes data or access: removing a machine, a destination, settings, a channel or a sink
 	Idempotent  bool // calling it again with the same input changes nothing more
 	OpenWorld   bool // reaches outside the hub, such as sending an email
 }

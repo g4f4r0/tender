@@ -1,6 +1,6 @@
 # MCP tools
 
-The hub serves 34 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
+The hub serves 40 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
 
 ## Prerequisites
 
@@ -16,8 +16,8 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 1. Every result is JSON. It comes as `structuredContent` and as the same JSON in a text block, for clients that read only text. A list is `{"data": [...]}`, with `next_cursor` when there is another page.
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
 3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
-4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_notification`, which sends to the channels, and `test_destination`, which reaches a backup destination, set it to `true`.
-5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` and `test_destination`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with `get_action`.
+4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only four set it to `true`: `send_test_notification`, which sends to the channels, `test_destination`, which reaches a backup destination, `start_update`, which installs a release from GitHub, and `upgrade_machine`, which installs packages from the machine's package mirrors.
+5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs`, `test_destination` and `upgrade_machine`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes, or 45 for an upgrade. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
 7. No tool returns destination keys, repository passwords, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
@@ -62,7 +62,7 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `GET /v1/machines/{machine}/services` | `list_services` |
 | `GET /v1/machines/{machine}/services/{service}` | `list_services` |
 | `PATCH /v1/machines/{machine}/services/{service}` | `set_service_alerts` |
-| `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` |
+| `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs`, `upgrade_machine` |
 | `GET /v1/machines/{machine}/actions` | `list_actions` |
 | `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
 | `GET /v1/logs/sinks` | `list_log_sinks` |
@@ -71,6 +71,14 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `PATCH /v1/logs/sinks/{sink}` | `update_log_sink` |
 | `DELETE /v1/logs/sinks/{sink}` | `remove_log_sink` |
 | `GET /metrics` | None. It is for Prometheus scrapers, and the typed tools return the same data. |
+| `PATCH /v1/machines/{machine}` | `update_machine` |
+| `GET /v1/machines/{machine}/security` | `get_security` |
+| `GET /v1/updates` | `get_updates` |
+| `GET /v1/updates/settings` | `get_updates` |
+| `PUT /v1/updates/settings` | `set_update_settings` |
+| `GET /v1/updates/rollouts` | `get_updates` |
+| `POST /v1/updates/rollouts` | `start_update` |
+| `GET /v1/updates/rollouts/{id}` | `get_updates` |
 | `POST /mcp` | None. It is the MCP endpoint itself. |
 
 The routes only a machine's daemon calls with its token, such as usage reports and backup runs, have no tools. They are listed in the [API reference](api.md).
@@ -372,6 +380,135 @@ None.
 | REST route | CLI command |
 | --- | --- |
 | `DELETE /v1/machines/{machine}` | `tender machines remove NAME --yes` |
+
+### `update_machine`
+
+Changes a machine's settings: its own update mode, its security allowlist and whether its security alerts are on.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+| `updates` | string | No | `inherit` follows the hub's update mode; `auto` or `manual` is the machine's own. |
+| `security_allowed_ports` | array of strings | No | The whole allowlist, which replaces the old one: ports such as `41641/udp` that may listen on a public address without a `security.port_exposed` notification. |
+| `security_alerts` | boolean | No | Whether the machine's security alerts open. |
+
+#### Returns
+
+The machine, as `list_machines` shows it.
+
+#### Limits
+
+At most 100 allowed ports.
+
+#### Example call
+
+```json
+{"name": "update_machine", "arguments": {"machine": "apps", "security_allowed_ports": ["41641/udp"]}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 1,
+  "name": "apps",
+  "version": "0.3.1",
+  "updates": "inherit",
+  "security_allowed_ports": ["41641/udp"],
+  "security_alerts": true,
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:42:10Z",
+  "last_seen": "2026-11-15T11:41:35Z",
+  "usage": null
+}
+```
+
+#### Errors
+
+1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
+2. `updates must be inherit, auto or manual.`
+3. `"41641" is not a port. Write each port with its protocol, such as 41641/udp or 443/tcp.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/machines/{machine}` | `tender machines set NAME --updates MODE --allow-port PORT` |
+
+## Security
+
+### `get_security`
+
+Gets the latest security checks of a machine, which its daemon runs when it starts and every 15 minutes, on Debian and Ubuntu. [Security](security.md#security-checks) explains each check.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+
+#### Returns
+
+`id`, `machine`, and one object per check, each with `check` (`ok`, `error` or `unsupported`) and `error`. `firewall` has `tool`, `active` and `default_incoming`. `listeners.ports` has every socket on a public address with `protocol`, `address`, `port`, `process`, `docker`, `service` and `allowed`. `ssh` has `installed`, `password_authentication` and `permit_root_login`. `updates` has `pending`, `security` and `unattended_upgrades`. `reboot` has `required` and `since`. Then `security_updates_since`, `collected_at`, `created_at` and `updated_at`.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "get_security", "arguments": {"machine": "apps"}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 1,
+  "machine": "apps",
+  "firewall": {"check": "ok", "error": null, "tool": "ufw", "active": true, "default_incoming": "deny"},
+  "listeners": {
+    "check": "ok",
+    "error": null,
+    "ports": [
+      {"protocol": "tcp", "address": "0.0.0.0", "port": 8080, "process": null, "docker": true, "service": "web", "allowed": false}
+    ]
+  },
+  "ssh": {"check": "ok", "error": null, "installed": true, "password_authentication": false, "permit_root_login": "prohibit-password"},
+  "updates": {"check": "ok", "error": null, "pending": 3, "security": 1, "unattended_upgrades": true},
+  "reboot": {"check": "ok", "error": null, "required": false, "since": null},
+  "collected_at": "2026-11-15T11:40:00Z",
+  "security_updates_since": "2026-11-15T09:40:00Z",
+  "created_at": "2026-11-14T08:00:00Z",
+  "updated_at": "2026-11-15T11:40:01Z"
+}
+```
+
+#### Errors
+
+1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
+2. `This machine hasn't sent a security report yet. Its daemon sends one when it starts and every 15 minutes, from Tender v0.3.0 on.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines/{machine}/security` | `tender security MACHINE` |
 
 ## Backups
 
@@ -1647,7 +1784,7 @@ None.
 
 ## Actions
 
-The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart`, `logs` or `test`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `destination` (tests only, from [`test_destination`](#test_destination)), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart`, `logs`, `test`, `upgrade`, or `update` from a rollout), `service` (`null` for the machine's logs, a test, an upgrade or an update), `unit`, `priority`, `since` and `lines` (logs only), `destination` (tests only, from [`test_destination`](#test_destination)), `packages` (upgrade only), `version` (update only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `start_service`
 
@@ -1693,6 +1830,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "since": null,
   "lines": null,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:09Z",
@@ -1762,6 +1901,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "since": null,
   "lines": null,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:08Z",
@@ -1833,6 +1974,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "since": null,
   "lines": null,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:07Z",
@@ -1906,6 +2049,8 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
   "since": null,
   "lines": 2,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:12Z",
@@ -1981,6 +2126,8 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
   "since": null,
   "lines": 5,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -2003,6 +2150,74 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
 | REST route | CLI command |
 | --- | --- |
 | `POST /v1/machines/{machine}/actions` with `{"type": "logs"}` and no `service`, then `GET /v1/machines/{machine}/actions/{id}` | `tender logs MACHINE [--unit UNIT] [--priority P] [--since D] [--lines N]` |
+
+### `upgrade_machine`
+
+Upgrades a Debian or Ubuntu machine's system packages through its daemon, in the `tenderupgrade` unit: after `apt-get update`, the security updates with `unattended-upgrade`, or every package with `apt-get upgrade --with-new-pkgs`, keeping the config files that were changed.
+
+> [!WARNING]
+> A service may restart when its package upgrades. Tender never reboots the machine; `get_security` says when it needs one.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `false` | `true` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+| `packages` | string | No | `security`, the default, or `all`. |
+
+#### Returns
+
+The action, with the status `completed`, or `in_progress` if the upgrade hasn't finished within 60 seconds. `output` is the end of what the upgrade printed.
+
+#### Limits
+
+The tool waits up to 60 seconds. The hub fails an upgrade the daemon doesn't finish within 45 minutes. The output is at most 256 KiB, the newest kept.
+
+#### Example call
+
+```json
+{"name": "upgrade_machine", "arguments": {"machine": "apps"}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 9,
+  "machine": "apps",
+  "type": "upgrade",
+  "service": null,
+  "unit": null,
+  "priority": null,
+  "since": null,
+  "lines": null,
+  "version": null,
+  "packages": "security",
+  "status": "in_progress",
+  "output_cleared": false,
+  "created_at": "2026-11-15T11:50:00Z",
+  "updated_at": "2026-11-15T11:50:01Z",
+  "output": null
+}
+```
+
+#### Errors
+
+1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
+2. `packages must be security or all.`
+3. `Could not upgrade the security packages: ...`, or `Could not upgrade every package: ...` for `all`, with the upgrade's last line, when it failed.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` with `{"type": "upgrade", "packages": "security"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender machines upgrade MACHINE [--all-packages]` |
 
 ### `get_action`
 
@@ -2048,6 +2263,8 @@ None.
   "since": "1h",
   "lines": 2,
   "destination": null,
+  "version": null,
+  "packages": null,
   "status": "completed",
   "output_cleared": true,
   "created_at": "2026-11-15T11:28:13Z",
@@ -2114,6 +2331,8 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "since": null,
       "lines": 5,
       "destination": null,
+      "version": null,
+      "packages": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:15Z",
@@ -2129,6 +2348,8 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "since": "10m",
       "lines": 3,
       "destination": null,
+      "version": null,
+      "packages": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:14Z",
@@ -2147,6 +2368,189 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
 | REST route | CLI command |
 | --- | --- |
 | `GET /v1/machines/{machine}/actions` | `tender actions list MACHINE` |
+
+## Updates
+
+[Updates](updates.md) explains how Tender updates itself from the hub.
+
+### `get_updates`
+
+Gets how Tender updates itself: the settings, the newest stable release the hub found on GitHub, each machine's version, the rollout in progress and the last 50 rollouts.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+`mode` and `window` of the hub's settings with their `created_at` and `updated_at`; `latest`, with `version`, `auto` (whether auto mode may roll it out), `checked_at` and `error`; `data`, each machine with `machine`, `version`, `updates` (its own setting), `mode` (what applies) and `update_available`; `rollout`, the one in progress or `null`; and `rollouts`, newest first. A rollout has `id`, `version`, `status`, `auto`, `error`, `machines` (each with `machine`, `position`, `status`, `action_id` and `error`), `created_at` and `updated_at`.
+
+#### Limits
+
+The hub keeps the newest 50 rollouts. It checks GitHub every 6 hours.
+
+#### Example call
+
+```json
+{"name": "get_updates", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{
+  "mode": "auto",
+  "window": "02:00-05:00",
+  "created_at": "2026-11-14T08:00:00Z",
+  "updated_at": "2026-11-15T09:12:00Z",
+  "latest": {"version": "0.3.1", "auto": true, "checked_at": "2026-11-15T09:12:00Z", "error": null},
+  "rollout": null,
+  "data": [
+    {"machine": "apps", "version": "0.3.1", "updates": "inherit", "mode": "auto", "update_available": false}
+  ],
+  "rollouts": [
+    {
+      "id": 3,
+      "version": "0.3.1",
+      "status": "completed",
+      "auto": true,
+      "error": null,
+      "machines": [
+        {"machine": "apps", "position": 1, "status": "completed", "action_id": 40, "error": null,
+         "created_at": "2026-11-15T02:00:04Z", "updated_at": "2026-11-15T02:03:02Z"}
+      ],
+      "created_at": "2026-11-15T02:00:04Z",
+      "updated_at": "2026-11-15T02:03:12Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+None of its own.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/updates`, `GET /v1/updates/settings`, `GET /v1/updates/rollouts` and `GET /v1/updates/rollouts/{id}` | `tender updates show` |
+
+### `set_update_settings`
+
+Sets how Tender updates itself on every machine that inherits the hub's mode.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mode` | string | Yes | `auto` rolls out each new stable release by itself; `manual` waits for `start_update`. |
+| `window` | string | No | When auto mode may start a rollout, two UTC times such as `02:00-05:00`. Leave it out for any time. |
+
+#### Returns
+
+The settings: `mode`, `window`, `created_at` and `updated_at`.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "set_update_settings", "arguments": {"mode": "auto", "window": "02:00-05:00"}}
+```
+
+#### Example result
+
+```json
+{"mode": "auto", "window": "02:00-05:00", "created_at": "2026-11-14T08:00:00Z", "updated_at": "2026-11-15T11:45:00Z"}
+```
+
+#### Errors
+
+1. `mode must be auto or manual.`
+2. `window must be two UTC times, such as 02:00-05:00.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PUT /v1/updates/settings` | `tender updates set --mode MODE --window HH:MM-HH:MM` |
+
+### `start_update`
+
+Starts a rollout that updates Tender to a stable release, the latest by default, on the machines named or on every machine, one at a time with the hub's own machine first. Each machine checks the release's signature, waits for a running backup to finish, however long it takes, swaps the binary and restarts. If it isn't healthy within 2 minutes it rolls back, and the rollout stops there with an `update.failed` alert.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `true` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | No | The stable release, such as `0.3.1`. Leave it out for the latest. |
+| `machines` | array of strings | No | The machines to update, by name. Leave it out for every machine. |
+
+#### Returns
+
+The rollout, as `get_updates` describes it. It goes on after the tool returns: follow it with `get_updates`.
+
+#### Limits
+
+One rollout at a time. It refuses prereleases, downgrades and machines before v0.3.0.
+
+#### Example call
+
+```json
+{"name": "start_update", "arguments": {"version": "0.3.1"}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 3,
+  "version": "0.3.1",
+  "status": "in_progress",
+  "auto": false,
+  "error": null,
+  "machines": [
+    {"machine": "apps", "position": 1, "status": "pending", "action_id": null, "error": null,
+     "created_at": "2026-11-15T11:46:00Z", "updated_at": "2026-11-15T11:46:00Z"}
+  ],
+  "created_at": "2026-11-15T11:46:00Z",
+  "updated_at": "2026-11-15T11:46:00Z"
+}
+```
+
+#### Errors
+
+1. `Rollout 3 is still in progress. Wait for it to end; it updates one machine at a time.`
+2. `Tender v0.3.2-rc.1 is a prerelease, and Tender only updates to stable releases. Name a stable release, such as 0.3.1.`
+3. `apps runs Tender 0.3.2, newer than 0.3.1, and an update never downgrades. ...`
+4. `db runs a Tender before v0.3.0, which can't update through the hub. ...`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/updates/rollouts` | `tender update MACHINE ...` or `tender update --all` |
 
 ## Log sinks
 

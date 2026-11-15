@@ -6,6 +6,7 @@ package install
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"embed"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -48,9 +51,14 @@ type Installer struct {
 	ResticArchiveSHA256 string // of the downloaded .bz2
 	ResticBinarySHA256  string // of the decompressed restic
 
-	Version     string // the running tender version, "dev" for a local build
-	LatestURL   string // answers with the newest release as JSON, including its tag_name
-	DownloadURL string // holds the releases: <DownloadURL>/<tag>/<file>
+	Version     string              // the running tender version, "dev" for a local build
+	ReleasesURL string              // GitHub's API for the releases: <ReleasesURL>/latest and <ReleasesURL>/tags/<tag>
+	DownloadURL string              // holds the releases: <DownloadURL>/<tag>/<file>
+	ReleaseKeys []ed25519.PublicKey // a release's SHA256SUMS must be signed by one of these
+
+	BusyWait    time.Duration // how long an update waits for a running backup or action
+	HealthWait  time.Duration // how long the services have to be healthy on a new version
+	HealthEvery time.Duration // how often an update looks
 
 	Refreshing bool // refresh the installed services: restart them whatever changed, skip the next steps
 
@@ -67,10 +75,12 @@ func New(out io.Writer) (*Installer, error) {
 	if err != nil {
 		return nil, err
 	}
+	api, download := ReleaseURLs(os.Getenv)
 	return &Installer{
-		Root: "/", Run: execRunner, Out: out, Platform: runtime.GOOS + "/" + runtime.GOARCH, Binary: self,
+		Root: config.Root(), Run: execRunner, Out: out, Platform: runtime.GOOS + "/" + runtime.GOARCH, Binary: self,
 		ResticURL: resticURL, ResticArchiveSHA256: resticArchiveSHA256, ResticBinarySHA256: resticBinarySHA256,
-		Version: "dev", LatestURL: latestURL, DownloadURL: downloadURL,
+		Version: "dev", ReleasesURL: api, DownloadURL: download, ReleaseKeys: ReleaseKeys(),
+		BusyWait: defaultBusyWait, HealthWait: defaultHealthWait, HealthEvery: defaultHealthEvery,
 	}, nil
 }
 
@@ -320,6 +330,9 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 			return err
 		}
 	}
+	if err := in.moveToRoot(ctx); err != nil {
+		return err
+	}
 	if err := in.writeConfig(ctx, configPath, cfg, o.Hub != ""); err != nil {
 		return err
 	}
@@ -349,40 +362,59 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 	return nil
 }
 
-// daemonUnit is tenderd.service. The daemon joins the docker group, when there is one, to reach
-// Docker's socket, and the systemd-journal group, when there is one, to read the whole journal
-// with journalctl. A group that doesn't exist is left out, since systemd won't start a unit whose
-// group doesn't exist. Installing Docker later needs "tender install refresh".
+// daemonUnit is tenderd.service. The daemon runs as root since v0.3.0, so it needs no groups.
 func (in *Installer) daemonUnit() ([]byte, error) {
-	unit, err := units.ReadFile("units/tenderd.service")
-	if err != nil {
-		return nil, err
-	}
-	var lines, groups []string
-	if in.hasGroup("docker") {
-		lines = append(lines, "# Docker's socket. The docker group is root-equivalent: whoever is in it controls the machine.")
-		groups = append(groups, "docker")
-	}
-	if in.hasGroup("systemd-journal") {
-		lines = append(lines, "# The whole journal, for machine logs. Logs can hold secrets; the hub clears them an hour after they are read.")
-		groups = append(groups, "systemd-journal")
-	}
-	if len(groups) == 0 {
-		return unit, nil
-	}
-	add := strings.Join(lines, "\n") + "\nSupplementaryGroups=" + strings.Join(groups, " ") + "\n"
-	return bytes.Replace(unit, []byte("Group=tender\n"), []byte("Group=tender\n"+add), 1), nil
+	return units.ReadFile("units/tenderd.service")
 }
 
-// hasGroup reports whether /etc/group has the group called name.
-func (in *Installer) hasGroup(name string) bool {
+// The daemon's own folders, which systemd makes for its unit.
+const daemonCacheDir = "/var/cache/tender"
+
+// moveToRoot finishes moving a daemon from before v0.3.0, which ran as the tender user, to root: its
+// state and cache folders become root's, and the tender user leaves the docker and systemd-journal
+// groups, which the daemon needed and the hub, still the tender user, never did.
+func (in *Installer) moveToRoot(ctx context.Context) error {
+	for _, dir := range []string{daemonStateDir, daemonCacheDir} {
+		fi, err := os.Stat(in.path(dir))
+		if err != nil {
+			continue
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid == 0 && st.Gid == 0 {
+			continue
+		}
+		if _, err := in.run(ctx, "chown", "-R", "root:root", in.path(dir)); err != nil {
+			return err
+		}
+		in.changed = true
+		in.say("Gave %s to root, which the daemon runs as now", in.path(dir))
+	}
+	for _, group := range []string{"docker", "systemd-journal"} {
+		if !in.inGroup(userName, group) {
+			continue
+		}
+		if _, err := in.run(ctx, "gpasswd", "--delete", userName, group); err != nil {
+			return err
+		}
+		in.changed = true
+		in.say("Took the %s user out of the %s group, which only the daemon needed", userName, group)
+	}
+	return nil
+}
+
+// inGroup reports whether /etc/group lists user as a member of group.
+func (in *Installer) inGroup(user, group string) bool {
 	b, err := os.ReadFile(in.path("/etc/group"))
 	if err != nil {
 		return false
 	}
 	for _, line := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(line, name+":") {
-			return true
+		fields := strings.Split(line, ":")
+		if len(fields) == 4 && fields[0] == group {
+			for _, m := range strings.Split(fields[3], ",") {
+				if strings.TrimSpace(m) == user {
+					return true
+				}
+			}
 		}
 	}
 	return false

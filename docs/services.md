@@ -43,7 +43,7 @@ When the daemon can't reach Docker, it reports `{"docker": "unreachable"}` with 
 | `docker_reason` | What the daemon found |
 | --- | --- |
 | `socket_missing` | `/var/run/docker.sock` is gone, so Docker was stopped or removed. |
-| `permission_denied` | The daemon may not use the socket, such as when Docker was installed after Tender. See [Docker and the journal](install.md#docker-and-the-journal). |
+| `permission_denied` | The daemon may not use the socket, such as on a daemon before v0.3.0 when Docker was installed after Tender. Update the machine, and the daemon runs as root. See [The daemon runs as root](install.md#the-daemon-runs-as-root). |
 | `refused` | The socket refuses connections, so Docker is stopped. |
 | `timeout` | Docker didn't answer within 5 seconds. |
 | `error` | Anything else. |
@@ -94,7 +94,7 @@ Both return the newest entries, up to 2000 lines and 256 KiB. When the output is
 
 ## Docker and journal access
 
-The daemon reaches Docker as a member of the `docker` group, and reads the journal as a member of the `systemd-journal` group. [Install](install.md#docker-and-the-journal) explains what each group allows.
+The daemon runs as root, so it reaches Docker's socket and reads every unit's journal. [Security](security.md#what-the-daemon-can-do) explains what its sandbox allows.
 
 ## Podman
 
