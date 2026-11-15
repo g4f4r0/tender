@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,6 +50,11 @@ var errUnreachable = errors.New("Docker is not answering on this machine")
 
 // errDenied means the socket is there but the daemon may not use it.
 var errDenied = errors.New("Tender may not use Docker on this machine")
+
+// errOff means the socket is missing or refuses connections and systemd says Docker isn't wanted:
+// someone turned Docker off on purpose. It wraps the error that found the socket so, errNoDocker
+// or errUnreachable, so the daemon can still tell a machine that never had Docker.
+var errOff = errors.New("Docker is turned off on this machine")
 
 // classify turns a failure to reach the socket into errNoDocker, errUnreachable or errDenied,
 // keeping the cause. A timeout isn't classified here: only Ping judges that Docker doesn't answer,
@@ -110,6 +116,8 @@ var pingTimeout = 5 * time.Second
 // Ping asks whether Docker answers, with its own short timeout. Any HTTP answer counts. It returns
 // errNoDocker without a socket, errDenied when the daemon may not use it, and errUnreachable when
 // it refuses connections or doesn't answer within pingTimeout; ctx ending first is none of them.
+// When the socket is missing or refuses connections and systemd says Docker is turned off (see
+// turnedOff), the error is errOff too.
 func (d *Docker) Ping(ctx context.Context) error {
 	pctx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
@@ -120,10 +128,58 @@ func (d *Docker) Ping(ctx context.Context) error {
 		return body.Close()
 	case errors.As(err, &api):
 		return nil
+	case errors.Is(err, errNoDocker), errors.Is(err, syscall.ECONNREFUSED):
+		if turnedOff(ctx) {
+			return fmt.Errorf("%w: %w", errOff, err)
+		}
+		return err
 	case ctx.Err() == nil && (errors.Is(err, context.DeadlineExceeded) || isTimeout(err)):
 		return fmt.Errorf("%w: %w", errUnreachable, err)
 	}
 	return err
+}
+
+// systemctl is the program turnedOff asks; tests set a fake.
+var systemctl = "systemctl"
+
+// systemdTimeout bounds asking systemd whether Docker is wanted.
+var systemdTimeout = 5 * time.Second
+
+// dockerUnits are the units that start Docker: the engine, and the socket that starts it on its
+// first connection.
+var dockerUnits = []string{"docker.service", "docker.socket"}
+
+// unwanted are the answers of "systemctl is-enabled" for a unit that nothing starts. Any other,
+// such as enabled, static, indirect, generated, alias or enabled-runtime, means it is wanted.
+var unwanted = map[string]bool{"disabled": true, "masked": true, "not-found": true}
+
+// turnedOff asks systemd whether Docker is turned off: neither docker.service nor docker.socket is
+// wanted, as "systemctl is-enabled" says each is disabled, masked or not-found, or doesn't know
+// it. It is false, so Docker counts as wanted, when systemctl is missing, fails in another way or
+// doesn't answer within systemdTimeout.
+func turnedOff(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, systemdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, systemctl, append([]string{"is-enabled"}, dockerUnits...)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr, cmd.WaitDelay = &stdout, &stderr, time.Second
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if ctx.Err() != nil || (err != nil && !errors.As(err, &exit)) { // it exits 1 when no unit is enabled
+		return false
+	}
+	states := strings.Fields(stdout.String())
+	// An older systemd prints no answer for a unit it doesn't know, only this error.
+	unknown := strings.Count(stderr.String(), "No such file or directory")
+	if len(states)+unknown != len(dockerUnits) {
+		return false
+	}
+	for _, s := range states {
+		if !unwanted[s] {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Docker) getJSON(ctx context.Context, path string, v any) error {

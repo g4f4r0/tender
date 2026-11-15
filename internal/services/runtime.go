@@ -14,7 +14,8 @@ var runtimes = map[string]bool{RuntimeDocker: true}
 
 // Runtime is what the daemon runs services with. Each method fails with errNoDocker when the
 // runtime isn't on this machine, errUnreachable when it doesn't answer and errDenied when the
-// daemon may not use it, so the daemon tells an outage from a machine without the runtime.
+// daemon may not use it, so the daemon tells an outage from a machine without the runtime. Ping
+// also fails with errOff when the runtime is turned off on purpose.
 type Runtime interface {
 	// Name is the runtime's name in the service JSON, such as docker.
 	Name() string
