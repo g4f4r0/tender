@@ -115,7 +115,7 @@ A daemon sends each sink's records in batches, one HTTP POST each. A batch goes 
 
 The daemon saves each batch on disk before it sends it, and saves where it has read up to in the journal and in each container's logs once the batch is saved. After a restart, it sends the saved batches, then reads on from there. No record is lost, and at most the one batch being sent when the daemon stopped is sent again. A receiver that must not count a record twice can drop a batch whose records it already has.
 
-A sink answers each POST with a 2xx status once it has the records. Any other answer, or none within 30 seconds, is a failure.
+A sink answers each POST with a 2xx status once it has the records. Any other answer, or none within 30 seconds, is a failure. The daemon never follows a redirect, so a sink that answers `301` or `307` fails until its URL is updated to the new address.
 
 ## When a sink is down
 

@@ -102,7 +102,12 @@ func (e *Error) Error() string { return e.msg }
 // sendTimeout is how long one send may take.
 const sendTimeout = 30 * time.Second
 
-var httpClient = &http.Client{Timeout: sendTimeout}
+// httpClient never follows a redirect: a 301 or 302 would turn the POST into a GET that answers
+// 200 for logs never delivered, and a 307 or 308 would send the logs and the headers to another
+// host. A 3xx is a failed send.
+var httpClient = &http.Client{Timeout: sendTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}}
 
 // post sends body to target with headers, and turns any answer but a 2xx into an *Error.
 func post(ctx context.Context, target string, body []byte, headers map[string]string) error {

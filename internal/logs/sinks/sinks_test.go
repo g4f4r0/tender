@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -242,5 +243,28 @@ func TestSendTimeout(t *testing.T) {
 	var e *Error
 	if !errors.As(err, &e) || e.Permanent {
 		t.Errorf("timeout: %v", err)
+	}
+}
+
+// A sink that redirects fails the send: a 301 must not turn the POST into a GET that looks
+// delivered, and a 307 must not carry the logs and the headers to another host.
+func TestSendFollowsNoRedirect(t *testing.T) {
+	var elsewhere atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { elsewhere.Add(1) }))
+	defer other.Close()
+	for _, status := range []int{301, 302, 307, 308} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+"/in", status)
+		}))
+		s := newSender(t, "otlp", Config{"endpoint": srv.URL + "/v1/logs", "headers": map[string]any{"Authorization": "Bearer k"}})
+		err := s.Send(context.Background(), records)
+		srv.Close()
+		var e *Error
+		if !errors.As(err, &e) || e.Status != status || e.Permanent {
+			t.Errorf("%d: %v, want a failed send that is tried again", status, err)
+		}
+	}
+	if n := elsewhere.Load(); n != 0 {
+		t.Errorf("the redirect target got %d requests", n)
 	}
 }
