@@ -956,6 +956,8 @@ A destination's JSON has `id`, `name`, `type`, `config`, `location`, `created_at
 | `rest` | `url`, `username` (optional) | `password`, with `username` |
 | `rclone` | `remote`, such as `gdrive:backups` | None. The remote's login stays on each machine. |
 
+Every path, the folder in a `rest` URL and the folder after an rclone remote's colon is made of folder names of letters, digits, `.`, `_` and `-`, without `.` or `..` parts. A `?`, `#`, `%` or space is refused, because restic would read it as another repository than the one the hub checked. `bucket` follows the S3 rules: 3 to 63 lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit. `endpoint` is the server's address alone, without a path or a query.
+
 ### `GET /v1/backups/destinations`
 
 Lists every destination, by name. Secrets show as `"***"`, and the password is never part of the response.

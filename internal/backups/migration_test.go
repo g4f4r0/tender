@@ -45,7 +45,7 @@ func TestDestinationConfigMigration(t *testing.T) {
 	}
 	_, err = d.Write.Exec(`INSERT INTO backup_destinations (id, name, type, endpoint, bucket, path, access_key_id, secret_access_key, password, created_at, updated_at)
 		VALUES (7, 'r2', 's3', 'https://x.r2.cloudflarestorage.com', 'tender', 'hosts', ?, ?, ?, 100, 200),
-		       (8, 'top', 's3', 'https://y.example.com', 'b', '', ?, ?, ?, 100, 200)`,
+		       (8, 'top', 's3', 'https://y.example.com', 'top-bucket', '', ?, ?, ?, 100, 200)`,
 		seal("old-id"), seal("old-secret"), seal("old-password"), seal("k2"), seal("s2"), seal("p2"))
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestDestinationConfigMigration(t *testing.T) {
 		t.Errorf("after the migration: %+v %+v", st, c)
 	}
 	top, err := s.Destination(ctx, "top")
-	if err != nil || top.Location != "s3:https://y.example.com/b" || top.CreatedAt.Unix() != 100 || top.UpdatedAt.Unix() != 200 {
+	if err != nil || top.Location != "s3:https://y.example.com/top-bucket" || top.CreatedAt.Unix() != 100 || top.UpdatedAt.Unix() != 200 {
 		t.Errorf("top = %+v, %v", top, err)
 	}
 	// The foreign key still holds: a destination in use can't go, and settings can't point nowhere.
@@ -83,7 +83,7 @@ func TestDestinationConfigMigration(t *testing.T) {
 		t.Error("settings point at a destination that doesn't exist")
 	}
 	// Two destinations can't share a location.
-	if _, err := s.AddDestination(ctx, input("again", "https://y.example.com", "b", "")); err == nil {
+	if _, err := s.AddDestination(ctx, input("again", "https://y.example.com", "top-bucket", "")); err == nil {
 		t.Error("added a second destination at top's location")
 	}
 }

@@ -143,9 +143,9 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	// REST writes and refusals that carry secrets in their bodies.
 	rest("POST", "/v1/backups/destinations", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
 		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}) // 409
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "b",
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "bkt",
 		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}) // 422
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b",
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
 		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password, "region": "auto"}) // 400
 	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"password": badPass}) // 422
 	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}})
@@ -173,7 +173,7 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 			"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}}, // 409
 		{"add_destination", map[string]any{"name": "tool-made", "config": map[string]any{"endpoint": "https://other.r2.cloudflarestorage.com", "bucket": "tool",
 			"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}}, // an owner's password is not returned
-		{"add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "b", "access_key_id": keyID, "secret_access_key": secretKey}, "password": password}},
+		{"add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "bkt", "access_key_id": keyID, "secret_access_key": secretKey}, "password": password}},
 		{"update_destination", map[string]any{"destination": "r2-code", "config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}},
 		{"update_destination", map[string]any{"destination": "r2-code", "password": badPass}},
 		{"update_destination", map[string]any{"destination": "nope", "config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}},

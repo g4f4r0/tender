@@ -85,7 +85,7 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	structured(t, callTool(t, cs, "add_machine", map[string]any{"name": "a"}), &machines.MachineCreated{})
 
 	dest := func(name string, extra map[string]any) map[string]any {
-		config := map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": name,
+		config := map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": name + "-bucket",
 			"access_key_id": "marker-key-id", "secret_access_key": "marker-secret-key"}
 		args := map[string]any{"name": name, "config": config}
 		for k, v := range extra {
@@ -121,7 +121,7 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	fails(t, cs, "add_destination", dest("r2", map[string]any{"bucket": "other"}), "already exists")
 	fails(t, cs, "add_destination", dest("bad", map[string]any{"endpoint": "nope"}), "endpoint must be a URL")
 	fails(t, cs, "add_destination", dest("bad", map[string]any{"type": "gcs"}), "type must be one of local, rclone, rest, s3, sftp")
-	fails(t, cs, "add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b"}}, "access_key_id is required")
+	fails(t, cs, "add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt"}}, "access_key_id is required")
 	fails(t, cs, "add_destination", map[string]any{"name": "bad", "type": "local", "config": map[string]any{"path": "relative"}}, "absolute")
 
 	// The daemon's side shows the tool stored what it was given, sealed.
@@ -255,6 +255,6 @@ func TestToolsWithoutAKey(t *testing.T) {
 	t.Cleanup(func() { _ = cs.Close(); cancel(); <-done })
 
 	structured(t, callTool(t, cs, "list_machines", nil), &server.List[machines.Overview]{})
-	fails(t, cs, "add_destination", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b",
+	fails(t, cs, "add_destination", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
 		"access_key_id": "k", "secret_access_key": "s"}}, "TENDER_ENCRYPTION_KEY")
 }

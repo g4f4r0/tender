@@ -787,7 +787,7 @@ func TestTestDestination(t *testing.T) {
 func TestSavedSettingsFromBeforeV03(t *testing.T) {
 	h := newHub(t)
 	a, _ := testDaemon(t, h)
-	old := `{"destination":{"id":1,"name":"r2","type":"s3","endpoint":"https://x.example","bucket":"b","path":"p"},` +
+	old := `{"destination":{"id":1,"name":"r2","type":"s3","endpoint":"https://x.example","bucket": "bkt","path":"p"},` +
 		`"schedule":"30 3 * * *","retention_days":30,"credentials":{"access_key_id":"k1","secret_access_key":"s1","password":"p1"}}`
 	writeFile(t, a.settingsFile(), old)
 	a.loadSavedSettings()
@@ -798,7 +798,7 @@ func TestSavedSettingsFromBeforeV03(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restic := r.(*Restic); restic.Repository != "s3:https://x.example/b/p/m1" || strings.Join(restic.Env, ",") != "AWS_ACCESS_KEY_ID=k1,AWS_SECRET_ACCESS_KEY=s1" {
+	if restic := r.(*Restic); restic.Repository != "s3:https://x.example/bkt/p/m1" || strings.Join(restic.Env, ",") != "AWS_ACCESS_KEY_ID=k1,AWS_SECRET_ACCESS_KEY=s1" {
 		t.Errorf("runner = %+v", restic)
 	}
 }

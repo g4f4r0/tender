@@ -189,19 +189,19 @@ func TestDestinations(t *testing.T) {
 		t.Errorf("a password the owner gave came back: %q", created.Password)
 	}
 	for name, bad := range map[string]backups.DestinationInput{
-		"same name":     input("r2-code", "https://other.example.com", "b", ""),
+		"same name":     input("r2-code", "https://other.example.com", "bkt", ""),
 		"same location": input("other", "https://acct.r2.cloudflarestorage.com", "code", "hosts"),
 	} {
 		if _, err := h.store.AddDestination(ctx, bad); !errors.As(err, &e) || e.Status != 409 {
 			t.Errorf("%s: %v, want 409", name, err)
 		}
 	}
-	noKeyID, noSecret, badType := input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", "")
+	noKeyID, noSecret, badType := input("x", "https://x.example.com", "bkt", ""), input("x", "https://x.example.com", "bkt", ""), input("x", "https://x.example.com", "bkt", "")
 	noKeyID.Config["access_key_id"], noSecret.Config["secret_access_key"], badType.Type = "", "", "gcs"
 	for name, bad := range map[string]backups.DestinationInput{
-		"bad name":      input("R2", "https://x.example.com", "b", ""),
+		"bad name":      input("R2", "https://x.example.com", "bkt", ""),
 		"bad type":      badType,
-		"bad endpoint":  input("x", "x.example.com", "b", ""),
+		"bad endpoint":  input("x", "x.example.com", "bkt", ""),
 		"no bucket":     input("x", "https://x.example.com", "", ""),
 		"no key id":     noKeyID,
 		"no secret key": noSecret,
@@ -210,7 +210,7 @@ func TestDestinations(t *testing.T) {
 			t.Errorf("%s: %v, want 422", name, err)
 		}
 	}
-	if _, err := h.store.AddDestination(ctx, input("b-two", "https://x.example.com", "b", "")); err != nil {
+	if _, err := h.store.AddDestination(ctx, input("b-two", "https://x.example.com", "bkt", "")); err != nil {
 		t.Fatal(err)
 	}
 

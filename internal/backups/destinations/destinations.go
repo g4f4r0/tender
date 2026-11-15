@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -116,15 +117,22 @@ func encode(v any) Config {
 // trimPath removes the slashes around a path inside a bucket or remote.
 func trimPath(p string) string { return strings.Trim(p, "/") }
 
-// cleanPath is a 422 unless p is a plain path: no "..", no empty part, no control character,
-// nothing that could read as an option.
+// pathPart is one folder name in a destination's path. Nothing else is allowed: a ?, # or %
+// escape would make restic open another repository than the one checked, and a space or a
+// quote could split an argument.
+var pathPart = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// cleanPath is a 422 unless p is a plain path of folder names of letters, digits, ., _ and -,
+// with no empty, . or .. part and none starting with -. It may start or end with a slash, and
+// may be empty; the caller says whether empty is allowed.
 func cleanPath(field, p string) error {
-	if strings.HasPrefix(p, "-") || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		return server.Invalid("config.%s can't start with - or hold control characters.", field)
+	inner := strings.Trim(p, "/")
+	if inner == "" {
+		return nil
 	}
-	for _, part := range strings.Split(strings.Trim(p, "/"), "/") {
-		if part == ".." || part == "." || (part == "" && strings.Trim(p, "/") != "") {
-			return server.Invalid("config.%s must be a plain path, without . or .. parts or double slashes.", field)
+	for _, part := range strings.Split(inner, "/") {
+		if part == "." || part == ".." || !pathPart.MatchString(part) || strings.HasPrefix(part, "-") {
+			return server.Invalid("config.%s must be a plain path of folder names made of letters, digits, ., _ and -, without . or .. parts, double slashes or a leading -.", field)
 		}
 	}
 	return nil

@@ -50,7 +50,7 @@ func TestCreateDestinationRoute(t *testing.T) {
 
 	// Without one: the hub makes 32 random bytes and returns them once, here.
 	var made backups.DestinationCreated
-	res := h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "b-two", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b",
+	res := h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "b-two", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
 		"access_key_id": "key-id-2", "secret_access_key": "key-secret-2"}}, &made)
 	if res.StatusCode != 201 || res.Header.Get("Location") != "/v1/backups/destinations/b-two" {
 		t.Fatalf("create without password: %d location %q", res.StatusCode, res.Header.Get("Location"))
@@ -78,7 +78,7 @@ func TestCreateDestinationRoute(t *testing.T) {
 func TestCreateDestinationRejects(t *testing.T) {
 	h := newHub(t)
 	good := func() map[string]any {
-		return map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b", "access_key_id": "k", "secret_access_key": "s"}}
+		return map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}}
 	}
 	if code, _ := h.create(good()); code != 201 {
 		t.Fatalf("good destination: %d", code)
@@ -131,15 +131,15 @@ func TestCreateDestinationRejects(t *testing.T) {
 func TestDaemonCredentials(t *testing.T) {
 	h := newHub(t)
 	var made backups.DestinationCreated
-	h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b",
+	h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
 		"access_key_id": "marker-key-id", "secret_access_key": "marker-secret-key"}}, &made)
 	h.status(200, "PUT", "/v1/machines/a/backups/settings", "", backups.SettingsInput{Destination: "r2", Schedule: "30 3 * * *", RetentionDays: 30})
 
 	var st backups.DaemonSettings
 	if res := h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st); res.StatusCode != 200 || st.Credentials == nil ||
 		st.Credentials.AccessKeyID != "marker-key-id" || st.Credentials.SecretAccessKey != "marker-secret-key" || st.Credentials.Password != made.Password ||
-		st.Credentials.Config["secret_access_key"] != "marker-secret-key" || st.Credentials.Config["bucket"] != "b" ||
-		st.Destination.Endpoint != "https://x.example.com" || st.Destination.Bucket != "b" {
+		st.Credentials.Config["secret_access_key"] != "marker-secret-key" || st.Credentials.Config["bucket"] != "bkt" ||
+		st.Destination.Endpoint != "https://x.example.com" || st.Destination.Bucket != "bkt" {
 		t.Fatalf("daemon settings: %d %+v", res.StatusCode, st.Credentials)
 	}
 
@@ -218,7 +218,7 @@ func TestWrongKeyFailsCleanly(t *testing.T) {
 
 	// A store with no key at all refuses writes with a sentence that says what to set.
 	none := backups.NewStore(h.db, nil)
-	_, err = none.AddDestination(ctx, input("x", "https://y.example.com", "b", ""))
+	_, err = none.AddDestination(ctx, input("x", "https://y.example.com", "bkt", ""))
 	if !errors.As(err, &e) || e.Status != 503 || !strings.Contains(e.Detail, "TENDER_ENCRYPTION_KEY") {
 		t.Errorf("no key: %v, want 503 naming TENDER_ENCRYPTION_KEY", err)
 	}
@@ -337,7 +337,7 @@ func TestDeleteDestinationRoute(t *testing.T) {
 
 func TestSettingsRoutes(t *testing.T) {
 	h := newHub(t)
-	h.status(201, "POST", "/v1/backups/destinations", "", input("r2", "https://x.example.com", "b", ""))
+	h.status(201, "POST", "/v1/backups/destinations", "", input("r2", "https://x.example.com", "bkt", ""))
 	body := backups.SettingsInput{Destination: "r2", Schedule: "30 3 * * *", RetentionDays: 30}
 
 	var st backups.Settings

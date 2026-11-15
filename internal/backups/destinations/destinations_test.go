@@ -37,15 +37,30 @@ func TestCheck(t *testing.T) {
 		says      string // "" means valid
 		want      Config // the cleaned config, when valid
 	}{
-		{"s3", "s3", Config{"endpoint": "https://a.r2.cloudflarestorage.com", "bucket": "b", "path": "/x/y/", "access_key_id": "k", "secret_access_key": "s"}, "",
-			Config{"endpoint": "https://a.r2.cloudflarestorage.com", "bucket": "b", "path": "x/y", "access_key_id": "k", "secret_access_key": "s"}},
-		{"s3 bad endpoint", "s3", Config{"endpoint": "a.example.com", "bucket": "b", "access_key_id": "k", "secret_access_key": "s"}, "config.endpoint must be a URL", nil},
-		{"s3 endpoint with a login", "s3", Config{"endpoint": "https://u:p@a.example.com", "bucket": "b", "access_key_id": "k", "secret_access_key": "s"}, "config.endpoint", nil},
-		{"s3 no secret", "s3", Config{"endpoint": "https://a.example.com", "bucket": "b", "access_key_id": "k"}, "secret_access_key is required", nil},
-		{"s3 dot dot", "s3", Config{"endpoint": "https://a.example.com", "bucket": "b", "path": "a/../b", "access_key_id": "k", "secret_access_key": "s"}, "plain path", nil},
-		{"s3 unknown field", "s3", Config{"endpoint": "https://a.example.com", "bucket": "b", "region": "x", "access_key_id": "k", "secret_access_key": "s"}, "It takes endpoint, bucket", nil},
+		{"s3", "s3", Config{"endpoint": "https://a.r2.cloudflarestorage.com", "bucket": "bkt", "path": "/x/y/", "access_key_id": "k", "secret_access_key": "s"}, "",
+			Config{"endpoint": "https://a.r2.cloudflarestorage.com", "bucket": "bkt", "path": "x/y", "access_key_id": "k", "secret_access_key": "s"}},
+		{"s3 bad endpoint", "s3", Config{"endpoint": "a.example.com", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}, "config.endpoint must be a URL", nil},
+		{"s3 endpoint with a login", "s3", Config{"endpoint": "https://u:p@a.example.com", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}, "config.endpoint", nil},
+		{"s3 no secret", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "access_key_id": "k"}, "secret_access_key is required", nil},
+		{"s3 dot dot", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "a/../b", "access_key_id": "k", "secret_access_key": "s"}, "plain path", nil},
+		{"s3 unknown field", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "region": "x", "access_key_id": "k", "secret_access_key": "s"}, "It takes endpoint, bucket", nil},
+
+		{"s3 bucket with a query", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt?x=1", "access_key_id": "k", "secret_access_key": "s"}, "S3 bucket name", nil},
+		{"s3 bucket with a slash", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt/other", "access_key_id": "k", "secret_access_key": "s"}, "S3 bucket name", nil},
+		{"s3 bucket in capitals", "s3", Config{"endpoint": "https://a.example.com", "bucket": "Backups", "access_key_id": "k", "secret_access_key": "s"}, "S3 bucket name", nil},
+		{"s3 bucket with two dots", "s3", Config{"endpoint": "https://a.example.com", "bucket": "my..bkt", "access_key_id": "k", "secret_access_key": "s"}, "S3 bucket name", nil},
+		{"s3 path with a query", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "x?y", "access_key_id": "k", "secret_access_key": "s"}, "plain path", nil},
+		{"s3 path with a fragment", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "x#y", "access_key_id": "k", "secret_access_key": "s"}, "plain path", nil},
+		{"s3 path with an escaped dot dot", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "a/%2E%2E/b", "access_key_id": "k", "secret_access_key": "s"}, "plain path", nil},
+		{"s3 path with an escaped slash", "s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "a%2F..", "access_key_id": "k", "secret_access_key": "s"}, "plain path", nil},
+		{"s3 endpoint with a path", "s3", Config{"endpoint": "https://a.example.com/other", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}, "address alone", nil},
+		{"s3 endpoint with a query", "s3", Config{"endpoint": "https://a.example.com?x=1", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}, "address alone", nil},
+		{"s3 endpoint with a slash", "s3", Config{"endpoint": "https://a.example.com/", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}, "",
+			Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "", "access_key_id": "k", "secret_access_key": "s"}},
 
 		{"local", "local", Config{"path": "/mnt/backup/"}, "", Config{"path": "/mnt/backup"}},
+		{"local with a space", "local", Config{"path": "/mnt/my backup"}, "plain path", nil},
+		{"local with a percent", "local", Config{"path": "/mnt/a%2F..%2Fetc"}, "plain path", nil},
 		{"local relative", "local", Config{"path": "backup"}, "absolute", nil},
 		{"local root", "local", Config{"path": "/"}, "can't be /", nil},
 		{"local none", "local", Config{}, "config.path is required", nil},
@@ -60,6 +75,8 @@ func TestCheck(t *testing.T) {
 		{"sftp port", "sftp", Config{"host": "h", "port": 70000, "user": "u", "path": "p"}, "config.port", nil},
 		{"sftp port as text", "sftp", Config{"host": "h", "port": "22", "user": "u", "path": "p"}, "config.port must be int", nil},
 		{"sftp no path", "sftp", Config{"host": "h", "user": "u"}, "config.path is required", nil},
+		{"sftp path with a query", "sftp", Config{"host": "h", "user": "u", "path": "r?x"}, "plain path", nil},
+		{"sftp path with an escape", "sftp", Config{"host": "h", "user": "u", "path": "r/%2e%2e/x"}, "plain path", nil},
 		{"sftp key in config", "sftp", Config{"host": "h", "user": "u", "path": "p", "key": "x"}, "doesn't take", nil},
 
 		{"rest", "rest", Config{"url": "https://backup.example.com:8000/", "username": "apps", "password": "pw"}, "",
@@ -69,12 +86,17 @@ func TestCheck(t *testing.T) {
 		{"rest half a login", "rest", Config{"url": "https://backup.example.com", "username": "apps"}, "go together", nil},
 		{"rest query", "rest", Config{"url": "https://backup.example.com/?x=1"}, "query", nil},
 		{"rest bad scheme", "rest", Config{"url": "ftp://backup.example.com"}, "http or https", nil},
+		{"rest escaped slash", "rest", Config{"url": "https://backup.example.com/a%2F..%2Fb"}, "plain path", nil},
+		{"rest empty query", "rest", Config{"url": "https://backup.example.com/a?"}, "query", nil},
+		{"rest fragment", "rest", Config{"url": "https://backup.example.com/a#b"}, "query or a fragment", nil},
 
 		{"rclone", "rclone", Config{"remote": "gdrive:backups/"}, "", Config{"remote": "gdrive:backups"}},
 		{"rclone remote root", "rclone", Config{"remote": "b2:"}, "", Config{"remote": "b2:"}},
 		{"rclone local path", "rclone", Config{"remote": "/tmp/x"}, "remote's name, a colon", nil},
 		{"rclone option", "rclone", Config{"remote": "-x:y"}, "remote's name", nil},
 		{"rclone dot dot", "rclone", Config{"remote": "r:../etc"}, "plain path", nil},
+		{"rclone query", "rclone", Config{"remote": "r:a?b"}, "plain path", nil},
+		{"rclone escape", "rclone", Config{"remote": "r:a%2F.."}, "plain path", nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := check(t, c.typ, c.config)
@@ -117,10 +139,10 @@ func TestOpen(t *testing.T) {
 		repo     string
 		env, opt []string
 	}{
-		{"s3", Config{"endpoint": "https://a.example.com", "bucket": "b", "path": "p", "access_key_id": "k", "secret_access_key": "s"},
-			"s3:https://a.example.com/b/p/apps", []string{"AWS_ACCESS_KEY_ID=k", "AWS_SECRET_ACCESS_KEY=s"}, nil},
-		{"s3", Config{"endpoint": "https://a.example.com", "bucket": "b", "access_key_id": "k", "secret_access_key": "s"},
-			"s3:https://a.example.com/b/apps", []string{"AWS_ACCESS_KEY_ID=k", "AWS_SECRET_ACCESS_KEY=s"}, nil},
+		{"s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "path": "p", "access_key_id": "k", "secret_access_key": "s"},
+			"s3:https://a.example.com/bkt/p/apps", []string{"AWS_ACCESS_KEY_ID=k", "AWS_SECRET_ACCESS_KEY=s"}, nil},
+		{"s3", Config{"endpoint": "https://a.example.com", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"},
+			"s3:https://a.example.com/bkt/apps", []string{"AWS_ACCESS_KEY_ID=k", "AWS_SECRET_ACCESS_KEY=s"}, nil},
 		{"local", Config{"path": "/mnt/backup"}, "local:/mnt/backup/apps", nil, nil},
 		{"sftp", Config{"host": "h.example.com", "user": "u", "path": "/srv/r"}, "sftp://u@h.example.com:22//srv/r/apps", nil,
 			[]string{"sftp.args=-i " + ssh + "/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=" + ssh + "/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=60"}},

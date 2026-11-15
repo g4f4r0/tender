@@ -22,7 +22,7 @@ func TestLoadMachines(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://x.r2.cloudflarestorage.com", "bucket": "b", "access_key_id": "k", "secret_access_key": "s"}}); err != nil {
+	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://x.r2.cloudflarestorage.com", "bucket": "bkt", "access_key_id": "k", "secret_access_key": "s"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bs.SetSettings(ctx, 1, "r2", "30 3 * * *", 30); err != nil {

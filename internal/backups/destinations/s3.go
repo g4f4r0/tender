@@ -2,6 +2,8 @@ package destinations
 
 import (
 	"net/url"
+	"regexp"
+	"strings"
 
 	"github.com/g4f4r0/tender/internal/server"
 )
@@ -9,6 +11,10 @@ import (
 // s3 is any S3-compatible bucket: AWS, Cloudflare R2, Backblaze B2, Wasabi, MinIO, and Google
 // Cloud Storage through its S3 interoperability.
 type s3 struct{}
+
+// bucketName is an S3 bucket name by AWS's rules: 3 to 63 lowercase letters, digits, dots and
+// hyphens, starting and ending with a letter or digit.
+var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 
 type s3Config struct {
 	Endpoint        string `json:"endpoint"`
@@ -34,8 +40,12 @@ func (t s3) Check(c Config) (Config, error) {
 	switch {
 	case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil:
 		return nil, server.Invalid("config.endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.")
+	case strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(v.Endpoint, "?#%"):
+		return nil, server.Invalid("config.endpoint must be the server's address alone, without a path, a query or a fragment. Put the folder in config.path.")
 	case v.Bucket == "":
 		return nil, required("bucket", "the bucket's name")
+	case !bucketName.MatchString(v.Bucket) || strings.Contains(v.Bucket, ".."):
+		return nil, server.Invalid("config.bucket must be an S3 bucket name: 3 to 63 lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit.")
 	case v.AccessKeyID == "":
 		return nil, required("access_key_id", "the bucket's access key ID")
 	case v.SecretAccessKey == "":
@@ -44,6 +54,7 @@ func (t s3) Check(c Config) (Config, error) {
 	if err := cleanPath("path", v.Path); err != nil {
 		return nil, err
 	}
+	v.Endpoint = strings.TrimRight(v.Endpoint, "/")
 	return encode(v), nil
 }
 

@@ -61,7 +61,7 @@ func seeded(t *testing.T) *db.DB {
 			t.Fatal(err)
 		}
 	}
-	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "b", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
+	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "bkt", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bs.SetSettings(ctx, 1, "r2-code", "30 3 * * *", 30); err != nil {
@@ -569,7 +569,7 @@ func TestMCPStdioRefusesTheWrongKey(t *testing.T) {
 	if err := d.Migrate(ctx, migrations()...); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "b", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
+	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "bkt", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Close(); err != nil {
