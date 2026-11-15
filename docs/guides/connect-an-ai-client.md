@@ -23,9 +23,11 @@ The hub serves MCP at `/mcp`.
    claude mcp list
    ```
 
-   The `tender` line says it is connected.
+   ```text
+   tender: https://apps.your-tailnet.ts.net/mcp (HTTP) - ✓ Connected
+   ```
 
-To connect for one session only, put the server in a file and pass it with `--mcp-config`:
+To connect for one session only, save the server as `tender-mcp.json`:
 
 ```json
 {
@@ -38,13 +40,15 @@ To connect for one session only, put the server in a file and pass it with `--mc
 }
 ```
 
+Then pass the file when you start Claude Code:
+
 ```sh
 claude --mcp-config tender-mcp.json
 ```
 
 ## Connect over stdio on the hub machine
 
-A client on the hub machine can run the tools as a local process instead. It reads and writes the hub's database directly, so it runs as the `tender` user, which owns `/var/lib/tender/hub`:
+A client on the hub machine can run the tools as a local process with `tender mcp --stdio`. It reads and writes the hub's database directly, so the hub must have run once on the same version. Run it as the `tender` user, which owns `/var/lib/tender/hub`; other users can't open the database:
 
 ```json
 {
@@ -59,7 +63,7 @@ A client on the hub machine can run the tools as a local process instead. It rea
 
 The client starts the command without a terminal, so `sudo` must not ask for a password there. Don't run it as root while the hub is stopped, because files root creates next to the database lock the hub out.
 
-The tools that store destination keys need `TENDER_ENCRYPTION_KEY` in the client's environment, and `send_test_email` needs the `TENDER_SMTP_` variables, all from `/etc/tender/hub.env`. Without them those tools say what is missing.
+The tools that store destination keys need `TENDER_ENCRYPTION_KEY`, and `send_test_email` needs the `TENDER_SMTP_` variables, all from `/etc/tender/hub.env`. `sudo` clears the environment by default, so with the command above those tools say what is missing. Every other tool works.
 
 ## Ask it something
 

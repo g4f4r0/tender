@@ -2,7 +2,7 @@
 
 Set up a hub, back up one machine to your S3 bucket and list its Docker services, in about 10 minutes.
 
-This guide puts the hub and the daemon on the same machine, called `apps`, and backs it up to a bucket called `my-backups` on Cloudflare R2.
+This guide puts the hub and the daemon on the same machine, called `apps`, and backs it up to a bucket called `my-backups` on Cloudflare R2. It skips email alerts; [set up email alerts](guides/set-up-email-alerts.md) adds them later.
 
 ## Prerequisites
 
@@ -18,20 +18,28 @@ This guide puts the hub and the daemon on the same machine, called `apps`, and b
    curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub
    ```
 
-   The output ends with the hub's address on your tailnet:
+   It prints the hub's address on your tailnet:
 
    ```text
    The hub is running at https://apps.your-tailnet.ts.net.
    The tender command on this machine finds it by itself.
+   Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
    ```
 
-2. Copy `/etc/tender/hub.env` to your password manager. Its key decrypts the secrets the hub stores, and the hub won't start without it.
+2. Print the hub's settings file:
 
    ```sh
    sudo cat /etc/tender/hub.env
    ```
 
-This skips email alerts. [Set up email alerts](guides/set-up-email-alerts.md) adds them later.
+   ```text
+   # Settings of the Tender hub, read by systemd when the service starts.
+   # Keep this file private: the encryption key opens every secret the hub stores.
+   # After a change, run: sudo systemctl restart tenderhub
+   TENDER_ENCRYPTION_KEY=<key>
+   ```
+
+3. Save the file in your password manager. Its key decrypts the secrets the hub stores, and the hub won't start without it.
 
 ## 2. Add a destination
 
@@ -41,9 +49,15 @@ This skips email alerts. [Set up email alerts](guides/set-up-email-alerts.md) ad
    tender destinations add r2 --endpoint https://<account-id>.r2.cloudflarestorage.com --bucket my-backups --path tender
    ```
 
-2. Paste the access key ID and the secret access key when it asks. Typing is hidden.
+2. Paste the access key ID and the secret access key when it asks, then press Enter at the password prompt, so the hub makes a strong password:
 
-3. Press Enter when it asks for a repository password. The hub makes a strong one and shows it once:
+   ```text
+   Access key ID (typing is hidden):
+   Secret access key (typing is hidden):
+   Repository password, or empty for the hub to make one (typing is hidden):
+   ```
+
+   The hub shows the password once:
 
    ```text
    Added destination r2.
@@ -55,12 +69,11 @@ This skips email alerts. [Set up email alerts](guides/set-up-email-alerts.md) ad
    it, and without it they cannot be restored. Tender cannot show it again.
    ```
 
-> [!WARNING]
-> Save the repository password now. Without it nobody can restore the backups, including you, and it can't change later.
+3. Save the password in your password manager. It can't change later. [Backups](backups.md#encryption-and-the-repository-password) explains why.
 
 ## 3. Add the machine and its schedule
 
-1. Add the machine:
+1. Add the machine, and keep the token it prints for step 4:
 
    ```sh
    tender machines add apps
@@ -73,9 +86,7 @@ This skips email alerts. [Set up email alerts](guides/set-up-email-alerts.md) ad
      <token>
    ```
 
-2. Keep the token for step 4.
-
-3. Back up every night at 03:30 UTC and keep 30 days:
+2. Back up every night at 03:30 UTC and keep 30 days:
 
    ```sh
    tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-days 30
@@ -97,7 +108,7 @@ This skips email alerts. [Set up email alerts](guides/set-up-email-alerts.md) ad
 2. Paste the token from step 3 when it asks. Typing is hidden.
 
    ```text
-   The daemon is running. It gets its destination, schedule and keys from the hub.
+   The daemon is running. It gets its destination, schedule and keys from the hub. Next:
    ```
 
 The first backup starts within a minute, and the next ones follow the schedule.

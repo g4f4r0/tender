@@ -16,7 +16,7 @@ Commands that talk to the hub find it in this order:
 2. The `TENDER_HUB` environment variable.
 3. `http://127.0.0.1:8080`, where the hub listens on its own machine. On the hub machine you need neither.
 
-They need no token: the hub has no login in this version. See [Security](security.md).
+They need no token, because the hub has no login in this version. See [Security](security.md).
 
 Options and arguments can come in any order, so `tender machines add apps --hub URL` and `tender machines add --hub URL apps` are the same.
 
@@ -25,8 +25,8 @@ A command exits with one of these codes:
 | Code | Meaning |
 | --- | --- |
 | `0` | It worked, or it printed its help. |
-| `1` | It failed. The reason is on stderr. |
-| `2` | You ran `tender` with no command, an unknown command, or a group such as `tender machines` without a subcommand. The usage is on stdout. |
+| `1` | It failed, or a group got an unknown subcommand such as `tender machines nope`. The reason is on stderr. |
+| `2` | You ran `tender` or a group such as `tender machines` with no command, and the usage is on stdout. An unknown command such as `tender nope` also exits 2, with the reason on stderr. |
 
 A failure prints one line on stderr that starts with `tender:` and says what to do. A usage mistake also names the help command:
 
@@ -54,19 +54,19 @@ Add `--help` to any command for its usage, or run `tender help` for the list of 
 
 Shows every machine, when it last reported, its last backup, how many of its services run, and the open alerts.
 
-Usage
+#### Usage
 
 ```sh
 tender status [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--hub` | URL | No | The hub's address. The default is `$TENDER_HUB`, else `http://127.0.0.1:8080`. |
 
-Example
+#### Example
 
 ```sh
 tender status
@@ -74,20 +74,24 @@ tender status
 
 ```text
 MACHINE   LAST SEEN      LAST BACKUP   STATUS      SERVICES
-apps      1 minute ago   just now      completed   3/4 running
+apps      1 minute ago   just now      completed   1/2 running
 
 Open alerts: 1
 SEVERITY   SINCE      ALERT
 warning    just now   The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.
 ```
 
-`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer. An alert longer than 100 characters ends in `...`; its email has the whole text.
+`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer. An alert longer than 100 characters, or longer than one line, ends in `...`; its email has the whole text. With no open alerts, the list ends with `No open alerts.`
 
-Errors
+#### Errors
 
 1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
 
-REST routes `GET /v1/machines`, `GET /v1/backups`, `GET /v1/services` and `GET /v1/notifications`. MCP tools `list_machines`, `get_backup_status`, `list_services` and `list_notifications`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/machines`, `GET /v1/backups`, `GET /v1/services` and `GET /v1/notifications` | `list_machines`, `get_backup_status`, `list_services` and `list_notifications` |
 
 ## `tender machines`
 
@@ -97,19 +101,19 @@ Add the machines that back up, and manage their tokens.
 
 Lists the machines, when each last reported, and its memory and disk use from the latest report.
 
-Usage
+#### Usage
 
 ```sh
 tender machines list [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender machines list
@@ -120,32 +124,36 @@ NAME   LAST SEEN   MEMORY   DISK
 apps   just now    15%      28%
 ```
 
-A machine whose daemon never reported shows `never`, with `-` for memory and disk.
+A machine whose daemon never reported shows `never`, with `-` for memory and disk. With no machines, it prints `No machines yet. Add one with: tender machines add NAME` and exits 0.
 
-Errors
+#### Errors
 
-1. `No machines yet. Add one with: tender machines add NAME` is printed, with exit code 0, when there are none.
+1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
 
-REST route `GET /v1/machines`. MCP tool `list_machines`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/machines` | `list_machines` |
 
 ### `tender machines add`
 
 Adds a machine and prints its token once.
 
-Usage
+#### Usage
 
 ```sh
 tender machines add NAME [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `NAME` | string | Yes | The machine's name: lowercase letters, digits and hyphens, up to 63 characters. |
+| `NAME` | string | Yes | The machine's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender machines add apps
@@ -164,12 +172,16 @@ Install the daemon on that machine; it asks for the token:
 
 The install command shows `HUB_URL` when you reached the hub at `127.0.0.1` or `localhost`, which the new machine can't use. Put the hub's tailnet address there.
 
-Errors
+#### Errors
 
 1. `Machine names are lowercase letters, digits and hyphens, up to 63 characters.`
 2. `Machine "apps" already exists. Choose another name, or rotate its token to get a new one.`
 
-REST route `POST /v1/machines`. MCP tool `add_machine`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines` | `add_machine` |
 
 ### `tender machines remove`
 
@@ -178,13 +190,13 @@ Removes a machine and its history from the hub.
 > [!WARNING]
 > There is no undo. The machine's token stops working, and its settings, backup history, services, actions and alerts are deleted from the hub. Its backups stay in the destination.
 
-Usage
+#### Usage
 
 ```sh
 tender machines remove NAME --yes [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -192,7 +204,7 @@ Options
 | `--yes` | flag | Yes | Confirms the removal. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender machines remove apps --yes
@@ -202,34 +214,38 @@ tender machines remove apps --yes
 Removed machine apps and its history. Its backups stay in the destination.
 ```
 
-Errors
+#### Errors
 
 1. `this removes apps and its history from the hub, with no undo. Run "tender machines remove apps --yes" to confirm` without `--yes`.
 2. `Machine "apps" doesn't exist.`
 
-REST route `DELETE /v1/machines/{machine}`. MCP tool `remove_machine`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/machines/{machine}` | `remove_machine` |
 
 ### `tender machines rotate-token`
 
 Replaces a machine's token and prints the new one once.
 
 > [!WARNING]
-> The old token stops working at once, so the machine's daemon stays offline until you install the new token on it.
+> The old token stops working at once, so the machine's daemon stays offline and stops backing up until you install the new token on it.
 
-Usage
+#### Usage
 
 ```sh
 tender machines rotate-token NAME [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `NAME` | string | Yes | The machine whose token to replace. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender machines rotate-token apps
@@ -244,11 +260,15 @@ The new token, shown only now. Save it before you go on:
 Give it to the daemon on that machine: sudo tender install daemon --token-file PATH
 ```
 
-Errors
+#### Errors
 
 1. `Machine "apps" doesn't exist.`
 
-REST route `POST /v1/machines/{machine}/token`. MCP tool `rotate_machine_token`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/token` | `rotate_machine_token` |
 
 ## `tender destinations`
 
@@ -258,19 +278,19 @@ Manage the S3 buckets backups go to, with the keys and the repository password t
 
 Lists the destinations, without their keys or passwords.
 
-Usage
+#### Usage
 
 ```sh
 tender destinations list [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender destinations list
@@ -281,27 +301,33 @@ NAME   TYPE   ENDPOINT                                        BUCKET       PATH
 r2     s3     https://<account-id>.r2.cloudflarestorage.com   my-backups   tender
 ```
 
-Errors
+With no destinations, it prints `No destinations yet. Add one with: tender destinations add NAME --endpoint URL --bucket BUCKET` and exits 0.
 
-1. `No destinations yet. Add one with: tender destinations add NAME --endpoint URL --bucket BUCKET` is printed, with exit code 0, when there are none.
+#### Errors
 
-REST route `GET /v1/backups/destinations`. MCP tool `list_destinations`.
+1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/backups/destinations` | `list_destinations` |
 
 ### `tender destinations add`
 
 Adds a destination. It asks for the access key ID, the secret access key and the repository password with typing hidden, or reads each from a file.
 
-Usage
+#### Usage
 
 ```sh
 tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH] [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `NAME` | string | Yes | The destination's name: lowercase letters, digits and hyphens, up to 63 characters. |
+| `NAME` | string | Yes | The destination's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 | `--endpoint` | URL | Yes | The S3 endpoint, such as `https://<account-id>.r2.cloudflarestorage.com`. |
 | `--bucket` | string | Yes | The bucket name. |
 | `--path` | string | No | A folder inside the bucket. The default is the bucket's root. Each machine gets its own folder under it. |
@@ -313,7 +339,7 @@ Options
 
 Leave the password empty when it asks, and the hub makes a strong one and shows it once. Without a terminal, the keys must come from files, and the hub makes the password unless `--password-file` gives one.
 
-Example
+#### Example
 
 ```sh
 tender destinations add r2 --endpoint https://<account-id>.r2.cloudflarestorage.com --bucket my-backups --path tender
@@ -329,17 +355,20 @@ Save it in a password manager now. Every machine's backups at this destination a
 it, and without it they cannot be restored. Tender cannot show it again.
 ```
 
-> [!WARNING]
-> The repository password can't change later. Without it nobody can restore the backups at this destination.
+Save the password in a password manager. It can't change later, and without it nobody can restore the backups at this destination.
 
-Errors
+#### Errors
 
 1. `destinations add needs --endpoint and --bucket. Run "tender destinations add --help" for usage.`
 2. `there is no terminal to ask for the access key ID. Save it in a file and add --access-key-id-file PATH.`
 3. `A destination with this name or this endpoint, bucket and path already exists. Choose another name, or use the existing one.`
 4. `endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.`
 
-REST route `POST /v1/backups/destinations`. MCP tool `add_destination`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/backups/destinations` | `add_destination` |
 
 ### `tender destinations remove`
 
@@ -348,20 +377,20 @@ Removes a destination that no machine backs up to.
 > [!WARNING]
 > The hub forgets the destination's keys and password. The backups already in the bucket stay there, so keep the password in your password manager to restore them.
 
-Usage
+#### Usage
 
 ```sh
 tender destinations remove NAME [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `NAME` | string | Yes | The destination to remove. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender destinations remove r2
@@ -371,11 +400,15 @@ tender destinations remove r2
 Removed destination r2. The backups already in its bucket stay there.
 ```
 
-Errors
+#### Errors
 
 1. `Destination "r2" is used by apps. Stop their backups first (delete their backup settings), then remove the destination.`
 
-REST route `DELETE /v1/backups/destinations/{destination}`. MCP tool `remove_destination`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/backups/destinations/{destination}` | `remove_destination` |
 
 ## `tender backups`
 
@@ -385,20 +418,20 @@ See how each machine's backups are doing, and set when and where each machine ba
 
 Shows every machine's backups, or one machine's: the destination, the schedule in UTC, the retention, the last backup and its status, and the snapshot count.
 
-Usage
+#### Usage
 
 ```sh
 tender backups status [MACHINE] [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | No | Only this machine. The default is every machine. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender backups status apps
@@ -411,23 +444,27 @@ apps      r2            30 3 * * *   30 days   just now      completed   1
 
 A machine without settings shows `not set`, followed by the command that sets them.
 
-Errors
+#### Errors
 
 1. `Machine "apps" doesn't exist.`
 
-REST routes `GET /v1/backups` and `GET /v1/machines/{machine}/backups`. MCP tool `get_backup_status`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/backups` and `GET /v1/machines/{machine}/backups` | `get_backup_status` |
 
 ### `tender backups set`
 
 Chooses where, when and for how long a machine backs up. It replaces any earlier settings.
 
-Usage
+#### Usage
 
 ```sh
 tender backups set MACHINE --destination NAME --schedule CRON --retention-days N [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -439,7 +476,7 @@ Options
 
 A daemon without settings picks them up within 30 seconds. A daemon that has settings checks for changes every 10 minutes.
 
-Example
+#### Example
 
 ```sh
 tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-days 30
@@ -449,32 +486,36 @@ tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-day
 apps backs up to r2 at "30 3 * * *" (UTC) and keeps 30 days.
 ```
 
-Errors
+#### Errors
 
 1. `backups set needs --destination, --schedule and --retention-days (1 or more). Run "tender backups set --help" for usage.`
 2. `schedule must be a standard 5-field cron expression: ...`
 3. `Destination "r2" doesn't exist.`
 
-REST route `PUT /v1/machines/{machine}/backups/settings`. MCP tool `set_backup`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PUT /v1/machines/{machine}/backups/settings` | `set_backup` |
 
 ### `tender backups unset`
 
 Stops backing up a machine. Its daemon deletes its saved settings and password. Its backups stay in the destination.
 
-Usage
+#### Usage
 
 ```sh
 tender backups unset MACHINE [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine to stop backing up. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender backups unset apps
@@ -484,73 +525,79 @@ tender backups unset apps
 apps no longer backs up. Its backups stay in the destination.
 ```
 
-Errors
+#### Errors
 
 1. `This machine has no backup settings. There is nothing to remove.`
 
-REST route `DELETE /v1/machines/{machine}/backups/settings`. MCP tool `unset_backup`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/machines/{machine}/backups/settings` | `unset_backup` |
 
 ## `tender services`
 
-See and control each machine's Docker services, one per container, by its container name. Start, stop, restart and logs go to the machine's daemon, and the command waits up to 60 seconds for it. If the daemon hasn't finished by then, the action stays queued for 15 minutes; check it with `tender actions show`.
+See and control each machine's Docker services, one per container, by its container name. Start, stop, restart and logs go to the machine's daemon, and the command waits up to 60 seconds for it. If the daemon hasn't finished by then, the action still runs if the daemon picks it up within 15 minutes of being queued; check it with `tender actions show`.
 
 ### `tender services list`
 
 Lists every machine's Docker services, or one machine's, from the latest report.
 
-Usage
+#### Usage
 
 ```sh
 tender services list [MACHINE] [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | No | Only this machine. The default is every machine. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender services list apps
 ```
 
 ```text
-MACHINE   SERVICE         STATE        HEALTH    MEM               CPU     RESTARTS   STARTED      ALERTS
-apps      apps-web-1      running      healthy   32 MiB            -       0          just now     on
-apps      cli-proxy-api   running      -         32 MiB            12.5%   0          just now     on
-apps      migrate         exited (0)   -         -                 -       0          -            on
-apps      web             running      healthy   200 MiB / 1 GiB   12.5%   0          1 hour ago   on
+MACHINE   SERVICE   STATE        HEALTH    MEM               CPU     RESTARTS   STARTED      ALERTS
+apps      migrate   exited (0)   -         -                 -       0          -            on
+apps      web       running      healthy   200 MiB / 1 GiB   12.5%   0          1 hour ago   on
 ```
 
 The columns are:
 
 1. `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped.
 2. `MEM` is the memory it uses, with its limit when it has one.
-3. `CPU` is its use since the previous report, where 100% is one whole CPU. It shows `-` on a service's first report, as for `apps-web-1` above after a restart.
+3. `CPU` is its use since the previous report, where 100% is one whole CPU. It shows `-` while there is no previous reading, as [Services](services.md#what-a-service-is) explains.
 4. `ALERTS` says whether the service sends alert emails.
 
-While Docker is unreachable, every state is `unknown` and the list ends with `Docker is unreachable on apps, so the states of its services are unknown.`
+While Docker is unreachable, every state is `unknown` and the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
 
-Errors
+#### Errors
 
-1. `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` is printed, with exit code 0, when there are none.
+1. `Machine "apps" doesn't exist.`
 
-REST routes `GET /v1/services` and `GET /v1/machines/{machine}/services`. MCP tool `list_services`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/services` and `GET /v1/machines/{machine}/services` | `list_services` |
 
 ### `tender services start`
 
 Starts a service. Starting a running service changes nothing.
 
-Usage
+#### Usage
 
 ```sh
 tender services start MACHINE SERVICE [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -558,7 +605,7 @@ Options
 | `SERVICE` | string | Yes | The service's container name. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender services start apps web
@@ -568,13 +615,17 @@ tender services start apps web
 Started web on apps.
 ```
 
-Errors
+#### Errors
 
 1. `Service "web" doesn't exist on this machine.`
 2. `the daemon on apps hasn't finished within 60 seconds. Action 3 stays queued for 15 minutes and runs when the daemon picks it up. Check it with: tender actions show apps 3`
 3. `Could not start web: ...` with Docker's reason, when the action failed.
 
-REST routes `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}`. MCP tool `start_service`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `start_service` |
 
 ### `tender services stop`
 
@@ -583,13 +634,13 @@ Stops a service, with the container's own stop timeout. A service Tender stopped
 > [!WARNING]
 > The service stays offline until something starts it again.
 
-Usage
+#### Usage
 
 ```sh
 tender services stop MACHINE SERVICE [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -597,7 +648,7 @@ Options
 | `SERVICE` | string | Yes | The service's container name. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender services stop apps web
@@ -607,25 +658,29 @@ tender services stop apps web
 Stopped web on apps.
 ```
 
-Errors
+#### Errors
 
 1. `Service "web" doesn't exist on this machine.`
 2. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id, as for `start`.
 3. `Could not stop web: ...` with Docker's reason, when the action failed.
 
-REST routes `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}`. MCP tool `stop_service`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `stop_service` |
 
 ### `tender services restart`
 
 Restarts a service.
 
-Usage
+#### Usage
 
 ```sh
 tender services restart MACHINE SERVICE [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -633,7 +688,7 @@ Options
 | `SERVICE` | string | Yes | The service's container name. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender services restart apps web
@@ -643,25 +698,29 @@ tender services restart apps web
 Restarted web on apps.
 ```
 
-Errors
+#### Errors
 
 1. `Service "web" doesn't exist on this machine.`
 2. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id, as for `start`.
 3. `Could not restart web: ...` with Docker's reason, when the action failed.
 
-REST routes `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}`. MCP tool `restart_service`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `restart_service` |
 
 ### `tender services logs`
 
 Prints a service's newest lines of output, stdout and stderr together, each starting with Docker's timestamp.
 
-Usage
+#### Usage
 
 ```sh
 tender services logs MACHINE SERVICE [--lines N] [--since D] [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -674,9 +733,9 @@ Options
 The output stops at 256 KiB and drops the oldest lines past it.
 
 > [!WARNING]
-> Logs can hold secrets. The hub clears them 1 hour after they were read, and never puts them in alerts or emails.
+> Logs can hold secrets. The hub clears them 1 hour after the action finished, and never puts them in alerts or emails. See [Security](security.md#logs-can-hold-secrets).
 
-Example
+#### Example
 
 ```sh
 tender services logs apps web --since 10m --lines 3
@@ -686,26 +745,31 @@ tender services logs apps web --since 10m --lines 3
 2026-11-15T11:28:14.373342396Z web listening on :3000
 ```
 
-Errors
+With no lines, it prints `web on apps has no logs.` and exits 0.
+
+#### Errors
 
 1. `--lines must be from 1 to 2000. Run "tender services logs --help" for usage.`
 2. `--since must be a duration such as 30m, 1h or 7d, at most 7d. Run "tender services logs --help" for usage.`
 3. `Service "web" doesn't exist on this machine.`
-4. `web on apps has no logs.` is printed, with exit code 0, when the output is empty.
 
-REST routes `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}`. MCP tool `get_service_logs`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `get_service_logs` |
 
 ### `tender services alerts`
 
-Turns a service's alert emails on or off. They are on for every new service. The switch follows the service's name, so it stays when the container is made again.
+Turns a service's alert emails on or off. They are on for every new service. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
-Usage
+#### Usage
 
 ```sh
 tender services alerts MACHINE SERVICE on|off [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -714,7 +778,7 @@ Options
 | `on` or `off` | string | Yes | Whether the service sends alert emails. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender services alerts apps web off
@@ -724,12 +788,16 @@ tender services alerts apps web off
 Alerts for web on apps are off. Its open alerts resolve within a minute.
 ```
 
-Errors
+#### Errors
 
 1. `services alerts needs a machine, a service and on or off. Run "tender services alerts --help" for usage.`
 2. `Service "web" doesn't exist on this machine.`
 
-REST route `PATCH /v1/machines/{machine}/services/{service}`. MCP tool `set_service_alerts`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/machines/{machine}/services/{service}` | `set_service_alerts` |
 
 ## `tender logs`
 
@@ -737,13 +805,13 @@ REST route `PATCH /v1/machines/{machine}/services/{service}`. MCP tool `set_serv
 
 Prints the newest entries of a machine's systemd journal, one per line: the time in UTC, the unit and the message, the newest last. The daemon reads them with `journalctl`, and the command waits up to 60 seconds for it.
 
-Usage
+#### Usage
 
 ```sh
 tender logs MACHINE [--unit UNIT] [--priority P] [--since D] [--lines N] [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -757,9 +825,9 @@ Options
 The output stops at 256 KiB and drops the oldest lines past it.
 
 > [!WARNING]
-> The journal can hold secrets that services print. The hub clears the output 1 hour after it was read, and never puts it in alerts or emails.
+> The journal can hold secrets that services print. The hub clears the output 1 hour after the action finished, and never puts it in alerts or emails. See [Security](security.md#logs-can-hold-secrets).
 
-Example
+#### Example
 
 ```sh
 tender logs apps --unit tenderd --priority warning --since 1h --lines 2
@@ -767,18 +835,22 @@ tender logs apps --unit tenderd --priority warning --since 1h --lines 2
 
 ```text
 2026-11-15T11:27:13.000000000Z tenderd.service backup took 41s, longer than usual.
-2026-11-15T11:28:13.000000000Z kernel eth0: link up
 ```
 
-Errors
+With no matching entries, it prints `apps has no logs.` and exits 0.
+
+#### Errors
 
 1. `--lines must be from 1 to 2000. Run "tender logs --help" for usage.`
 2. `--since must be a duration such as 30m, 1h or 7d, at most 7d. Run "tender logs --help" for usage.`
 3. `unit must be a systemd unit name such as tenderd or nginx.service.`
 4. `Could not read the machine's logs: journalctl is not installed on this machine, so Tender can't read its logs.`
-5. `apps has no logs.` is printed, with exit code 0, when nothing matches.
 
-REST routes `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}`. MCP tool `get_machine_logs`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `get_machine_logs` |
 
 ## `tender actions`
 
@@ -788,20 +860,20 @@ See what was asked of a machine's daemon: service starts, stops, restarts and lo
 
 Lists a machine's last 100 actions, newest first, without their output.
 
-Usage
+#### Usage
 
 ```sh
 tender actions list MACHINE [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine whose actions to list. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender actions list apps
@@ -811,33 +883,34 @@ tender actions list apps
 ID   TYPE      OF                                                  STATUS      ASKED
 7    logs      web                                                 completed   just now
 6    logs      journal, unit tenderd, priority warning, since 1h   completed   just now
-5    logs      apps-web-1                                          completed   just now
-4    logs      cli-proxy-api                                       completed   just now
-3    start     apps-web-1                                          completed   just now
-2    stop      apps-web-1                                          completed   just now
-1    restart   cli-proxy-api                                       completed   just now
+3    start     web                                                 completed   just now
+2    stop      web                                                 completed   just now
+1    restart   web                                                 completed   just now
 ```
 
-`STATUS` is `pending`, `in_progress`, `completed` or `failed`.
+`STATUS` is `pending`, `in_progress`, `completed` or `failed`. With no actions, it prints `Nothing was asked of apps yet.` and exits 0.
 
-Errors
+#### Errors
 
-1. `Nothing was asked of apps yet.` is printed, with exit code 0, when there are none.
-2. `Machine "apps" doesn't exist.`
+1. `Machine "apps" doesn't exist.`
 
-REST route `GET /v1/machines/{machine}/actions`. MCP tool `list_actions`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/machines/{machine}/actions` | `list_actions` |
 
 ### `tender actions show`
 
 Shows one action and its output: the logs, or why it failed.
 
-Usage
+#### Usage
 
 ```sh
 tender actions show MACHINE ID [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -845,7 +918,7 @@ Options
 | `ID` | integer | Yes | The action's id, from `tender actions list`. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender actions show apps 6
@@ -855,7 +928,6 @@ tender actions show apps 6
 Action 6 on apps: logs of journal, unit tenderd, priority warning, since 1h, completed, asked just now.
 
 2026-11-15T11:27:13.000000000Z tenderd.service backup took 41s, longer than usual.
-2026-11-15T11:28:13.000000000Z kernel eth0: link up
 ```
 
 An hour after a logs action finished, its output is gone:
@@ -865,12 +937,16 @@ Action 6 on apps: logs of journal, unit tenderd, priority warning, since 1h, com
 Its logs were cleared 1 hour after it finished, because logs can hold secrets.
 ```
 
-Errors
+#### Errors
 
 1. `the action id must be a number, got "x". Run "tender actions show --help" for usage.`
 2. `Action 6 doesn't exist on this machine.`
 
-REST route `GET /v1/machines/{machine}/actions/{id}`. MCP tool `get_action`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
 
 ## `tender recipients`
 
@@ -880,19 +956,19 @@ Choose who gets the alert emails. Every recipient gets every alert.
 
 Lists who gets the alert emails.
 
-Usage
+#### Usage
 
 ```sh
 tender recipients list [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender recipients list
@@ -903,30 +979,36 @@ EMAIL             ADDED
 ops@example.com   just now
 ```
 
-Errors
+With no recipients, it prints `No recipients yet, so no alert is emailed. Add one with: tender recipients add EMAIL` and exits 0.
 
-1. `No recipients yet, so no alert is emailed. Add one with: tender recipients add EMAIL` is printed, with exit code 0, when there are none.
+#### Errors
 
-REST route `GET /v1/notifications/recipients`. MCP tool `list_recipients`.
+1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/notifications/recipients` | `list_recipients` |
 
 ### `tender recipients add`
 
 Adds an address that gets every alert email.
 
-Usage
+#### Usage
 
 ```sh
 tender recipients add EMAIL [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `EMAIL` | string | Yes | A bare address, such as `ops@example.com`, without a display name. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender recipients add ops@example.com
@@ -936,31 +1018,35 @@ tender recipients add ops@example.com
 Added ops@example.com. It gets every alert. Check that the email arrives with: tender email test
 ```
 
-Errors
+#### Errors
 
 1. `email must be a bare address such as alerts@example.com.`
 2. `ops@example.com is already a recipient.`
 
-REST route `POST /v1/notifications/recipients`. MCP tool `add_recipient`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/notifications/recipients` | `add_recipient` |
 
 ### `tender recipients remove`
 
 Removes an address from the alert emails.
 
-Usage
+#### Usage
 
 ```sh
 tender recipients remove EMAIL [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `EMAIL` | string | Yes | The address to remove, in any case. |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender recipients remove ops@example.com
@@ -970,11 +1056,15 @@ tender recipients remove ops@example.com
 Removed ops@example.com. It no longer gets alerts.
 ```
 
-Errors
+#### Errors
 
 1. `ops@example.com is not a recipient. Run "tender recipients list" to see who is.`
 
-REST routes `GET /v1/notifications/recipients` and `DELETE /v1/notifications/recipients/{id}`. MCP tool `remove_recipient`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/notifications/recipients` and `DELETE /v1/notifications/recipients/{id}` | `remove_recipient` |
 
 ## `tender email`
 
@@ -984,19 +1074,19 @@ Check that alert emails arrive.
 
 Sends a test email, with the subject `Tender test email`, to every recipient.
 
-Usage
+#### Usage
 
 ```sh
 tender email test [--hub URL]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--hub` | URL | No | The hub's address. |
 
-Example
+#### Example
 
 ```sh
 tender email test
@@ -1006,12 +1096,16 @@ tender email test
 Sent a test email to ops@example.com.
 ```
 
-Errors
+#### Errors
 
 1. `Email is off on this hub. Set TENDER_SMTP_HOST and TENDER_SMTP_FROM in /etc/tender/hub.env and restart the hub.`
 2. `There are no recipients to send to. Add one first, such as alerts@example.com.`
 
-REST route `POST /v1/notifications/test`. MCP tool `send_test_email`.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/notifications/test` | `send_test_email` |
 
 ## `tender install`
 
@@ -1021,13 +1115,13 @@ Set up this machine. Every `install` command needs root. Most people run them th
 
 Installs and starts the hub on this machine, then publishes it on your tailnet with Tailscale Serve. Running it again keeps the encryption key and every setting you don't pass.
 
-Usage
+#### Usage
 
 ```sh
 sudo tender install hub [--smtp-host HOST --smtp-from SENDER] [--smtp-port PORT --smtp-username USER] [--smtp-password-file PATH]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1037,7 +1131,7 @@ Options
 | `--smtp-username` | string | No | The SMTP login, for servers that ask for one. With it, the command asks for the password with typing hidden. |
 | `--smtp-password-file` | path | No | A file with the SMTP password, instead of asking. Needs `--smtp-username`. |
 
-Example
+#### Example
 
 ```sh
 sudo tender install hub --smtp-host smtp.example.com --smtp-from "Tender <alerts@example.com>" --smtp-username alerts@example.com
@@ -1051,28 +1145,32 @@ Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub htt
 
 The output goes on with the next steps: add a destination, a machine, its schedule and the recipients. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
 
-Errors
+#### Errors
 
 1. `install hub needs root. Run it again with sudo.`
 2. `--smtp-password-file needs --smtp-username. Run "tender install hub --help" for usage.`
 3. `the SMTP password is empty. Run the command again and type it, or pass --smtp-password-file PATH.`
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ### `tender install daemon`
 
 Installs and starts the daemon on this machine. It checks the token with the hub before it changes anything.
 
 > [!WARNING]
-> On a machine with Docker, the daemon joins the `docker` group, which is root-equivalent: whoever can use Docker's socket controls the whole machine. Anyone who can reach the hub can ask the daemon to start, stop and restart containers and read their logs.
+> On a machine with Docker, the daemon joins the `docker` group, which is root-equivalent. See [Install](install.md#docker-and-the-journal).
 
-Usage
+#### Usage
 
 ```sh
 sudo tender install daemon --hub URL --machine NAME [--token-file PATH] [--force]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1083,7 +1181,7 @@ Options
 
 The token never comes from an argument, where other users could see it. On a machine that already has a daemon, leave out `--hub` and `--machine`: the config and the token stay, and the command repairs the install.
 
-Example
+#### Example
 
 ```sh
 sudo tender install daemon --hub https://apps.your-tailnet.ts.net --machine apps --token-file /root/apps-token
@@ -1096,31 +1194,33 @@ The daemon is running. It gets its destination, schedule and keys from the hub. 
   2. Watch the daemon: journalctl -u tenderd -f
 ```
 
-Errors
+#### Errors
 
 1. `install daemon needs both --hub and --machine, or neither on a machine that already has a daemon. Run "tender install daemon --help" for usage.`
 2. `the hub at https://apps.your-tailnet.ts.net does not accept this token, so nothing was changed. Make a new one with "tender machines rotate-token apps" and pass it with --token-file PATH.`
 3. `cannot reach the hub at https://apps.your-tailnet.ts.net, so nothing was changed. Check --hub and that this machine can reach the hub: ...`
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ### `tender install refresh`
 
 Checks the pinned restic, rewrites the service units with the groups the machine has, and restarts the installed services. The configs and the credentials stay. Run it after you install Docker on a machine that has a daemon.
 
-Usage
+#### Usage
 
 ```sh
 sudo tender install refresh
 ```
 
-Options
+#### Options
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| None. | | | |
+None.
 
-Example
+#### Example
 
 ```sh
 sudo tender install refresh
@@ -1130,11 +1230,15 @@ sudo tender install refresh
 Restarted tenderd
 ```
 
-Errors
+#### Errors
 
 1. `install refresh needs root. Run it again with sudo.`
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ## `tender update`
 
@@ -1142,19 +1246,19 @@ REST route None. MCP tool None.
 
 Updates Tender to the latest release, checked against the release checksums, then refreshes and restarts its services.
 
-Usage
+#### Usage
 
 ```sh
 sudo tender update [--version vX.Y.Z]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--version` | string | No | The release to install, such as `v0.3.0`. The default is the latest. |
 
-Example
+#### Example
 
 ```sh
 sudo tender update
@@ -1169,27 +1273,31 @@ Restarted tenderd
 Updated to Tender v0.3.0.
 ```
 
-Errors
+#### Errors
 
 1. `update needs root. Run it again with sudo.`
 2. `Tender is not installed on this machine yet. Run "sudo tender install daemon" or "sudo tender install hub" first`
 3. `"0.3" is not a tender version. Use a release such as v0.1.0`
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ## `tender hub`
 
 ### `tender hub`
 
-Runs the hub: it keeps every machine's state, serves the REST API and the MCP endpoint, and sends alert emails. Its `tenderhub` service runs it with the settings in `/etc/tender/hub.env`.
+Runs the hub, which keeps every machine's state, serves the REST API and the MCP endpoint, and sends alert emails. Its `tenderhub` service runs it with the settings in `/etc/tender/hub.env`.
 
-Usage
+#### Usage
 
 ```sh
 tender hub [--database PATH] [--listen ADDR]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1198,7 +1306,7 @@ Options
 
 It reads its other settings from the environment. See [Hub settings](install.md#hub-settings). `tender hub help` prints them.
 
-Example
+#### Example
 
 ```sh
 sudo systemctl status tenderhub
@@ -1210,26 +1318,30 @@ The hub logs to the journal:
 level=INFO msg="hub listening" address=127.0.0.1:8080 database=/var/lib/tender/hub/hub.db version=v0.3.0 email=true
 ```
 
-Errors
+#### Errors
 
 1. `TENDER_ENCRYPTION_KEY is not set. The hub stores secrets encrypted with it. Make a key with "openssl rand -base64 32" and put it in /etc/tender/hub.env as TENDER_ENCRYPTION_KEY=<the key>, or run "sudo tender install hub", which does both`
 2. `TENDER_ENCRYPTION_KEY does not open the secrets in /var/lib/tender/hub/hub.db: ...` when the key is not the one the secrets were stored with.
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ## `tender daemon`
 
 ### `tender daemon`
 
-Runs the daemon: it backs up the machine on the schedule the hub sets, reports usage and Docker services, and runs the actions the hub queues. Its `tenderd` service runs it as the `tender` user.
+Runs the daemon, which backs up the machine on the schedule the hub sets, reports usage and Docker services, and runs the actions the hub queues. Its `tenderd` service runs it as the `tender` user.
 
-Usage
+#### Usage
 
 ```sh
 tender daemon [--config PATH] [--state PATH]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1238,7 +1350,7 @@ Options
 
 It reaches Docker at `/var/run/docker.sock`, or at the socket in `TENDER_DOCKER_SOCKET`.
 
-Example
+#### Example
 
 ```sh
 journalctl -u tenderd -f
@@ -1251,11 +1363,15 @@ level=INFO msg="run finished" type=backup status=completed error=""
 level=INFO msg="run finished" type=cleanup status=completed error=""
 ```
 
-Errors
+#### Errors
 
 1. `cannot read the hub token in /etc/tender/credentials. Run "sudo tender install daemon --token-file PATH" to save it, ...`
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ## `tender mcp`
 
@@ -1263,37 +1379,39 @@ REST route None. MCP tool None.
 
 Serves the MCP tools over standard input and output, for an AI client on the hub machine. It reads and writes the hub's database directly. Clients elsewhere use the hub's `/mcp` endpoint; see [Connect an AI client](guides/connect-an-ai-client.md).
 
-Usage
+#### Usage
 
 ```sh
 tender mcp --stdio [--database PATH]
 ```
 
-Options
+#### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `--stdio` | flag | Yes | Serve over standard input and output. |
 | `--database` | path | No | The hub's database. The default is `TENDER_DATABASE`, else `/var/lib/tender/hub/hub.db`. |
 
-Run it as the `tender` user, which owns `/var/lib/tender/hub`; other users can't open the database. Don't run it as root while the hub is stopped, because files root creates next to the database lock the hub out. The tools that store destination keys need `TENDER_ENCRYPTION_KEY` in the client's environment, and `send_test_email` needs the `TENDER_SMTP_` variables, all from `/etc/tender/hub.env`. Without them those tools say what is missing.
+Run it as the `tender` user, which owns `/var/lib/tender/hub`. The hub must have run once on the same version, so the database has the current schema. The tools that store destination keys need `TENDER_ENCRYPTION_KEY`, and `send_test_email` needs the `TENDER_SMTP_` variables. [Connect an AI client](guides/connect-an-ai-client.md#connect-over-stdio-on-the-hub-machine) explains what `sudo` and root change.
 
-Example
+#### Example
 
 ```sh
 claude mcp add tender --scope user -- sudo -u tender tender mcp --stdio
 ```
 
-The client starts the command without a terminal, so `sudo` must not ask for a password there.
+It speaks MCP's JSON-RPC on stdin and stdout, and logs errors on stderr.
 
-The command prints nothing of its own. It speaks MCP's JSON-RPC on stdin and stdout.
-
-Errors
+#### Errors
 
 1. `no database at /var/lib/tender/hub/hub.db. Run "tender hub" once to create it, or pass --database PATH.`
 2. `cannot open the hub database /var/lib/tender/hub/hub.db. Check that you can read and write it, or pass --database PATH: ...`
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ## `tender version`
 
@@ -1301,19 +1419,17 @@ REST route None. MCP tool None.
 
 Prints the version of this binary.
 
-Usage
+#### Usage
 
 ```sh
 tender version
 ```
 
-Options
+#### Options
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| None. | | | |
+None.
 
-Example
+#### Example
 
 ```sh
 tender version
@@ -1323,11 +1439,15 @@ tender version
 Tender 0.3.0
 ```
 
-Errors
+#### Errors
 
 None.
 
-REST route None. MCP tool None.
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| None | None |
 
 ## Next steps
 

@@ -1,8 +1,10 @@
 # Tender docs
 
-Everything you need to back up and watch your servers with Tender, from a first install to every API route.
+Install Tender, do one task at a time, and look up every command, route and tool.
 
 New to Tender? Start with the [quickstart](quickstart.md).
+
+The examples use a machine called `apps`, a Docker service called `web`, a destination called `r2` on Cloudflare R2, and a hub at `https://apps.your-tailnet.ts.net`. Replace them with your own.
 
 ## Get started
 
@@ -32,7 +34,3 @@ Each guide does one task.
 1. [REST API](api.md) lists every route with its parameters, examples and errors.
 2. [MCP tools](mcp.md) lists every tool, and which route each one covers.
 3. [CLI](cli.md) lists every `tender` command and option.
-
-## Examples on these pages
-
-The examples use a machine called `apps`, a Docker service called `web`, a destination called `r2` on Cloudflare R2, and a hub at `https://apps.your-tailnet.ts.net`. Replace them with your own.

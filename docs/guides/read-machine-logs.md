@@ -4,7 +4,7 @@ Print the newest entries of a machine's systemd journal, filtered by unit, prior
 
 ## Prerequisites
 
-1. A daemon on the machine, installed with Tender v0.3 or later, so it is in the `systemd-journal` group. Run `sudo tender install refresh` on an older install.
+1. A daemon on the machine, installed or updated with Tender v0.3.0 or later, so it is in the `systemd-journal` group.
 2. The `tender` command on a machine that can reach the hub.
 
 ## Read the journal
@@ -33,20 +33,11 @@ Print the newest entries of a machine's systemd journal, filtered by unit, prior
    2026-11-15T11:27:13.000000000Z tenderd.service backup took 41s, longer than usual.
    ```
 
-The filters are:
-
-| Option | What it keeps |
-| --- | --- |
-| `--unit UNIT` | Only this systemd unit, such as `tenderd` or `nginx.service`. |
-| `--priority P` | Only this priority and the more severe ones: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. |
-| `--since D` | Only entries from this far back, such as `30m`, `1h` or `7d`. At most `7d`. |
-| `--lines N` | How many of the newest entries, from 1 to 2000. The default is 200. |
-
-The output stops at 256 KiB and drops the oldest lines past it.
+`--lines` sets how many entries, up to 2000, and `--since` goes back at most `7d`. The output stops at 256 KiB and drops the oldest lines past it. The [CLI reference](../cli.md#tender-logs) lists every priority and option.
 
 ## Read it again later
 
-The hub keeps each read as an action for 1 hour.
+The hub keeps each read as an action, and keeps its output for 1 hour after it finished.
 
 1. List the machine's actions:
 
@@ -72,15 +63,15 @@ The hub keeps each read as an action for 1 hour.
    2026-11-15T11:27:13.000000000Z tenderd.service backup took 41s, longer than usual.
    ```
 
-After an hour, `actions show` says the logs were cleared. The row stays, so you can still see who read what and when.
+After that hour, `actions show` says the logs were cleared. The action stays in the list, so you can still see what was read and when.
 
 > [!WARNING]
 > The journal can hold secrets that services print. Anyone who can reach the hub can read it, so keep the hub private. An AI client that reads logs sends them to its model provider.
 
 ## If it fails
 
-1. `Could not read the machine's logs: journalctl is not installed on this machine` means the machine has no systemd journal, so Tender can't read logs there.
-2. Output with only the daemon's own entries means it isn't in the `systemd-journal` group yet. Run `sudo tender install refresh` on the machine.
+1. `Could not read the machine's logs: journalctl is not installed on this machine, so Tender can't read its logs.` means the machine has no systemd journal.
+2. `apps has no logs.` for a unit you know writes to the journal usually means the daemon isn't in the `systemd-journal` group yet. Run `sudo tender install refresh` on the machine.
 
 ## Next steps
 

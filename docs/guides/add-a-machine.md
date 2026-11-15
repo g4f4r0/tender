@@ -2,7 +2,7 @@
 
 Back up and watch another server with the hub you already run.
 
-This guide adds a machine called `db`. Replace it with your machine's name.
+The examples add a machine called `apps`. Use each new machine's own name.
 
 ## Prerequisites
 
@@ -12,41 +12,43 @@ This guide adds a machine called `db`. Replace it with your machine's name.
 
 ## Add it
 
-1. From any machine that can reach the hub, add the machine:
+1. From any machine that can reach the hub, add the machine, and copy the token it prints:
 
    ```sh
-   tender machines add db
+   tender machines add apps
    ```
 
    ```text
-   Added machine db.
+   Added machine apps.
 
    Its hub token, shown only now. Save it before you go on:
      <token>
    ```
 
-2. Copy the token.
-
-3. Set its schedule and retention:
+2. Set its schedule and retention:
 
    ```sh
-   tender backups set db --destination r2 --schedule "0 4 * * *" --retention-days 14
+   tender backups set apps --destination r2 --schedule "0 4 * * *" --retention-days 14
    ```
 
    ```text
-   db backs up to r2 at "0 4 * * *" (UTC) and keeps 14 days.
+   apps backs up to r2 at "0 4 * * *" (UTC) and keeps 14 days.
    ```
 
-4. On the new machine, install the daemon:
+3. On the new machine, install the daemon:
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- daemon \
-     --hub https://apps.your-tailnet.ts.net --machine db
+     --hub https://apps.your-tailnet.ts.net --machine apps
    ```
 
-5. Paste the token when it asks. Typing is hidden.
+4. Paste the token when it asks. Typing is hidden.
 
-6. Check that the machine reports:
+   ```text
+   The daemon is running. It gets its destination, schedule and keys from the hub. Next:
+   ```
+
+5. Check that the machine reports:
 
    ```sh
    tender machines list
@@ -55,7 +57,6 @@ This guide adds a machine called `db`. Replace it with your machine's name.
    ```text
    NAME   LAST SEEN   MEMORY   DISK
    apps   just now    15%      28%
-   db     just now    9%       41%
    ```
 
 The first backup starts within a minute. The next ones follow the schedule.

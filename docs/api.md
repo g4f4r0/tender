@@ -14,9 +14,9 @@ The hub's REST API does everything the `tender` command and the MCP tools do, ov
 
 People and their tools send no token in this version. Anyone who can reach the hub can call every route below, so keep the hub on your tailnet or behind your own access control. See [Security](security.md).
 
-The hub refuses requests that a web page sends through a browser from another site, and requests for a host name it doesn't answer to. Both get `403`.
+The hub refuses a browser request from another website that would change something, and a request for a host name it doesn't answer to. Both get `403`. [Security](security.md#the-hub-has-no-login) lists the names it answers to.
 
-Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, and another machine's token gets `403`. People never need a token, and should send no `Authorization` header: on a route both may call, the hub treats a request with one as a daemon's.
+Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, another machine's token gets `403`, and a machine that doesn't exist gets `404`. People never need a token, and should send no `Authorization` header: on a route both may call, the hub treats a request with one as a daemon's.
 
 ### Requests and responses
 
@@ -26,7 +26,7 @@ Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, 
 4. A request body is one JSON value of at most 1 MiB, and a larger one gets `413`. A field the route doesn't know is `400`, and a field of the wrong type is `422`.
 5. A collection answers `{"data": [...]}`. A paged collection takes `limit`, from 1 to 500 with a default of 50, and adds `next_cursor` when there are more. Pass it as `cursor` for the next page. The last page has no `next_cursor`.
 6. A create answers `201 Created` with the new object and its address in the `Location` header.
-7. `PATCH` takes a JSON Merge Patch. Send `Content-Type: application/merge-patch+json`. Fields you leave out stay as they are.
+7. `PATCH` takes a JSON object with only the fields to change. The hub reads it as JSON whatever its `Content-Type`, so `application/merge-patch+json` and `application/json` both work. A field you leave out, or set to `null`, stays as it is.
 8. A `DELETE` answers `204 No Content`.
 
 ### Errors
@@ -49,11 +49,11 @@ A route that doesn't exist answers `404`, and a method a route doesn't take answ
 
 ### Idempotency
 
-Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempotency-Key` header run once. A retry with the same key within 24 hours gets the first answer again, and the same key on another route gets `422`. The hub ignores the header on people's requests.
+Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempotency-Key` header run once. A retry with the same key within 24 hours gets the first answer's status and body again, and the same key on another route gets `422`. The hub ignores the header on people's requests.
 
 ### Actions
 
-Starting, stopping and restarting a service and reading logs happen on the machine, so `POST /v1/machines/{machine}/actions` answers `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. An action nobody picks up fails after 15 minutes.
+Starting, stopping and restarting a service and reading logs happen on the machine, so `POST /v1/machines/{machine}/actions` answers `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. An action nobody picks up fails 15 minutes after it was queued. [Services](services.md#how-actions-reach-a-machine) explains the steps.
 
 ## Machines
 
@@ -109,7 +109,11 @@ Content-Type: application/json
 | --- | --- |
 | `500` | The hub failed to read its database. |
 
-MCP tool `list_machines`. CLI command `tender machines list`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_machines` | `tender machines list` |
 
 ### `POST /v1/machines`
 
@@ -121,7 +125,7 @@ Install the daemon on the machine with this token. The hub stores only its SHA-2
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, up to 63 characters. |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 
 #### Example request
 
@@ -153,9 +157,13 @@ Location: /v1/machines/apps
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
 | `409` | A machine with this name already exists. |
-| `422` | The name isn't lowercase letters, digits and hyphens, up to 63 characters. |
+| `422` | The name isn't lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 
-MCP tool `add_machine`. CLI command `tender machines add apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `add_machine` | `tender machines add apps` |
 
 ### `GET /v1/machines/{machine}`
 
@@ -203,7 +211,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist. |
 
-MCP tool `list_machines`. CLI command `tender machines list`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_machines` | `tender machines list` |
 
 ### `DELETE /v1/machines/{machine}`
 
@@ -236,14 +248,18 @@ HTTP/1.1 204 No Content
 | --- | --- |
 | `404` | The machine doesn't exist. |
 
-MCP tool `remove_machine`. CLI command `tender machines remove apps --yes`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_machine` | `tender machines remove apps --yes` |
 
 ### `POST /v1/machines/{machine}/token`
 
 Replaces a machine's token and returns the new one, shown only this once.
 
 > [!WARNING]
-> The old token stops working at once, so the daemon stays offline until you install the new one with `sudo tender install daemon --token-file PATH`.
+> The old token stops working at once, so the daemon stays offline and stops backing up until you install the new one with `sudo tender install daemon --token-file PATH`.
 
 #### Parameters
 
@@ -274,7 +290,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist. |
 
-MCP tool `rotate_machine_token`. CLI command `tender machines rotate-token apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `rotate_machine_token` | `tender machines rotate-token apps` |
 
 ### `GET /v1/machines/{machine}/usage`
 
@@ -334,7 +354,11 @@ Content-Type: application/json
 | `400` | `since` or `until` isn't an RFC 3339 time, `limit` isn't from 1 to 500, or `cursor` isn't valid. |
 | `404` | The machine doesn't exist. |
 
-MCP tool `get_machine_usage`. CLI command None. `tender machines list` shows the latest memory and disk.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_machine_usage` | None. `tender machines list` shows the latest memory and disk. |
 
 ## Backups
 
@@ -377,7 +401,7 @@ Content-Type: application/json
           "created_at": "2026-11-15T11:27:26Z",
           "updated_at": "2026-11-15T11:27:26Z"
         },
-        "schedule": "* * * * *",
+        "schedule": "30 3 * * *",
         "retention_days": 30,
         "created_at": "2026-11-15T11:27:38Z",
         "updated_at": "2026-11-15T11:27:38Z"
@@ -422,7 +446,11 @@ Content-Type: application/json
 | --- | --- |
 | `500` | The hub failed to read its database. |
 
-MCP tool `get_backup_status`. CLI command `tender backups status`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_backup_status` | `tender backups status` |
 
 ### `GET /v1/machines/{machine}/backups`
 
@@ -459,7 +487,7 @@ Content-Type: application/json
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
     },
-    "schedule": "* * * * *",
+    "schedule": "30 3 * * *",
     "retention_days": 30,
     "created_at": "2026-11-15T11:27:38Z",
     "updated_at": "2026-11-15T11:27:38Z"
@@ -502,7 +530,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist. |
 
-MCP tool `get_backup_status`. CLI command `tender backups status apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_backup_status` | `tender backups status apps` |
 
 ### `GET /v1/machines/{machine}/backups/settings`
 
@@ -539,7 +571,7 @@ Content-Type: application/json
     "created_at": "2026-11-15T11:27:26Z",
     "updated_at": "2026-11-15T11:27:26Z"
   },
-  "schedule": "* * * * *",
+  "schedule": "30 3 * * *",
   "retention_days": 30,
   "created_at": "2026-11-15T11:27:38Z",
   "updated_at": "2026-11-15T11:27:38Z"
@@ -553,7 +585,11 @@ Content-Type: application/json
 | `404` | The machine doesn't exist. |
 | `404` | The machine has no backup settings yet. This problem's `type` is `https://github.com/g4f4r0/tender#no-backup-settings`, so a client can tell it apart. |
 
-MCP tool `get_backup_status`. CLI command `tender backups status apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_backup_status` | `tender backups status apps` |
 
 ### `PUT /v1/machines/{machine}/backups/settings`
 
@@ -610,7 +646,11 @@ Content-Type: application/json
 | `404` | The machine doesn't exist. |
 | `422` | The schedule isn't a 5-field cron expression, `retention_days` is below 1, or the destination doesn't exist. |
 
-MCP tool `set_backup`. CLI command `tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-days 30`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_backup` | `tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-days 30` |
 
 ### `DELETE /v1/machines/{machine}/backups/settings`
 
@@ -642,7 +682,11 @@ HTTP/1.1 204 No Content
 | --- | --- |
 | `404` | The machine doesn't exist, or has no backup settings. |
 
-MCP tool `unset_backup`. CLI command `tender backups unset apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `unset_backup` | `tender backups unset apps` |
 
 ### `GET /v1/machines/{machine}/backups/snapshots`
 
@@ -704,7 +748,11 @@ Content-Type: application/json
 | `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
 | `404` | The machine doesn't exist. |
 
-MCP tool `list_backup_snapshots`. CLI command None. `tender backups status apps` shows the count.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_backup_snapshots` | None. `tender backups status apps` shows the count. |
 
 ### `GET /v1/machines/{machine}/backups/snapshots/{id}`
 
@@ -747,7 +795,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist, or it has no snapshot with this id. |
 
-MCP tool `list_backup_snapshots`. CLI command None.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_backup_snapshots` | None. |
 
 ### `GET /v1/machines/{machine}/backups/history`
 
@@ -810,7 +862,11 @@ Content-Type: application/json
 | `404` | The machine doesn't exist. |
 | `422` | `type` or `status` isn't one of its values. |
 
-MCP tool `list_backup_history`. CLI command None. `tender backups status apps` shows the last backup.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_backup_history` | None. `tender backups status apps` shows the last backup. |
 
 ### `GET /v1/machines/{machine}/backups/history/{id}`
 
@@ -852,7 +908,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist, or it has no run with this id. |
 
-MCP tool `list_backup_history`. CLI command None.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_backup_history` | None. |
 
 ## Destinations
 
@@ -900,19 +960,23 @@ Content-Type: application/json
 | --- | --- |
 | `500` | The hub failed to read its database. |
 
-MCP tool `list_destinations`. CLI command `tender destinations list`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_destinations` | `tender destinations list` |
 
 ### `POST /v1/backups/destinations`
 
 Adds a destination. Without a password, the hub makes one and returns it this once.
 
-`password` appears in the response only when the hub made it. Save it in a password manager. Without it nobody can restore the backups, and it can't change later. The CLI asks for the keys with typing hidden, which keeps them out of your shell history.
+`password` appears in the response only when the hub made it. Save it in a password manager; [Backups](backups.md#encryption-and-the-repository-password) explains why. The CLI asks for the keys with typing hidden, which keeps them out of your shell history.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, up to 63 characters. |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 | `type` | string | No | Body. `s3`, the only type and the default. |
 | `endpoint` | string | Yes | Body. The S3 endpoint URL, such as `https://<account-id>.r2.cloudflarestorage.com`. |
 | `bucket` | string | Yes | Body. The bucket's name. |
@@ -957,7 +1021,11 @@ Location: /v1/backups/destinations/r2
 | `409` | A destination with this name, or with this endpoint, bucket and path, already exists. |
 | `422` | The name isn't valid, the type isn't `s3`, the endpoint isn't an http or https URL, or the bucket or a key is missing. |
 
-MCP tool `add_destination`. CLI command `tender destinations add r2 --endpoint URL --bucket my-backups --path tender`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `add_destination` | `tender destinations add r2 --endpoint URL --bucket my-backups --path tender` |
 
 ### `GET /v1/backups/destinations/{destination}`
 
@@ -999,7 +1067,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The destination doesn't exist. |
 
-MCP tool `list_destinations`. CLI command `tender destinations list`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_destinations` | `tender destinations list` |
 
 ### `PATCH /v1/backups/destinations/{destination}`
 
@@ -1053,7 +1125,11 @@ Content-Type: application/json
 | `409` | Another destination already uses the new endpoint, bucket and path. |
 | `422` | The body has `password`, or sets the endpoint, bucket or a key to an empty string, or the endpoint isn't an http or https URL. |
 
-MCP tool `update_destination`. CLI command None.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `update_destination` | None. |
 
 ### `DELETE /v1/backups/destinations/{destination}`
 
@@ -1087,7 +1163,11 @@ HTTP/1.1 204 No Content
 | `404` | The destination doesn't exist. |
 | `409` | A machine still backs up to it. Delete those machines' backup settings first. |
 
-MCP tool `remove_destination`. CLI command `tender destinations remove r2`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_destination` | `tender destinations remove r2` |
 
 ## Notifications
 
@@ -1097,7 +1177,7 @@ A notification is an alert about a machine, its backups or a service, and the em
 
 Lists every machine's notifications, newest first.
 
-A notification is `pending` until its email goes out, `sent` while the problem lasts and `resolved` once it is gone. `service` is `null` for an alert that isn't about one service.
+A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-alert-works) explains. `service` is `null` for an alert that isn't about one service.
 
 #### Parameters
 
@@ -1156,7 +1236,11 @@ Content-Type: application/json
 | `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
 | `422` | `status` or `severity` isn't one of its values. |
 
-MCP tool `list_notifications`. CLI command `tender status`, which shows the open ones.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_notifications` | `tender status`, which shows the open ones. |
 
 ### `GET /v1/machines/{machine}/notifications`
 
@@ -1221,7 +1305,11 @@ Content-Type: application/json
 | `404` | The machine doesn't exist. |
 | `422` | `status` or `severity` isn't one of its values. |
 
-MCP tool `list_notifications`. CLI command `tender status`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_notifications` | `tender status` |
 
 ### `GET /v1/machines/{machine}/notifications/{id}`
 
@@ -1265,7 +1353,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist, or it has no notification with this id. |
 
-MCP tool `list_notifications`. CLI command None.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_notifications` | None. |
 
 ### `GET /v1/notifications/recipients`
 
@@ -1305,7 +1397,11 @@ Content-Type: application/json
 | --- | --- |
 | `500` | The hub failed to read its database. |
 
-MCP tool `list_recipients`. CLI command `tender recipients list`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_recipients` | `tender recipients list` |
 
 ### `POST /v1/notifications/recipients`
 
@@ -1348,7 +1444,11 @@ Location: /v1/notifications/recipients/1
 | `409` | The address is already a recipient, in any letter case. |
 | `422` | The value isn't one bare email address. |
 
-MCP tool `add_recipient`. CLI command `tender recipients add ops@example.com`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `add_recipient` | `tender recipients add ops@example.com` |
 
 ### `GET /v1/notifications/recipients/{id}`
 
@@ -1386,7 +1486,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | No recipient has this id. |
 
-MCP tool `get_recipient`. CLI command None. `tender recipients list` shows every recipient.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_recipient` | None. `tender recipients list` shows every recipient. |
 
 ### `DELETE /v1/notifications/recipients/{id}`
 
@@ -1416,7 +1520,11 @@ HTTP/1.1 204 No Content
 | --- | --- |
 | `404` | No recipient has this id. |
 
-MCP tool `remove_recipient`. CLI command `tender recipients remove ops@example.com`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_recipient` | `tender recipients remove ops@example.com` |
 
 ### `POST /v1/notifications/test`
 
@@ -1452,9 +1560,13 @@ Content-Type: application/json
 | Status | When |
 | --- | --- |
 | `422` | Email is off on this hub, or there are no recipients. |
-| `502` | The SMTP server refused the email. The detail has its answer. |
+| `502` | The hub couldn't send the email, such as when the SMTP server is unreachable, refuses the login or refuses the email. The detail has the reason. |
 
-MCP tool `send_test_email`. CLI command `tender email test`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `send_test_email` | `tender email test` |
 
 ## Services
 
@@ -1521,13 +1633,17 @@ Content-Type: application/json
 | --- | --- |
 | `500` | The hub failed to read its database. |
 
-MCP tool `list_services`. CLI command `tender services list`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_services` | `tender services list` |
 
 ### `GET /v1/machines/{machine}/services`
 
 Lists one machine's services, by name.
 
-`memory_bytes`, `memory_limit_bytes` and `cpu_percent` are `null` for a stopped container. `memory_limit_bytes` is also `null` without a limit, and `cpu_percent` on a service's first report, where 100 is one whole CPU.
+`cpu_percent` is where 100 is one whole CPU. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
 
 #### Parameters
 
@@ -1603,7 +1719,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist. |
 
-MCP tool `list_services`. CLI command `tender services list apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_services` | `tender services list apps` |
 
 ### `GET /v1/machines/{machine}/services/{service}`
 
@@ -1657,13 +1777,17 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist, or it has no service with this name. |
 
-MCP tool `list_services`. CLI command `tender services list apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_services` | `tender services list apps` |
 
 ### `PATCH /v1/machines/{machine}/services/{service}`
 
 Turns a service's alerts off or on. Turning them off resolves its open alerts.
 
-The setting belongs to the service's name, so it stays when the container is made again.
+The setting follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
 #### Parameters
 
@@ -1718,7 +1842,11 @@ Content-Type: application/json
 | `404` | The machine doesn't exist, or it has no service with this name. |
 | `422` | `alerts_enabled` isn't a boolean. |
 
-MCP tool `set_service_alerts`. CLI command `tender services alerts apps web off`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_service_alerts` | `tender services alerts apps web off` |
 
 ## Actions
 
@@ -1731,7 +1859,7 @@ Queues an action for the machine's daemon and answers at once with the action as
 To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 200}`. Logs output is at most 256 KiB, dropping the oldest lines past it.
 
 > [!WARNING]
-> A `stop` takes the service offline until something starts it again. Logs can hold secrets. The hub returns them only on `GET .../actions/{id}`, clears them 1 hour after the action finishes, and never puts them in alerts or emails.
+> A `stop` takes the service offline until something starts it again. Logs can hold secrets. The hub returns them only on `GET .../actions/{id}`, clears them 1 hour after the action finishes, and never puts them in alerts or emails. See [Security](security.md#logs-can-hold-secrets).
 
 #### Parameters
 
@@ -1783,9 +1911,13 @@ Location: /v1/machines/apps/actions/14
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
 | `404` | The machine doesn't exist, or it has no service with this name. |
-| `422` | The type isn't one of the four, a service action has no service or has a logs field, or a logs field is out of range. |
+| `422` | The type isn't one of the four, a service action has no service or has a logs field, a service's logs action has `unit` or `priority`, or a logs field isn't valid. |
 
-MCP tool `start_service`, `stop_service`, `restart_service`, `get_service_logs` or `get_machine_logs`. CLI command `tender services start|stop|restart|logs apps web`, or `tender logs apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `start_service`, `stop_service`, `restart_service`, `get_service_logs` or `get_machine_logs` | `tender services start\|stop\|restart\|logs apps web`, or `tender logs apps` |
 
 ### `GET /v1/machines/{machine}/actions`
 
@@ -1866,7 +1998,11 @@ Content-Type: application/json
 | `400` | The request has `wait`, which only the machine's daemon may send. |
 | `404` | The machine doesn't exist. |
 
-MCP tool `list_actions`. CLI command `tender actions list apps`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_actions` | `tender actions list apps` |
 
 ### `GET /v1/machines/{machine}/actions/{id}`
 
@@ -1916,7 +2052,11 @@ Content-Type: application/json
 | --- | --- |
 | `404` | The machine doesn't exist, or it has no action with this id. |
 
-MCP tool `get_action`. CLI command `tender actions show apps 8`.
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_action` | `tender actions show apps 8` |
 
 ## Daemon routes
 

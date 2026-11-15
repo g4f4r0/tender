@@ -30,7 +30,7 @@ Restart, stop or start a Docker container on any machine, and read its logs, fro
    Restarted web on apps.
    ```
 
-The command waits up to 60 seconds for the daemon. If the daemon hasn't finished by then, the command says so with the action's id, and the action still runs when the daemon picks it up within 15 minutes. Check on it with `tender actions show apps ID`.
+The command waits up to 60 seconds for the daemon. If the daemon hasn't finished by then, the command prints the action's id, and the action still runs if the daemon picks it up within 15 minutes of being queued. Check on it with `tender actions show apps ID`.
 
 ## Stop and start a service
 
@@ -79,13 +79,13 @@ The command waits up to 60 seconds for the daemon. If the daemon hasn't finished
    ```
 
    ```text
-   2026-11-15T11:28:12.483912Z web listening on :3000
+   2026-11-15T11:28:12.339011345Z web listening on :3000
    ```
 
-2. Ask for more with `--lines`, up to 2000. The output stops at 256 KiB and drops the oldest lines past it.
+`--lines` asks for up to 2000 lines. The output stops at 256 KiB and drops the oldest lines past it.
 
 > [!WARNING]
-> Logs can hold secrets. The hub clears them 1 hour after they were read and never puts them in alerts or emails. See [Security](../security.md#logs-can-hold-secrets).
+> Logs can hold secrets. The hub clears them 1 hour after the action finished and never puts them in alerts or emails. See [Security](../security.md#logs-can-hold-secrets).
 
 ## Next steps
 

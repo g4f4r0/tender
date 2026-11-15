@@ -2,7 +2,7 @@
 
 Restore files from a machine's backups with restic, on any Linux machine, with or without Tender.
 
-`tender restore` is coming. Until then, you restore with restic directly, because Tender's backups are plain restic repositories.
+Tender has no restore command yet. You restore with restic directly, because Tender's backups are plain restic repositories.
 
 ## Prerequisites
 
@@ -45,8 +45,8 @@ Restore files from a machine's backups with restic, on any Linux machine, with o
    ```
 
    ```text
-   restoring snapshot 4f2c9a1e of [/] at 2026-11-15 03:30:12.418093312 +0000 UTC by root@apps to /root/restore
-   Summary: Restored 46 / 42 files/dirs (88.120 KiB / 88.120 KiB) in 0:00
+   restoring snapshot 4f2c9a1e of [/] at 2026-11-15 03:30:12.418093312 +0000 UTC by tender@apps to /root/restore
+   Summary: Restored 46 files/dirs (88.120 KiB) in 0:00
    ```
 
 4. Compare the restored files with the live ones, then copy back what you need:
@@ -54,6 +54,8 @@ Restore files from a machine's backups with restic, on any Linux machine, with o
    ```sh
    sudo diff -r /root/restore/etc/nginx /etc/nginx
    ```
+
+   `diff` prints nothing when the folders match, and each changed line when they don't.
 
 > [!WARNING]
 > Restore into an empty folder, like `/root/restore`, and copy back what you need. Restoring over a running system can break it.

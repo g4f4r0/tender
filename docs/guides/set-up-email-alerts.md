@@ -18,6 +18,10 @@ Send alert emails through your SMTP server to everyone who should hear when a ba
 
 2. Type the SMTP password when it asks. Typing is hidden.
 
+   ```text
+   The hub is running at https://apps.your-tailnet.ts.net.
+   ```
+
 The installer keeps the hub's key and every other setting, writes the SMTP settings to `/etc/tender/hub.env` and restarts the hub. To read the password from a file instead, add `--smtp-password-file PATH`.
 
 ## Add recipients

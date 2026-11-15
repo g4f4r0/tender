@@ -9,44 +9,18 @@ The hub serves 29 MCP tools at `/mcp`, so an AI client can do everything a perso
 
 ## Connect a client
 
-Add the hub to Claude Code for every project:
-
-```sh
-claude mcp add --transport http tender https://apps.your-tailnet.ts.net/mcp --scope user
-```
-
-To connect for one session only, save this as `tender-mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "tender": {
-      "type": "http",
-      "url": "https://apps.your-tailnet.ts.net/mcp"
-    }
-  }
-}
-```
-
-Then pass the file when you start Claude Code:
-
-```sh
-claude --mcp-config tender-mcp.json
-```
-
-On the hub machine, a client can run the tools as a local process with `tender mcp --stdio`. It reads and writes the hub's database directly, so the hub must have run once. Run it as the `tender` user, which owns `/var/lib/tender/hub`, for example with `sudo -u tender tender mcp --stdio`; other users can't open the database. Don't run it as root while the hub is stopped, because files root creates next to the database lock the hub out. The tools that store destination keys need `TENDER_ENCRYPTION_KEY` in the client's environment, and `send_test_email` needs the `TENDER_SMTP_` variables, all from `/etc/tender/hub.env`. Without them, those tools say what is missing.
-
-[Connect an AI client](guides/connect-an-ai-client.md) walks through both, step by step.
+The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp`. On the hub machine, a client can also run `tender mcp --stdio` as a local process. [Connect an AI client](guides/connect-an-ai-client.md) sets up both.
 
 ## How the tools behave
 
 1. Every result is JSON. It comes as `structuredContent` and as the same JSON in a text block, for clients that read only text. A list is `{"data": [...]}`, with `next_cursor` when there is another page.
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
-3. Each tool carries MCP annotations. `readOnlyHint` marks the tools that only read. `destructiveHint` marks the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` marks the ones you can call again with the same input without changing anything more. Only `send_test_email` reaches outside the hub, so only it has `openWorldHint` set.
-4. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs` and `get_machine_logs`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. It stays queued for 15 minutes and runs when the daemon picks it up. Check it later with `get_action`.
-5. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-6. No tool returns bucket keys or repository passwords. The only secrets a tool returns are the ones made for you, shown once: a new machine token, and a destination password the hub generated.
-7. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
+3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
+4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_email`, which sends email, sets it to `true`.
+5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs` and `get_machine_logs`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. It still runs if the daemon picks it up within 15 minutes of being queued. Check it later with `get_action`.
+6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
+7. No tool returns bucket keys or repository passwords. The only secrets a tool returns are the ones made for you, shown once: a new machine token, and a destination password the hub generated.
+8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
 
@@ -99,7 +73,11 @@ The routes only a machine's daemon calls with its token, such as usage reports a
 
 Lists every machine that reports to this hub, with its latest usage reading.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -150,13 +128,19 @@ None besides the hub's own failure.
 
 #### Covers
 
-REST routes `GET /v1/machines` and `GET /v1/machines/{machine}`. CLI command `tender machines list`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines` and `GET /v1/machines/{machine}` | `tender machines list` |
 
 ### `get_machine_usage`
 
 Gets one machine's usage readings, newest first, optionally between two times. The daemon sends one a minute.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -220,19 +204,27 @@ At most 500 readings a page.
 
 #### Covers
 
-REST route `GET /v1/machines/{machine}/usage`. CLI command `tender machines list`, which shows the latest reading only.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines/{machine}/usage` | `tender machines list`, which shows the latest reading only. |
 
 ### `add_machine`
 
 Adds a machine to the hub and returns its token, shown only this once.
 
-Changes data. Not idempotent: a second call with the same name fails.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `false` |
+
+A second call with the same name fails.
 
 #### Inputs
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes | The new machine's name: lowercase letters, digits and hyphens, up to 63 characters. |
+| `name` | string | Yes | The new machine's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 
 #### Returns
 
@@ -267,16 +259,24 @@ None.
 
 #### Covers
 
-REST route `POST /v1/machines`. CLI command `tender machines add NAME`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines` | `tender machines add NAME` |
 
 ### `rotate_machine_token`
 
 Replaces a machine's token and returns the new one, shown only this once.
 
-Destructive, because it cuts the machine's daemon off at once. Not idempotent: each call makes a new token.
-
 > [!WARNING]
-> The old token stops working at once. The machine's daemon can't report or back up with new settings until the new token is installed on it with `sudo tender install daemon --token-file PATH`.
+> The old token stops working at once. The machine's daemon can't report or back up until the new token is installed on it with `sudo tender install daemon --token-file PATH`.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `false` | `false` |
+
+It is destructive because it cuts the machine's daemon off at once. Each call makes a new token.
 
 #### Inputs
 
@@ -311,16 +311,22 @@ None.
 
 #### Covers
 
-REST route `POST /v1/machines/{machine}/token`. CLI command `tender machines rotate-token NAME`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/token` | `tender machines rotate-token NAME` |
 
 ### `remove_machine`
 
 Removes a machine and everything the hub knows about it: usage, backup settings, snapshots, history, services, actions and notifications.
 
-Destructive and idempotent.
-
 > [!WARNING]
 > This can't be undone. The machine's token stops working, so its daemon can no longer report. Its backups in the bucket stay where they are.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
 
 #### Inputs
 
@@ -355,7 +361,9 @@ None.
 
 #### Covers
 
-REST route `DELETE /v1/machines/{machine}`. CLI command `tender machines remove NAME --yes`.
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/machines/{machine}` | `tender machines remove NAME --yes` |
 
 ## Backups
 
@@ -363,7 +371,11 @@ REST route `DELETE /v1/machines/{machine}`. CLI command `tender machines remove 
 
 Gets the backup state of one machine, or of every machine when you leave `machine` out.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -446,13 +458,19 @@ None.
 
 #### Covers
 
-REST routes `GET /v1/backups`, `GET /v1/machines/{machine}/backups` and `GET /v1/machines/{machine}/backups/settings`. CLI command `tender backups status [MACHINE]`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/backups`, `GET /v1/machines/{machine}/backups` and `GET /v1/machines/{machine}/backups/settings` | `tender backups status [MACHINE]` |
 
 ### `list_backup_snapshots`
 
 Lists one machine's restic snapshots, newest first.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -503,13 +521,19 @@ At most 500 snapshots a page.
 
 #### Covers
 
-REST routes `GET /v1/machines/{machine}/backups/snapshots` and `GET /v1/machines/{machine}/backups/snapshots/{id}`. CLI command `tender backups status MACHINE`, which shows the snapshot count only.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines/{machine}/backups/snapshots` and `GET /v1/machines/{machine}/backups/snapshots/{id}` | `tender backups status MACHINE`, which shows the snapshot count only. |
 
 ### `list_backup_history`
 
 Lists one machine's backup, cleanup and check runs, newest first, optionally of one type or status.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -573,13 +597,19 @@ At most 500 runs a page.
 
 #### Covers
 
-REST routes `GET /v1/machines/{machine}/backups/history` and `GET /v1/machines/{machine}/backups/history/{id}`. CLI command `tender backups status MACHINE`, which shows the last backup only.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines/{machine}/backups/history` and `GET /v1/machines/{machine}/backups/history/{id}` | `tender backups status MACHINE`, which shows the last backup only. |
 
 ### `set_backup`
 
 Sets where, when and for how long a machine's backups are kept. It replaces any earlier settings.
 
-Changes data. Idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
 
 #### Inputs
 
@@ -592,7 +622,7 @@ Changes data. Idempotent.
 
 #### Returns
 
-The settings: `destination` (without its keys), `schedule`, `retention_days` and the timestamps. A daemon without settings picks them up within 30 seconds. A daemon that already has settings checks for changes every 10 minutes.
+The settings, with `destination` (without its keys), `schedule`, `retention_days` and the timestamps. A daemon without settings picks them up within 30 seconds. A daemon that already has settings checks for changes every 10 minutes.
 
 #### Limits
 
@@ -634,13 +664,19 @@ None.
 
 #### Covers
 
-REST route `PUT /v1/machines/{machine}/backups/settings`. CLI command `tender backups set MACHINE --destination NAME --schedule CRON --retention-days N`.
+| REST route | CLI command |
+| --- | --- |
+| `PUT /v1/machines/{machine}/backups/settings` | `tender backups set MACHINE --destination NAME --schedule CRON --retention-days N` |
 
 ### `unset_backup`
 
 Removes a machine's backup settings, so it stops backing up. Its snapshots and history stay.
 
-Destructive and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
 
 #### Inputs
 
@@ -675,7 +711,9 @@ None.
 
 #### Covers
 
-REST route `DELETE /v1/machines/{machine}/backups/settings`. CLI command `tender backups unset MACHINE`.
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/machines/{machine}/backups/settings` | `tender backups unset MACHINE` |
 
 ## Destinations
 
@@ -683,7 +721,11 @@ REST route `DELETE /v1/machines/{machine}/backups/settings`. CLI command `tender
 
 Lists the places backups go, by name.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -728,22 +770,29 @@ None besides the hub's own failure.
 
 #### Covers
 
-REST routes `GET /v1/backups/destinations` and `GET /v1/backups/destinations/{destination}`. CLI command `tender destinations list`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/backups/destinations` and `GET /v1/backups/destinations/{destination}` | `tender destinations list` |
 
 ### `add_destination`
 
 Adds a place to send backups: an S3-compatible bucket, such as Cloudflare R2. Each machine gets its own folder in it.
 
-Changes data. Not idempotent: a second call with the same name fails.
+The keys and the password you pass go through the AI conversation, and so to the client's model provider. For real keys, run `tender destinations add` instead, which asks for them with typing hidden. The hub stores them encrypted, and no tool, route or log shows them again.
 
-> [!WARNING]
-> The keys and the password you pass go through the AI conversation, and so to the client's model provider. For real keys, run `tender destinations add` instead, which asks for them with typing hidden. The hub stores them encrypted, and no tool, route or log shows them again.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `false` |
+
+A second call with the same name fails.
 
 #### Inputs
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | string | Yes | The new destination's name: lowercase letters, digits and hyphens, up to 63 characters. |
+| `name` | string | Yes | The new destination's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
 | `type` | string | No | Only `s3`, the default, for any S3-compatible bucket. |
 | `endpoint` | string | Yes | The S3 endpoint URL, such as `https://<account-id>.r2.cloudflarestorage.com`. |
 | `bucket` | string | Yes | The bucket's name. |
@@ -804,16 +853,21 @@ None.
 
 #### Covers
 
-REST route `POST /v1/backups/destinations`. CLI command `tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH]`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/backups/destinations` | `tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH]` |
 
 ### `update_destination`
 
 Changes a destination's endpoint, bucket, path or keys. Anything you leave out stays as it is.
 
-Changes data. Idempotent.
+New keys you pass go through the AI conversation. The password can't change, because every repository at the destination is encrypted with it.
 
-> [!WARNING]
-> New keys you pass go through the AI conversation. The password can't change, because every repository at the destination is encrypted with it.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
 
 #### Inputs
 
@@ -866,16 +920,22 @@ None.
 
 #### Covers
 
-REST route `PATCH /v1/backups/destinations/{destination}`. CLI command none; the CLI can't change a destination yet.
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/backups/destinations/{destination}` | None. The CLI can't change a destination yet. |
 
 ### `remove_destination`
 
 Removes a destination that no machine backs up to.
 
-Destructive and idempotent.
-
 > [!WARNING]
 > The hub forgets the destination's keys and password. The backups already in the bucket stay there, so keep the password in your password manager to restore them.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
 
 #### Inputs
 
@@ -910,7 +970,9 @@ None.
 
 #### Covers
 
-REST route `DELETE /v1/backups/destinations/{destination}`. CLI command `tender destinations remove NAME`.
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/backups/destinations/{destination}` | `tender destinations remove NAME` |
 
 ## Notifications
 
@@ -918,7 +980,11 @@ REST route `DELETE /v1/backups/destinations/{destination}`. CLI command `tender 
 
 Lists alerts, newest first, optionally of one machine, status or severity.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -932,7 +998,7 @@ Read-only and idempotent.
 
 #### Returns
 
-`data`, the notifications, each with `id`, `machine` (`null` for an alert about the hub itself), `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence) and the timestamps. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) lists the types.
+`data`, the notifications, each with `id`, `machine`, `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence) and the timestamps. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) explains the statuses and lists the types.
 
 #### Limits
 
@@ -974,13 +1040,19 @@ At most 500 notifications a page.
 
 #### Covers
 
-REST routes `GET /v1/notifications`, `GET /v1/machines/{machine}/notifications` and `GET /v1/machines/{machine}/notifications/{id}`. CLI command `tender status`, which shows the open alerts.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/notifications`, `GET /v1/machines/{machine}/notifications` and `GET /v1/machines/{machine}/notifications/{id}` | `tender status`, which shows the open alerts. |
 
 ### `list_recipients`
 
 Lists the email addresses that get every alert email, in the order they were added.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -1021,13 +1093,19 @@ None besides the hub's own failure.
 
 #### Covers
 
-REST route `GET /v1/notifications/recipients`. CLI command `tender recipients list`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/notifications/recipients` | `tender recipients list` |
 
 ### `get_recipient`
 
 Gets one recipient by id.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -1066,13 +1144,21 @@ None.
 
 #### Covers
 
-REST route `GET /v1/notifications/recipients/{id}`. CLI command `tender recipients list`, which shows every recipient.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/notifications/recipients/{id}` | `tender recipients list`, which shows every recipient. |
 
 ### `add_recipient`
 
 Adds an email address that gets every alert email from now on.
 
-Changes data. Not idempotent: a second call with the same address fails.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `false` |
+
+A second call with the same address fails.
 
 #### Inputs
 
@@ -1112,13 +1198,19 @@ None.
 
 #### Covers
 
-REST route `POST /v1/notifications/recipients`. CLI command `tender recipients add EMAIL`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/notifications/recipients` | `tender recipients add EMAIL` |
 
 ### `remove_recipient`
 
 Removes a recipient by id, so they stop getting alert emails.
 
-Destructive and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
 
 #### Inputs
 
@@ -1152,13 +1244,21 @@ None.
 
 #### Covers
 
-REST route `DELETE /v1/notifications/recipients/{id}`. CLI command `tender recipients remove EMAIL`, which takes the address instead of the id.
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/notifications/recipients/{id}` | `tender recipients remove EMAIL`, which takes the address instead of the id. |
 
 ### `send_test_email`
 
 Sends the test email to every recipient, to check that alert emails arrive.
 
-Changes nothing on the hub, but sends email, so it reaches outside the hub. Not idempotent: each call sends again.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `true` |
+
+It changes nothing on the hub, but it sends email, which reaches outside the hub. Each call sends again.
 
 #### Inputs
 
@@ -1192,7 +1292,9 @@ None.
 
 #### Covers
 
-REST route `POST /v1/notifications/test`. CLI command `tender email test`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/notifications/test` | `tender email test` |
 
 ## Services
 
@@ -1200,7 +1302,11 @@ REST route `POST /v1/notifications/test`. CLI command `tender email test`.
 
 Lists the Docker containers each machine's daemon reports once a minute, for every machine or one.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -1210,7 +1316,7 @@ Read-only and idempotent.
 
 #### Returns
 
-`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its Docker doesn't answer, or `null` before any report) and `data`, its services. Each service is one container, by its container name, with `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender` and the timestamps. Usage is from the latest report and `null` while the service is stopped. `cpu_percent` is also `null` on a service's first report. [Services](services.md) explains each field.
+`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its Docker doesn't answer, or `null` before any report) and `data`, its services. Each service is one container, by its container name, with `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender` and the timestamps. Usage is from the latest report. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
 
 #### Limits
 
@@ -1285,13 +1391,19 @@ None. A machine without Docker has no services.
 
 #### Covers
 
-REST routes `GET /v1/services`, `GET /v1/machines/{machine}/services` and `GET /v1/machines/{machine}/services/{service}`. CLI command `tender services list [MACHINE]`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/services`, `GET /v1/machines/{machine}/services` and `GET /v1/machines/{machine}/services/{service}` | `tender services list [MACHINE]` |
 
 ### `set_service_alerts`
 
 Turns alerts on or off for one service. Alerts are on for every new service.
 
-Changes data. Idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
 
 #### Inputs
 
@@ -1303,7 +1415,7 @@ Changes data. Idempotent.
 
 #### Returns
 
-The service, as `list_services` shows it. With alerts off, its open alerts resolve within a minute. The switch follows the service's name, so it stays when the container is made again.
+The service, as `list_services` shows it. With alerts off, the hub resolves its open alerts at its next check, once any resolved email owed has gone out. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
 #### Limits
 
@@ -1349,17 +1461,23 @@ None.
 
 #### Covers
 
-REST route `PATCH /v1/machines/{machine}/services/{service}`. CLI command `tender services alerts MACHINE SERVICE on|off`.
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/machines/{machine}/services/{service}` | `tender services alerts MACHINE SERVICE on\|off` |
 
 ## Actions
 
-The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart` or `logs`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's last 100 actions.
+The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart` or `logs`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's last 100 actions.
 
 ### `start_service`
 
 Starts a stopped service through the daemon on its machine. Starting a running service changes nothing.
 
-Changes data. Idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
 
 #### Inputs
 
@@ -1411,16 +1529,22 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 
 #### Covers
 
-REST routes `POST /v1/machines/{machine}/actions` with `{"type": "start", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}`. CLI command `tender services start MACHINE SERVICE`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` with `{"type": "start", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services start MACHINE SERVICE` |
 
 ### `stop_service`
 
 Stops a running service through the daemon on its machine, with the container's own stop timeout.
 
-Destructive and idempotent.
-
 > [!WARNING]
 > Whatever the service serves goes offline until it is started again. A service Tender stopped doesn't alert as down, so nobody gets an email about it.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
 
 #### Inputs
 
@@ -1472,16 +1596,24 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 
 #### Covers
 
-REST routes `POST /v1/machines/{machine}/actions` with `{"type": "stop", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}`. CLI command `tender services stop MACHINE SERVICE`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` with `{"type": "stop", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services stop MACHINE SERVICE` |
 
 ### `restart_service`
 
 Restarts a service through the daemon on its machine.
 
-Destructive. Not idempotent: each call restarts it again.
-
 > [!WARNING]
 > Whatever the service serves is offline while it restarts.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `false` | `false` |
+
+Each call restarts the service again.
 
 #### Inputs
 
@@ -1533,16 +1665,24 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 
 #### Covers
 
-REST routes `POST /v1/machines/{machine}/actions` with `{"type": "restart", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}`. CLI command `tender services restart MACHINE SERVICE`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` with `{"type": "restart", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services restart MACHINE SERVICE` |
 
 ### `get_service_logs`
 
 Gets a service's newest lines of output, stdout and stderr together, each line starting with Docker's timestamp.
 
-Read-only and idempotent. It changes nothing on the machine, though the hub records the read as an action.
-
 > [!WARNING]
 > Logs can hold secrets, and the result goes to the client's model provider. Ask for the fewest lines you need. The hub clears the output 1 hour after the action finished, and logs never go into alerts or emails.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+It changes nothing on the machine, but the hub records the read as an action, which counts toward the last 100 it keeps.
 
 #### Inputs
 
@@ -1555,7 +1695,7 @@ Read-only and idempotent. It changes nothing on the machine, though the hub reco
 
 #### Returns
 
-The action, with the logs in `output`, the oldest line first. After an hour, `output` is `null` and `output_cleared` is `true`.
+The action, with the logs in `output`, the oldest line first. An hour after the action finished, `output` is `null` and `output_cleared` is `true`.
 
 #### Limits
 
@@ -1597,16 +1737,24 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
 
 #### Covers
 
-REST routes `POST /v1/machines/{machine}/actions` with `{"type": "logs", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}`. CLI command `tender services logs MACHINE SERVICE [--lines N] [--since D]`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` with `{"type": "logs", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services logs MACHINE SERVICE [--lines N] [--since D]` |
 
 ### `get_machine_logs`
 
 Gets the newest entries of a machine's systemd journal, which the daemon reads with `journalctl`. Each line has the time in UTC, the unit or program, and the message.
 
-Read-only and idempotent. It changes nothing on the machine, though the hub records the read as an action.
-
 > [!WARNING]
 > The journal can hold secrets that services print, and the result goes to the client's model provider. Filter by `unit`, `priority` and `since` to get only what you need. The hub clears the output 1 hour after the action finished, and logs never go into alerts or emails.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+It changes nothing on the machine, but the hub records the read as an action, which counts toward the last 100 it keeps.
 
 #### Inputs
 
@@ -1620,7 +1768,7 @@ Read-only and idempotent. It changes nothing on the machine, though the hub reco
 
 #### Returns
 
-The action, with the journal in `output`, the oldest entry first. After an hour, `output` is `null` and `output_cleared` is `true`.
+The action, with the journal in `output`, the oldest entry first. An hour after the action finished, `output` is `null` and `output_cleared` is `true`.
 
 #### Limits
 
@@ -1663,13 +1811,19 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
 
 #### Covers
 
-REST routes `POST /v1/machines/{machine}/actions` with `{"type": "logs"}` and no `service`, then `GET /v1/machines/{machine}/actions/{id}`. CLI command `tender logs MACHINE [--unit UNIT] [--priority P] [--since D] [--lines N]`.
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` with `{"type": "logs"}` and no `service`, then `GET /v1/machines/{machine}/actions/{id}` | `tender logs MACHINE [--unit UNIT] [--priority P] [--since D] [--lines N]` |
 
 ### `get_action`
 
 Gets one action on a machine by id, with its output. Use it to check an action that was still `pending` or `in_progress` when a tool stopped waiting.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -1721,13 +1875,19 @@ An action that never finished shows the status `failed` with the `output` `the d
 
 #### Covers
 
-REST route `GET /v1/machines/{machine}/actions/{id}`. CLI command `tender actions show MACHINE ID`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines/{machine}/actions/{id}` | `tender actions show MACHINE ID` |
 
 ### `list_actions`
 
 Lists a machine's last 100 actions, newest first, without their output.
 
-Read-only and idempotent.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
@@ -1792,7 +1952,9 @@ The hub keeps the last 100 actions per machine. The list isn't paged.
 
 #### Covers
 
-REST route `GET /v1/machines/{machine}/actions`. CLI command `tender actions list MACHINE`.
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/machines/{machine}/actions` | `tender actions list MACHINE` |
 
 ## Next steps
 

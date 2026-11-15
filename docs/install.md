@@ -19,7 +19,7 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
      --smtp-host smtp.example.com --smtp-from "Tender <alerts@example.com>" --smtp-username alerts@example.com
    ```
 
-   The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. It writes `/etc/tender/hub.env` with a new encryption key, starts the `tenderhub` service and publishes the hub on your tailnet. It ends with:
+   The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. It writes `/etc/tender/hub.env` with a new encryption key, starts the `tenderhub` service and publishes the hub on your tailnet. It prints the hub's address:
 
    ```text
    The hub is running at https://apps.your-tailnet.ts.net.
@@ -27,7 +27,7 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
    Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
    ```
 
-2. Copy `/etc/tender/hub.env` to your password manager or another safe place:
+2. Print `/etc/tender/hub.env` and save it in your password manager or another safe place:
 
    ```sh
    sudo cat /etc/tender/hub.env
@@ -49,9 +49,9 @@ The hub reads its settings from `/etc/tender/hub.env`. After editing the file by
 | `TENDER_SMTP_USERNAME` | None. | The SMTP login, for servers that ask for one. |
 | `TENDER_SMTP_PASSWORD` | None. | The SMTP password. |
 | `TENDER_SMTP_FROM` | None. | The sender, such as `Tender <alerts@example.com>`. |
-| `TENDER_LISTEN` | `127.0.0.1:8080` | Where the hub listens. |
+| `TENDER_LISTEN` | `127.0.0.1:8080` | Where the hub listens. The `tenderhub` service may bind only port 8080, so change the address, not the port. |
 | `TENDER_HOSTS` | None. | More names the hub answers to, comma-separated, such as `tender.example.com` behind your own proxy. |
-| `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database. |
+| `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database. The `tenderhub` service can write only under `/var/lib/tender/hub`. |
 
 ## Add a machine and its token
 
@@ -85,7 +85,7 @@ Keep the token for the next step. If you lose it, run `tender machines rotate-to
 
 2. Paste the token when it asks. Typing is hidden.
 
-   The installer checks the token with the hub before it changes anything. It installs restic, creates the `tender` user, finds the filesystems to back up, writes `/etc/tender/daemon.toml` and starts the `tenderd` service. It ends with:
+   The installer installs `/usr/local/bin/tender`, then checks the token with the hub before it sets up anything else. It installs restic, creates the `tender` user, finds the filesystems to back up, writes `/etc/tender/daemon.toml` and starts the `tenderd` service. It prints:
 
    ```text
    The daemon is running. It gets its destination, schedule and keys from the hub. Next:
@@ -103,7 +103,7 @@ The daemon reaches Docker through `/var/run/docker.sock` as a member of the `doc
 > [!WARNING]
 > The `docker` group is root-equivalent: whoever can use Docker's socket controls the whole machine. Tender's daemon uses it only to list, start, stop and restart containers and to read their logs and usage. Anyone who can reach the hub can ask it to do the same, so keep the hub private.
 
-The `systemd-journal` group can read every unit's logs, which can hold secrets. The hub clears logs an hour after they are read. See [Security](security.md#logs-can-hold-secrets).
+The `systemd-journal` group can read every unit's logs, which can hold secrets. See [Security](security.md#logs-can-hold-secrets).
 
 If you install Docker after Tender, add the group to the daemon:
 
@@ -111,15 +111,30 @@ If you install Docker after Tender, add the group to the daemon:
 sudo tender install refresh
 ```
 
-## Update Tender
-
-On each machine, run:
-
-```sh
-sudo tender update
+```text
+Restarted tenderd
 ```
 
-`update` checks and installs the latest release, then refreshes and restarts what Tender runs on the machine. Add `--version v0.3.0` for a specific release. Update the hub first, then the daemons.
+## Update Tender
+
+Update the hub first, then the daemons.
+
+1. On each machine, run:
+
+   ```sh
+   sudo tender update
+   ```
+
+   ```text
+   Updating Tender 0.2.2 to v0.3.0
+   Downloaded Tender v0.3.0 and checked it against the release checksums
+   Installed Tender v0.3.0 at /usr/local/bin/tender
+   Restarted tenderd
+
+   Updated to Tender v0.3.0.
+   ```
+
+`update` installs the latest release, then runs `tender install refresh` to rewrite and restart what Tender runs on the machine. Add `--version v0.3.0` for a specific release.
 
 ## Uninstall
 
@@ -132,13 +147,16 @@ sudo tender update
    tender machines remove apps --yes
    ```
 
-2. On the machine, stop the daemon and delete its files:
+   ```text
+   Removed machine apps and its history. Its backups stay in the destination.
+   ```
+
+2. On each machine with a daemon, stop it and delete its files, restic and its cache:
 
    ```sh
    sudo systemctl disable --now tenderd
-   sudo rm -rf /etc/systemd/system/tenderd.service /etc/tender/daemon.toml /etc/tender/credentials /var/lib/tender/daemon
+   sudo rm -rf /etc/systemd/system/tenderd.service /etc/tender/daemon.toml /etc/tender/credentials /var/lib/tender/daemon /var/cache/tender /usr/local/bin/restic
    sudo systemctl daemon-reload
-   sudo userdel tender
    ```
 
 3. On the hub machine, stop the hub, stop publishing it and delete its files:
@@ -150,10 +168,11 @@ sudo tender update
    sudo systemctl daemon-reload
    ```
 
-4. On each machine, delete the binaries once nothing else uses them:
+4. On each machine, once neither service runs there, delete the `tender` user, the binary and the empty folders:
 
    ```sh
-   sudo rm /usr/local/bin/tender /usr/local/bin/restic
+   sudo userdel tender
+   sudo rm -rf /usr/local/bin/tender /etc/tender /var/lib/tender
    ```
 
 ## Where things live
@@ -161,12 +180,13 @@ sudo tender update
 | Path | What it holds |
 | --- | --- |
 | `/usr/local/bin/tender` | The Tender binary. |
-| `/usr/local/bin/restic` | restic 0.19.1, checked against its official SHA-256. |
+| `/usr/local/bin/restic` | restic 0.19.1, checked against its official SHA-256, on machines with a daemon. |
 | `/etc/tender/hub.env` | The hub's encryption key and email settings, readable only by root. |
 | `/etc/tender/daemon.toml` | The daemon's hub, machine name, backup paths and excludes. |
 | `/etc/tender/credentials/hub-token` | The daemon's token, readable only by root and `tender`. |
 | `/var/lib/tender/hub/hub.db` | The hub's database. |
 | `/var/lib/tender/daemon/` | The daemon's state, its last settings and any reports waiting for the hub. |
+| `/var/cache/tender/` | restic's cache for the daemon's backups. |
 
 ## Next steps
 
