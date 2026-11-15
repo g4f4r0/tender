@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,12 +39,15 @@ type Daemon struct {
 	Log     *slog.Logger
 	Every   time.Duration // between reports, a minute; also the wait before polling again after an error
 
-	poll    *client.Client // Hub, with room for the long poll
-	report  chan struct{}  // asks for a report now, after an action changed a container
-	found   chan struct{}  // Docker became reachable, so the action loop can start polling
-	reached atomic.Bool    // the last report reached Docker
-	problem string         // the last Docker problem logged, so it is logged once
-	hubErr  string         // the last hub error logged, so it is logged once
+	poll *client.Client // Hub, with room for the long poll
+	// turn lets one report (list and PUT) or one action (run and PATCH) go at a time, so a report
+	// can't carry a state read before an action and reach the hub after the action's result.
+	turn    sync.Mutex
+	report  chan struct{} // asks for a report now, after an action changed a container
+	found   chan struct{} // Docker became reachable, so the action loop can start polling
+	reached atomic.Bool   // the last report reached Docker
+	problem string        // the last Docker problem logged, so it is logged once
+	hubErr  string        // the last hub error logged, so it is logged once
 	pollErr string
 }
 
@@ -91,6 +95,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // answer, it tells the hub Docker is unreachable. Otherwise it logs once why it can't list them
 // and sends nothing: a machine without Docker has no services.
 func (d *Daemon) reportNow(ctx context.Context) {
+	d.turn.Lock()
+	defer d.turn.Unlock()
 	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	list, err := d.Docker.Containers(lctx)
 	cancel()
@@ -184,6 +190,21 @@ func (d *Daemon) runActions(ctx context.Context) {
 
 // run does one action and reports how it ended. The output, which may be logs, is never logged.
 func (d *Daemon) run(ctx context.Context, a Action) {
+	status := d.finish(ctx, a)
+	// A report after a change shows the new state at once. Not after a failure: the report would
+	// remove a container that is gone, and its actions with it, before the result is read.
+	if a.Type != TypeLogs && status == StatusCompleted {
+		select {
+		case d.report <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// finish does one action and tells the hub how it ended, in its turn, and returns the status.
+func (d *Daemon) finish(ctx context.Context, a Action) string {
+	d.turn.Lock()
+	defer d.turn.Unlock()
 	actx, cancel := context.WithTimeout(ctx, actionTimeout)
 	var output string
 	var err error
@@ -227,14 +248,7 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 	if err != nil {
 		d.Log.Error("could not tell the hub how a service action ended", "id", a.ID, "type", a.Type, "error", err)
 	}
-	// A report after a change shows the new state at once. Not after a failure: the report would
-	// remove a container that is gone, and its actions with it, before the result is read.
-	if a.Type != TypeLogs && p.Status == StatusCompleted {
-		select {
-		case d.report <- struct{}{}:
-		default:
-		}
-	}
+	return p.Status
 }
 
 // failure says why an action failed, as one sentence.

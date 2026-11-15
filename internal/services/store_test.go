@@ -268,6 +268,77 @@ func TestActions(t *testing.T) {
 	}
 }
 
+// stopped_by_tender clears when a Tender start or restart completes, when the service runs again,
+// and when its container is made again or started outside Tender.
+func TestStoppedByTender(t *testing.T) {
+	s := NewStore(newDB(t))
+	ctx := context.Background()
+	first := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	exited := func(id string, started time.Time) ServiceInput {
+		in := running("web", id)
+		in.State, in.ExitCode, in.StartedAt = StateExited, ptr(int64(0)), &started
+		return in
+	}
+	up := running("web", "c1")
+	up.StartedAt = &first
+	if _, err := s.Replace(ctx, 1, []ServiceInput{up}); err != nil {
+		t.Fatal(err)
+	}
+	act := func(typ string) {
+		t.Helper()
+		a, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: typ})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Take(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, 1, a.ID, ActionPatch{Status: StatusCompleted}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flag := func() bool {
+		t.Helper()
+		sv, err := s.Get(ctx, 1, "web")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sv.StoppedByTender
+	}
+	report := func(in ServiceInput) {
+		t.Helper()
+		if _, err := s.Replace(ctx, 1, []ServiceInput{in}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	act(TypeStop)
+	report(exited("c1", first))
+	if !flag() {
+		t.Fatal("a completed stop didn't mark the service")
+	}
+	for _, typ := range []string{TypeStart, TypeRestart} {
+		act(TypeStop)
+		act(typ)
+		if flag() {
+			t.Errorf("still stopped_by_tender after a completed %s", typ)
+		}
+		report(exited("c1", first))
+	}
+
+	act(TypeStop)
+	report(exited("c2", first))
+	if flag() {
+		t.Error("still stopped_by_tender after the container was made again")
+	}
+
+	act(TypeStop)
+	report(exited("c2", first.Add(time.Hour)))
+	if flag() {
+		t.Error("still stopped_by_tender after the container was started outside Tender")
+	}
+}
+
 func TestWait(t *testing.T) {
 	s := NewStore(newDB(t))
 	ctx := context.Background()

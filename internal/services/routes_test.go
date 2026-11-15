@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -288,6 +289,52 @@ func TestDaemon(t *testing.T) {
 	}
 	if !strings.Contains(daemonLogs.String(), "service action finished") {
 		t.Errorf("daemon log:\n%s", daemonLogs.String())
+	}
+}
+
+// A report whose list was read before a stop must not reach the hub after the stop's result, or
+// it would show the service running and clear stopped_by_tender: reports and actions take turns.
+func TestDaemonReportsAndActionsTakeTurns(t *testing.T) {
+	h := newTestHub(t)
+	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", Image: "nginx", State: "running", StartedAt: "2026-11-15T09:00:00Z"})
+	s := NewStore(h.db)
+	ctx := context.Background()
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "aaa")}); err != nil {
+		t.Fatal(err)
+	}
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// The report's inspect of web answers "running", then waits until released.
+	inspected, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.setHold(func(r *http.Request) {
+		if r.URL.Path == "/containers/aaa/json" {
+			once.Do(func() { close(inspected); <-release })
+		}
+	})
+	reported := make(chan struct{})
+	go func() { d.reportNow(ctx); close(reported) }()
+	<-inspected
+
+	stop, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken, err := s.Take(ctx, 1)
+	if err != nil || len(taken) != 1 || taken[0].ID != stop.ID {
+		t.Fatalf("take = %+v, %v", taken, err)
+	}
+	ran := make(chan struct{})
+	go func() { d.run(ctx, taken[0]); close(ran) }()
+	time.Sleep(300 * time.Millisecond)
+	if slices.Contains(f.called(), "POST /containers/web/stop") {
+		t.Error("the stop ran while a report was being made")
+	}
+	close(release)
+	<-reported
+	<-ran
+	if sv, err := s.Get(ctx, 1, "web"); err != nil || !sv.StoppedByTender {
+		t.Errorf("after the stop: %+v, %v; want stopped_by_tender", sv, err)
 	}
 }
 

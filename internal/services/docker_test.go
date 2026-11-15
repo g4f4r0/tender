@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,6 +35,15 @@ type fakeDocker struct {
 	byName map[string]*fakeContainer
 	order  []string
 	calls  []string
+	// hold, when set, runs after the answer to a request is made and before it is sent, so a
+	// test can deliver a snapshot late.
+	hold func(r *http.Request)
+}
+
+func (f *fakeDocker) setHold(h func(r *http.Request)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hold = h
 }
 
 func newFakeDocker(t *testing.T, cs ...*fakeContainer) *fakeDocker {
@@ -95,8 +106,20 @@ func (f *fakeDocker) find(ref string) *fakeContainer {
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rec := httptest.NewRecorder()
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.serve(rec, r)
+	hold := f.hold
+	f.mu.Unlock()
+	if hold != nil {
+		hold(r)
+	}
+	maps.Copy(w.Header(), rec.Header())
+	w.WriteHeader(rec.Code)
+	_, _ = w.Write(rec.Body.Bytes())
+}
+
+func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, r.Method+" "+r.URL.RequestURI())
 	notFound := func(ref string) {
 		w.WriteHeader(http.StatusNotFound)

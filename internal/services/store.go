@@ -200,7 +200,8 @@ func streak(holds bool, n int) int {
 
 // Replace makes in the machine's full service list, from a report that Docker is running, as the daemon reports it: it adds new
 // services, updates the others and deletes the ones that are gone, with their actions. A service
-// keeps its alert switch. stopped_by_tender clears once the service runs again.
+// keeps its alert switch. stopped_by_tender clears once the service runs again, or its container
+// is made again or started since (a new container_id or started_at).
 func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput) ([]Service, error) {
 	names := make([]string, 0, len(in))
 	seen := map[string]bool{}
@@ -277,7 +278,8 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 			 ON CONFLICT (machine_id, name) DO UPDATE SET project = excluded.project, container_id = excluded.container_id,
 			   image = excluded.image, state = excluded.state, health = excluded.health, exit_code = excluded.exit_code,
 			   restart_count = excluded.restart_count, restart_policy = excluded.restart_policy, started_at = excluded.started_at,
-			   stopped_by_tender = CASE WHEN excluded.state = 'running' THEN 0 ELSE services.stopped_by_tender END,
+			   stopped_by_tender = CASE WHEN excluded.state = 'running' OR excluded.container_id != services.container_id
+			     OR excluded.started_at IS NOT services.started_at THEN 0 ELSE services.stopped_by_tender END,
 			   down_reports = excluded.down_reports, restarting_reports = excluded.restarting_reports,
 			   unhealthy_reports = excluded.unhealthy_reports, updated_at = excluded.updated_at`,
 			machineID, sv.Name, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, sv.RestartPolicy, started,
@@ -482,7 +484,8 @@ func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, s
 }
 
 // Finish stores how an in_progress action ended. A completed stop marks the service
-// stopped_by_tender, so it doesn't alert as down until it runs again.
+// stopped_by_tender, so it doesn't alert as down until it runs again; a completed start or restart
+// clears it.
 func (s *Store) Finish(ctx context.Context, machineID, id int64, p ActionPatch) error {
 	if p.Status != StatusCompleted && p.Status != StatusFailed {
 		return server.Invalid("status must be completed or failed.")
@@ -510,8 +513,9 @@ func (s *Store) Finish(ctx context.Context, machineID, id int64, p ActionPatch) 
 		p.Status, p.Output, now, id); err != nil {
 		return err
 	}
-	if typ == TypeStop && p.Status == StatusCompleted {
-		if _, err := tx.ExecContext(ctx, `UPDATE services SET stopped_by_tender = 1, updated_at = ? WHERE id = ?`, now, serviceID); err != nil {
+	if typ != TypeLogs && p.Status == StatusCompleted {
+		if _, err := tx.ExecContext(ctx, `UPDATE services SET stopped_by_tender = ?, updated_at = ? WHERE id = ?`,
+			typ == TypeStop, now, serviceID); err != nil {
 			return err
 		}
 	}
