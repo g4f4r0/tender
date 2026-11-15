@@ -35,7 +35,7 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
 
    Its key decrypts the bucket keys and passwords the hub stores. The hub won't start without the same key.
 
-Leave out the `--smtp-` options to start without email. Run the command again with them later; it keeps the key and every setting you don't pass. To install a specific release, put `TENDER_VERSION=v0.3.0` before `sh`.
+Leave out the `--smtp-` options to start without email. Run the command again with them later; it keeps the key and every setting you don't pass, and removes one you pass empty, as [`tender install hub`](cli.md#tender-install-hub) explains. To install a specific release, put `TENDER_VERSION=v0.3.0` before `sh`.
 
 ### Hub settings
 
@@ -49,9 +49,9 @@ The hub reads its settings from `/etc/tender/hub.env`. After editing the file by
 | `TENDER_SMTP_USERNAME` | None. | The SMTP login, for servers that ask for one. |
 | `TENDER_SMTP_PASSWORD` | None. | The SMTP password. |
 | `TENDER_SMTP_FROM` | None. | The sender, such as `Tender <alerts@example.com>`. |
-| `TENDER_LISTEN` | `127.0.0.1:8080` | Where the hub listens. The `tenderhub` service may bind only port 8080, so change the address, not the port. |
+| `TENDER_LISTEN` | `127.0.0.1:8080` | Where the hub listens, as an address with a port. The installer writes the port into the `tenderhub` service as `SocketBindAllow=tcp:PORT`, the only port the hub may bind, so run `sudo tender install refresh` after changing it. The installer stops before changing anything when the address has no port. |
 | `TENDER_HOSTS` | None. | More names the hub answers to, comma-separated, such as `tender.example.com` behind your own proxy. |
-| `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database. The `tenderhub` service can write only under `/var/lib/tender/hub`. |
+| `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database. The `tenderhub` service can write only under `/var/lib/tender/hub`, and the hub refuses at startup a database path it can't write. Keep the database there, or allow its folder with `ReadWritePaths=` in a drop-in made with `sudo systemctl edit tenderhub`. |
 
 ## Add a machine and its token
 

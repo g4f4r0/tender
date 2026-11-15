@@ -23,7 +23,7 @@ Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, 
 1. Every route is under `/v1`. `GET /v1/health` answers `{"status": "ok"}` while the hub can reach its database, and `503` when it can't.
 2. JSON fields have the same names as the database columns, such as `retention_days` and `created_at`.
 3. Times are RFC 3339 in UTC, such as `2026-11-15T11:27:26Z`.
-4. A request body is one JSON value of at most 1 MiB, and a larger one gets `413`. A field the route doesn't know is `400`, and a field of the wrong type is `422`.
+4. A request body is one JSON object of at most 1 MiB, and a larger one gets `413`. A field the route doesn't know is `400`, and a field of the wrong type is `422`. JSON that isn't an object, such as `[]`, gets `422` with `The request body must be a JSON object.`
 5. A collection answers `{"data": [...]}`. A paged collection takes `limit`, from 1 to 500 with a default of 50, and adds `next_cursor` when there are more. Pass it as `cursor` for the next page. The last page has no `next_cursor`.
 6. A create answers `201 Created` with the new object and its address in the `Location` header.
 7. `PATCH` takes a JSON object with only the fields to change. The hub reads it as JSON whatever its `Content-Type`, so `application/merge-patch+json` and `application/json` both work. A field you leave out, or set to `null`, stays as it is.
@@ -49,11 +49,11 @@ A route that doesn't exist answers `404`, and a method a route doesn't take answ
 
 ### Idempotency
 
-Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempotency-Key` header run once. A retry with the same key within 24 hours gets the first answer's status and body again, and the same key on another route gets `422`. The hub ignores the header on people's requests.
+Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempotency-Key` header run once. A retry with the same key within 24 hours gets the first answer again: its status, body, `Location` and `Content-Type`. An empty `204` is stored and replayed too. The same key on another route gets `422`. The hub ignores the header on people's requests.
 
 ### Actions
 
-Starting, stopping and restarting a service and reading logs happen on the machine, so `POST /v1/machines/{machine}/actions` answers `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. An action nobody picks up fails 15 minutes after it was queued. [Services](services.md#how-actions-reach-a-machine) explains the steps.
+Starting, stopping and restarting a service and reading logs happen on the machine, so `POST /v1/machines/{machine}/actions` answers `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. [Services](services.md#how-actions-reach-a-machine) explains the steps, and when an action fails because the daemon didn't pick it up or didn't say how it ended.
 
 ## Machines
 
@@ -1177,7 +1177,7 @@ A notification is an alert about a machine, its backups or a service, and the em
 
 Lists every machine's notifications, newest first.
 
-A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-alert-works) explains. `service` is `null` for an alert that isn't about one service.
+A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-alert-works) explains. `machine` is the machine the alert is about, and `service` is `null` for an alert that isn't about one service.
 
 #### Parameters
 
@@ -1220,7 +1220,7 @@ Content-Type: application/json
       "type": "docker_unreachable",
       "severity": "critical",
       "status": "resolved",
-      "content": "Docker on apps is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.",
+      "content": "Docker on apps can't be reached: its socket refuses connections, so Docker is stopped. Its services' states are unknown until it is back.",
       "created_at": "2026-11-15T11:32:35Z",
       "updated_at": "2026-11-15T11:34:35Z"
     }
@@ -1288,7 +1288,7 @@ Content-Type: application/json
       "type": "docker_unreachable",
       "severity": "critical",
       "status": "resolved",
-      "content": "Docker on apps is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.",
+      "content": "Docker on apps can't be reached: its socket refuses connections, so Docker is stopped. Its services' states are unknown until it is back.",
       "created_at": "2026-11-15T11:32:35Z",
       "updated_at": "2026-11-15T11:34:35Z"
     }
@@ -1576,7 +1576,7 @@ A service is a Docker container on a machine, as the machine's daemon reported i
 
 Lists every machine's services, by machine, with whether its Docker answers.
 
-`docker` is `running` or `unreachable`, from the latest report, or `null` before the first. While Docker is unreachable every `state` is `unknown`.
+`docker` is `running` or `unreachable`, from the latest report, or `null` before the first. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each service.
 
 #### Parameters
 
@@ -1599,6 +1599,7 @@ Content-Type: application/json
     {
       "machine": "apps",
       "docker": "running",
+      "docker_reason": null,
       "data": [
         {
           "id": 3,
@@ -1618,6 +1619,7 @@ Content-Type: application/json
           "cpu_percent": 12.5,
           "alerts_enabled": true,
           "stopped_by_tender": false,
+          "removed_at": null,
           "created_at": "2026-11-15T11:27:27Z",
           "updated_at": "2026-11-15T11:36:35Z"
         }
@@ -1666,6 +1668,7 @@ Content-Type: application/json
 {
   "machine": "apps",
   "docker": "running",
+  "docker_reason": null,
   "data": [
     {
       "id": 4,
@@ -1685,6 +1688,7 @@ Content-Type: application/json
       "cpu_percent": null,
       "alerts_enabled": true,
       "stopped_by_tender": false,
+      "removed_at": null,
       "created_at": "2026-11-15T11:27:27Z",
       "updated_at": "2026-11-15T11:36:35Z"
     },
@@ -1706,6 +1710,7 @@ Content-Type: application/json
       "cpu_percent": 12.5,
       "alerts_enabled": true,
       "stopped_by_tender": false,
+      "removed_at": null,
       "created_at": "2026-11-15T11:27:27Z",
       "updated_at": "2026-11-15T11:36:35Z"
     }
@@ -1717,7 +1722,7 @@ Content-Type: application/json
 
 | Status | When |
 | --- | --- |
-| `404` | The machine doesn't exist. |
+| `404` | The machine doesn't exist, or it was removed while the hub read its services. |
 
 #### Equivalents
 
@@ -1766,6 +1771,7 @@ Content-Type: application/json
   "cpu_percent": 12.5,
   "alerts_enabled": true,
   "stopped_by_tender": false,
+  "removed_at": null,
   "created_at": "2026-11-15T11:27:27Z",
   "updated_at": "2026-11-15T11:36:35Z"
 }
@@ -1829,6 +1835,7 @@ Content-Type: application/json
   "cpu_percent": 12.5,
   "alerts_enabled": false,
   "stopped_by_tender": false,
+  "removed_at": null,
   "created_at": "2026-11-15T11:27:27Z",
   "updated_at": "2026-11-15T11:36:35Z"
 }
@@ -1850,7 +1857,7 @@ Content-Type: application/json
 
 ## Actions
 
-An action is work for a machine's daemon: starting, stopping or restarting a service, or reading a service's logs or the machine's journal. The hub keeps each machine's last 100.
+An action is work for a machine's daemon: starting, stopping or restarting a service, or reading a service's logs or the machine's journal. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `POST /v1/machines/{machine}/actions`
 
@@ -1859,7 +1866,7 @@ Queues an action for the machine's daemon and answers at once with the action as
 To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 200}`. Logs output is at most 256 KiB, dropping the oldest lines past it.
 
 > [!WARNING]
-> A `stop` takes the service offline until something starts it again. Logs can hold secrets. The hub returns them only on `GET .../actions/{id}`, clears them 1 hour after the action finishes, and never puts them in alerts or emails. See [Security](security.md#logs-can-hold-secrets).
+> A `stop` takes the service offline until something starts it again. Logs can hold secrets. The hub returns them only on `GET .../actions/{id}`, clears them 1 hour after the action completes, and never puts them in alerts or emails. See [Security](security.md#logs-can-hold-secrets).
 
 #### Parameters
 
@@ -1911,6 +1918,7 @@ Location: /v1/machines/apps/actions/14
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
 | `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | The service was removed: Docker on the machine no longer has its container. |
 | `422` | The type isn't one of the four, a service action has no service or has a logs field, a service's logs action has `unit` or `priority`, or a logs field isn't valid. |
 
 #### Equivalents
@@ -1921,9 +1929,9 @@ Location: /v1/machines/apps/actions/14
 
 ### `GET /v1/machines/{machine}/actions`
 
-Lists a machine's last 100 actions, newest first, without their output.
+Lists a machine's actions, newest first, without their output.
 
-`output_cleared` is `true` once the hub has cleared a logs action's output.
+`output_cleared` is `true` once the hub has cleared a completed logs action's output.
 
 #### Parameters
 
@@ -2008,7 +2016,7 @@ Content-Type: application/json
 
 Returns one action with its output: the logs, or why it failed.
 
-`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a logs action's output. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message.
+`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a completed logs action's output. A failed action keeps why it failed. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message.
 
 #### Parameters
 
@@ -2069,9 +2077,9 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
 | `POST /v1/machines/{machine}/backups/history` | Records a run as it starts, or a finished run it couldn't send while the hub was down. |
 | `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |
-| `PUT /v1/machines/{machine}/services` | Replaces the machine's list of services, or says Docker is unreachable, once a minute and after each start, stop or restart. |
-| `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the next pending action, and marks it `in_progress`. |
-| `PATCH /v1/machines/{machine}/actions/{id}` | Records how an action ended, with its output. |
+| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "services": [...]}` with every container, `[]` for none, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, once a minute and after each start, stop or restart. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. |
+| `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the oldest pending action, and gets it without changing its status. |
+| `PATCH /v1/machines/{machine}/actions/{id}` | Claims an action with `{"status": "in_progress"}`, which answers `204`, or `409` when it isn't pending. Then records how it ended, with `completed` or `failed` and its `output`, which only those two take. |
 
 ## Next steps
 

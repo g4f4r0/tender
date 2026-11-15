@@ -20,6 +20,8 @@ The daemon does three kinds of runs. Each run is recorded in the machine's histo
 
 A plain `restic check` reads only the repository's structure, so it misses damaged data. The weekly check reads real data, a different random 5% each time.
 
+The daemon runs at normal priority, so its reports keep time during a run. It starts restic at nice 19, with the `SCHED_IDLE` CPU policy and the idle IO class, so a run uses only what the machine's other work leaves. The `tenderd` service's system call filter allows `setpriority`, `sched_setscheduler` and `ioprio_set` for this. On a machine that doesn't let the daemon lower a priority, restic starts at normal priority.
+
 ## What a backup covers
 
 The installer sets the backup paths to every local filesystem it finds on the machine: ext2, ext3, ext4, xfs, btrfs, vfat and f2fs. Other types, such as ZFS, network and memory filesystems, stay out unless you add their paths. Every backup leaves out:

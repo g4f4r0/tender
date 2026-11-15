@@ -45,6 +45,7 @@ The daemon runs as the `tender` system user under a systemd sandbox:
 2. It can write only to its own folder, `/var/lib/tender/daemon`, and to restic's cache, `/var/cache/tender`.
 3. On a machine with Docker, it is in the `docker` group, so it can list, start, stop and restart containers and read their logs.
 4. On a machine with systemd's journal, it is in the `systemd-journal` group, so it can read every unit's logs.
+5. It may lower a process's CPU and IO priority, which it does for restic, but without `CAP_SYS_NICE` it can't raise one. [Backups](backups.md#destinations-settings-and-runs) explains why.
 
 > [!WARNING]
 > The `docker` group is root-equivalent: whoever can use Docker's socket controls the whole machine. The daemon uses it only for the things above, but anyone who can reach the hub can ask it to. That is one more reason to keep the hub private.
@@ -56,8 +57,10 @@ The daemon keeps the last settings it got from the hub, readable only by itself,
 Service logs and the journal can hold tokens, passwords or customer data that an application printed. Tender treats them that way:
 
 1. Logs come back only as the output of the logs action that asked for them. Like every route, that output is open to anyone who can reach the hub.
-2. The hub clears the output of every logs action 1 hour after it finishes.
-3. Logs never go into the hub's or the daemon's own logs, into alerts or into emails.
+2. The hub clears the output of every completed logs action 1 hour after it finishes. A failed logs action holds why it failed, not logs, so it keeps its output.
+3. Cleared logs leave no bytes in the hub's database files, `hub.db`, `hub.db-wal` and `hub.db-shm`. The hub runs SQLite with `secure_delete`, which zeroes what a write frees, and after a pass that clears logs it empties the write-ahead log with `wal_checkpoint(TRUNCATE)`. A checkpoint that a reader holds up is tried again by the next minute's pass.
+4. The daemon never writes logs to disk. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
+5. Logs never go into the hub's or the daemon's own logs, into alerts or into emails.
 
 An AI client that reads logs sends them to its model provider. Ask for the narrowest logs you need, with `--unit`, `--priority` and `--since`.
 

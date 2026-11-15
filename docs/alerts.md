@@ -11,7 +11,7 @@ An alert is a notification with a type, a severity and a status. The severity is
 You get an email:
 
 1. When the alert opens.
-2. Each time it gets worse, such as a disk going from 90% to 95% full.
+2. The first time it gets worse, such as a disk going from 90% to 95% full. The email says it is now critical. Later rises change only the alert's severity and content, and a fall sends nothing.
 3. When it resolves.
 
 If a send fails, the hub retries at its next checks, waiting longer each time up to 10 minutes, until the email goes out. An alert that was emailed stays open until its resolved email goes out. Alerts are recorded even when there are no recipients, so `tender status` and the API still show them.
@@ -39,13 +39,15 @@ The daemon reports every Docker container once a minute. A service alert opens o
 | `service_restarting` | The service is restarting, or Docker restarted it again. | `critical` |
 | `service_unhealthy` | The service's health check fails. | `warning` |
 | `service_memory_high` | The service uses more than 90% of its container's memory limit. | `warning` |
-| `docker_unreachable` | Docker's socket is there but refuses connections or doesn't answer its ping within 5 seconds, or the daemon reached Docker since it started and now can't. | `critical` |
+| `docker_unreachable` | Two reports in a row say the daemon can't reach Docker, or the machine still reports usage but its daemon has sent no services report for 5 minutes after it had sent one. | `critical` |
 
 A service should be running when it exited with an error, or when its restart policy is `always` or `unless-stopped`. A container that exits 0 with the restart policy `no` or `on-failure`, such as a migration job, finished on purpose and doesn't alert. A service you stop with Tender doesn't alert either, until something starts it again.
 
-`service_memory_high` compares a service's memory with its container's limit only. A container without a memory limit never gets this alert. Set a limit with `mem_limit` in Compose or `--memory` in `docker run` for the services you want watched.
+`service_memory_high` compares a service's memory with its container's limit only. A container without a memory limit never gets this alert. Set a limit with `mem_limit` in Compose or `--memory` in `docker run` for the services you want watched. A report without a running service's stats, as [Services](services.md#what-a-service-is) explains, neither resolves this alert nor starts its count again.
 
-While Docker is unreachable, the machine's other service alerts neither open nor resolve. The count of reports in a row starts again once Docker answers.
+`docker_unreachable` says why in words, from the report's `docker_reason`, such as `Docker on apps can't be reached: its socket refuses connections, so Docker is stopped.` [Services](services.md#when-docker-cant-be-reached) lists the reasons. While Docker is unreachable, the machine's other service alerts neither open nor resolve. The count of reports in a row starts again once Docker answers.
+
+A removed service's alerts resolve, because its counts start again. See [Removed services](services.md#removed-services).
 
 ## Turn a service's alerts off
 
@@ -56,10 +58,10 @@ tender services alerts apps web off
 ```
 
 ```text
-Alerts for web on apps are off. Its open alerts resolve within a minute.
+Alerts for web on apps are off. Its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried.
 ```
 
-The hub resolves the service's open alerts at its next check, even while Docker is unreachable, once any resolved email owed has gone out. Turn them back on with `on`.
+This works even while Docker is unreachable. Turn them back on with `on`.
 
 ## Next steps
 

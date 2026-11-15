@@ -81,7 +81,7 @@ SEVERITY   SINCE      ALERT
 warning    just now   The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.
 ```
 
-`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer. An alert longer than 100 characters, or longer than one line, ends in `...`; its email has the whole text. With no open alerts, the list ends with `No open alerts.`
+`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed services. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. An alert longer than 100 characters, or longer than one line, ends in `...`; its email has the whole text. With no open alerts, the list ends with `No open alerts.`
 
 #### Errors
 
@@ -537,7 +537,7 @@ apps no longer backs up. Its backups stay in the destination.
 
 ## `tender services`
 
-See and control each machine's Docker services, one per container, by its container name. Start, stop, restart and logs go to the machine's daemon, and the command waits up to 60 seconds for it. If the daemon hasn't finished by then, the action still runs if the daemon picks it up within 15 minutes of being queued; check it with `tender actions show`.
+See and control each machine's Docker services, one per container, by its container name. Start, stop, restart and logs go to the machine's daemon, and the command waits up to 60 seconds for it. If the daemon hasn't finished by then, the command says what happens next from the action's status, and you check it with `tender actions show`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one fails if the daemon doesn't say how it ended within 15 minutes.
 
 ### `tender services list`
 
@@ -563,19 +563,20 @@ tender services list apps
 ```
 
 ```text
-MACHINE   SERVICE   STATE        HEALTH    MEM               CPU     RESTARTS   STARTED      ALERTS
-apps      migrate   exited (0)   -         -                 -       0          -            on
-apps      web       running      healthy   200 MiB / 1 GiB   12.5%   0          1 hour ago   on
+MACHINE   SERVICE   STATE                 HEALTH    MEM               CPU     RESTARTS   STARTED       ALERTS
+apps      migrate   exited (0)            -         -                 -       0          -             on
+apps      old-web   removed 2 hours ago   -         -                 -       0          3 hours ago   on
+apps      web       running               healthy   200 MiB / 1 GiB   12.5%   0          1 hour ago    on
 ```
 
 The columns are:
 
-1. `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped.
+1. `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped. While Docker is unreachable it is `unknown` alone. A service whose container is gone shows `removed` and when, until the hub deletes it 7 days later, as [Removed services](services.md#removed-services) explains.
 2. `MEM` is the memory it uses, with its limit when it has one.
 3. `CPU` is its use since the previous report, where 100% is one whole CPU. It shows `-` while there is no previous reading, as [Services](services.md#what-a-service-is) explains.
 4. `ALERTS` says whether the service sends alert emails.
 
-While Docker is unreachable, every state is `unknown` and the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
+While Docker is unreachable, the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
 
 #### Errors
 
@@ -618,8 +619,10 @@ Started web on apps.
 #### Errors
 
 1. `Service "web" doesn't exist on this machine.`
-2. `the daemon on apps hasn't finished within 60 seconds. Action 3 stays queued for 15 minutes and runs when the daemon picks it up. Check it with: tender actions show apps 3`
-3. `Could not start web: ...` with Docker's reason, when the action failed.
+2. `Service "web" was removed: Docker on this machine no longer has its container.`
+3. `the daemon on apps hasn't finished within 60 seconds. Action 3 is still pending: the daemon hasn't picked it up. It runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. Check it with: tender actions show apps 3`
+4. `the daemon on apps hasn't finished within 60 seconds. Action 3 is in progress: the daemon started it. The hub fails it if the daemon doesn't say how it ended within 15 minutes. Check it with: tender actions show apps 3`
+5. `Could not start web: ...` with Docker's reason, when the action failed.
 
 #### Equivalents
 
@@ -661,8 +664,9 @@ Stopped web on apps.
 #### Errors
 
 1. `Service "web" doesn't exist on this machine.`
-2. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id, as for `start`.
-3. `Could not stop web: ...` with Docker's reason, when the action failed.
+2. `Service "web" was removed: Docker on this machine no longer has its container.`
+3. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id and status, as for `start`.
+4. `Could not stop web: ...` with Docker's reason, when the action failed.
 
 #### Equivalents
 
@@ -701,8 +705,9 @@ Restarted web on apps.
 #### Errors
 
 1. `Service "web" doesn't exist on this machine.`
-2. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id, as for `start`.
-3. `Could not restart web: ...` with Docker's reason, when the action failed.
+2. `Service "web" was removed: Docker on this machine no longer has its container.`
+3. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id and status, as for `start`.
+4. `Could not restart web: ...` with Docker's reason, when the action failed.
 
 #### Equivalents
 
@@ -752,6 +757,7 @@ With no lines, it prints `web on apps has no logs.` and exits 0.
 1. `--lines must be from 1 to 2000. Run "tender services logs --help" for usage.`
 2. `--since must be a duration such as 30m, 1h or 7d, at most 7d. Run "tender services logs --help" for usage.`
 3. `Service "web" doesn't exist on this machine.`
+4. `Service "web" was removed: Docker on this machine no longer has its container.`
 
 #### Equivalents
 
@@ -785,7 +791,7 @@ tender services alerts apps web off
 ```
 
 ```text
-Alerts for web on apps are off. Its open alerts resolve within a minute.
+Alerts for web on apps are off. Its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried.
 ```
 
 #### Errors
@@ -854,11 +860,11 @@ With no matching entries, it prints `apps has no logs.` and exits 0.
 
 ## `tender actions`
 
-See what was asked of a machine's daemon: service starts, stops, restarts and logs, and reads of its journal. The hub keeps each machine's last 100.
+See what was asked of a machine's daemon: service starts, stops, restarts and logs, and reads of its journal. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `tender actions list`
 
-Lists a machine's last 100 actions, newest first, without their output.
+Lists a machine's actions, newest first, without their output.
 
 #### Usage
 
@@ -930,12 +936,14 @@ Action 6 on apps: logs of journal, unit tenderd, priority warning, since 1h, com
 2026-11-15T11:27:13.000000000Z tenderd.service backup took 41s, longer than usual.
 ```
 
-An hour after a logs action finished, its output is gone:
+An hour after a logs action completed, its output is gone, and the command says when it was cleared:
 
 ```text
-Action 6 on apps: logs of journal, unit tenderd, priority warning, since 1h, completed, asked just now.
-Its logs were cleared 1 hour after it finished, because logs can hold secrets.
+Action 6 on apps: logs of journal, unit tenderd, priority warning, since 1h, completed, asked 2 hours ago.
+Its logs were cleared 1 hour ago: the hub keeps logs only for a while after they are read, because logs can hold secrets.
 ```
+
+A failed action shows why it failed instead, such as `The daemon restarted before the hub had these logs, and it never keeps logs on disk. Ask for them again.`
 
 #### Errors
 
@@ -1113,7 +1121,7 @@ Set up this machine. Every `install` command needs root. Most people run them th
 
 ### `tender install hub`
 
-Installs and starts the hub on this machine, then publishes it on your tailnet with Tailscale Serve. Running it again keeps the encryption key and every setting you don't pass.
+Installs and starts the hub on this machine, then publishes it on your tailnet with Tailscale Serve. Running it again keeps the encryption key and every setting whose option you leave out. An option passed empty removes its setting from `/etc/tender/hub.env`.
 
 #### Usage
 
@@ -1125,10 +1133,10 @@ sudo tender install hub [--smtp-host HOST --smtp-from SENDER] [--smtp-port PORT 
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `--smtp-host` | string | No | The SMTP server. Email is off without it. |
-| `--smtp-from` | string | With `--smtp-host` | The sender, such as `"Tender <alerts@example.com>"`. |
-| `--smtp-port` | integer | No | The SMTP port, with implicit TLS. The default is `465`. |
-| `--smtp-username` | string | No | The SMTP login, for servers that ask for one. With it, the command asks for the password with typing hidden. |
+| `--smtp-host` | string | No | The SMTP server. Email is off without it. `""` removes it. |
+| `--smtp-from` | string | With `--smtp-host` | The sender, such as `"Tender <alerts@example.com>"`. `""` removes it. |
+| `--smtp-port` | integer | No | The SMTP port, with implicit TLS. The default is `465`. `0` removes the setting, so the hub uses `465`. |
+| `--smtp-username` | string | No | The SMTP login, for servers that ask for one. With it, the command asks for the password with typing hidden. `""` removes it and the password. |
 | `--smtp-password-file` | path | No | A file with the SMTP password, instead of asking. Needs `--smtp-username`. |
 
 #### Example
@@ -1145,11 +1153,19 @@ Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub htt
 
 The output goes on with the next steps: add a destination, a machine, its schedule and the recipients. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
 
+The host and the sender go together, so pass both empty to turn alert emails off:
+
+```sh
+sudo tender install hub --smtp-host "" --smtp-from ""
+```
+
 #### Errors
 
 1. `install hub needs root. Run it again with sudo.`
 2. `--smtp-password-file needs --smtp-username. Run "tender install hub --help" for usage.`
 3. `the SMTP password is empty. Run the command again and type it, or pass --smtp-password-file PATH.`
+4. `alert emails need both an SMTP server and a sender. Pass --smtp-host and --smtp-from together, or both empty, --smtp-host "" --smtp-from "", to turn alert emails off`
+5. `TENDER_LISTEN in /etc/tender/hub.env is "127.0.0.1", which is not an address with a port, such as 127.0.0.1:8080. Fix it and run this again`, before the command changes anything.
 
 #### Equivalents
 
@@ -1322,6 +1338,7 @@ level=INFO msg="hub listening" address=127.0.0.1:8080 database=/var/lib/tender/h
 
 1. `TENDER_ENCRYPTION_KEY is not set. The hub stores secrets encrypted with it. Make a key with "openssl rand -base64 32" and put it in /etc/tender/hub.env as TENDER_ENCRYPTION_KEY=<the key>, or run "sudo tender install hub", which does both`
 2. `TENDER_ENCRYPTION_KEY does not open the secrets in /var/lib/tender/hub/hub.db: ...` when the key is not the one the secrets were stored with.
+3. `the hub can't write its database /srv/tender/hub.db: /srv/tender: read-only file system. Its service may only write in /var/lib/tender/hub: keep the database there, or let it write that folder with ReadWritePaths= in a drop-in, made with: sudo systemctl edit tenderhub` when the hub may not write the database or its folder.
 
 #### Equivalents
 

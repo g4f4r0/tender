@@ -17,7 +17,7 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
 3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
 4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_email`, which sends email, sets it to `true`.
-5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs` and `get_machine_logs`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. It still runs if the daemon picks it up within 15 minutes of being queued. Check it later with `get_action`.
+5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs` and `get_machine_logs`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
 7. No tool returns bucket keys or repository passwords. The only secrets a tool returns are the ones made for you, shown once: a new machine token, and a destination password the hub generated.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
@@ -998,7 +998,7 @@ Lists alerts, newest first, optionally of one machine, status or severity.
 
 #### Returns
 
-`data`, the notifications, each with `id`, `machine`, `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence) and the timestamps. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) explains the statuses and lists the types.
+`data`, the notifications, each with `id`, `machine` (the machine it is about), `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence) and the timestamps. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) explains the statuses and lists the types.
 
 #### Limits
 
@@ -1316,7 +1316,7 @@ Lists the Docker containers each machine's daemon reports once a minute, for eve
 
 #### Returns
 
-`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its Docker doesn't answer, or `null` before any report) and `data`, its services. Each service is one container, by its container name, with `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender` and the timestamps. Usage is from the latest report. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
+`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its daemon can't reach Docker, or `null` before any report), `docker_reason` (while unreachable, `socket_missing`, `permission_denied`, `refused`, `timeout` or `error`, else `null`) and `data`, its services. Each service is one container, by its container name, with `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender`, `removed_at` (when its container was gone, else `null`) and the timestamps. Usage is from the latest report. A `removed` service can't be started, stopped, restarted or read, and goes 7 days after `removed_at`, as [Removed services](services.md#removed-services) explains. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
 
 #### Limits
 
@@ -1336,6 +1336,7 @@ None. A machine without Docker has no services.
     {
       "machine": "apps",
       "docker": "running",
+      "docker_reason": null,
       "data": [
         {
           "id": 4,
@@ -1355,6 +1356,7 @@ None. A machine without Docker has no services.
           "cpu_percent": null,
           "alerts_enabled": true,
           "stopped_by_tender": false,
+          "removed_at": null,
           "created_at": "2026-11-15T11:27:27Z",
           "updated_at": "2026-11-15T11:28:10Z"
         },
@@ -1376,6 +1378,7 @@ None. A machine without Docker has no services.
           "cpu_percent": 12.5,
           "alerts_enabled": true,
           "stopped_by_tender": false,
+          "removed_at": null,
           "created_at": "2026-11-15T11:27:27Z",
           "updated_at": "2026-11-15T11:28:10Z"
         }
@@ -1415,7 +1418,7 @@ Turns alerts on or off for one service. Alerts are on for every new service.
 
 #### Returns
 
-The service, as `list_services` shows it. With alerts off, the hub resolves its open alerts at its next check, once any resolved email owed has gone out. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
+The service, as `list_services` shows it. With alerts off, its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
 #### Limits
 
@@ -1448,6 +1451,7 @@ None.
   "cpu_percent": 12.5,
   "alerts_enabled": false,
   "stopped_by_tender": false,
+  "removed_at": null,
   "created_at": "2026-11-15T11:27:27Z",
   "updated_at": "2026-11-15T11:29:02Z"
 }
@@ -1467,7 +1471,7 @@ None.
 
 ## Actions
 
-The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart` or `logs`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's last 100 actions.
+The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart` or `logs`), `service` (`null` for the machine's logs), `unit`, `priority`, `since` and `lines` (logs only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `start_service`
 
@@ -1525,7 +1529,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
 3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-4. `Could not start web: ...`, with Docker's reason, when the daemon tried and failed.
+4. `Service "web" was removed: Docker on this machine no longer has its container.`
+5. `Could not start web: ...`, with Docker's reason, when the daemon tried and failed.
 
 #### Covers
 
@@ -1592,7 +1597,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
 3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-4. `Could not stop web: ...`, with Docker's reason, when the daemon tried and failed.
+4. `Service "web" was removed: Docker on this machine no longer has its container.`
+5. `Could not stop web: ...`, with Docker's reason, when the daemon tried and failed.
 
 #### Covers
 
@@ -1661,7 +1667,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
 3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-4. `Could not restart web: ...`, with Docker's reason, when the daemon tried and failed.
+4. `Service "web" was removed: Docker on this machine no longer has its container.`
+5. `Could not restart web: ...`, with Docker's reason, when the daemon tried and failed.
 
 #### Covers
 
@@ -1682,7 +1689,7 @@ Gets a service's newest lines of output, stdout and stderr together, each line s
 | --- | --- | --- | --- |
 | `true` | not set | `true` | `false` |
 
-It changes nothing on the machine, but the hub records the read as an action, which counts toward the last 100 it keeps.
+It changes nothing on the machine, but the hub records the read as an action, which counts toward the 100 finished actions it keeps.
 
 #### Inputs
 
@@ -1695,7 +1702,7 @@ It changes nothing on the machine, but the hub records the read as an action, wh
 
 #### Returns
 
-The action, with the logs in `output`, the oldest line first. An hour after the action finished, `output` is `null` and `output_cleared` is `true`.
+The action, with the logs in `output`, the oldest line first. An hour after the action completed, `output` is `null` and `output_cleared` is `true`.
 
 #### Limits
 
@@ -1731,9 +1738,10 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-3. `lines must be a whole number from 1 to 2000.`
-4. `since must be a duration such as 30m, 1h or 7d, at most 7d.`
-5. `Could not read the logs of web: ...`, with Docker's reason, when the daemon tried and failed.
+3. `Service "web" was removed: Docker on this machine no longer has its container.`
+4. `lines must be a whole number from 1 to 2000.`
+5. `since must be a duration such as 30m, 1h or 7d, at most 7d.`
+6. `Could not read the logs of web: ...`, with Docker's reason, when the daemon tried and failed.
 
 #### Covers
 
@@ -1754,7 +1762,7 @@ Gets the newest entries of a machine's systemd journal, which the daemon reads w
 | --- | --- | --- | --- |
 | `true` | not set | `true` | `false` |
 
-It changes nothing on the machine, but the hub records the read as an action, which counts toward the last 100 it keeps.
+It changes nothing on the machine, but the hub records the read as an action, which counts toward the 100 finished actions it keeps.
 
 #### Inputs
 
@@ -1768,7 +1776,7 @@ It changes nothing on the machine, but the hub records the read as an action, wh
 
 #### Returns
 
-The action, with the journal in `output`, the oldest entry first. An hour after the action finished, `output` is `null` and `output_cleared` is `true`.
+The action, with the journal in `output`, the oldest entry first. An hour after the action completed, `output` is `null` and `output_cleared` is `true`.
 
 #### Limits
 
@@ -1834,7 +1842,7 @@ Gets one action on a machine by id, with its output. Use it to check an action t
 
 #### Returns
 
-The action, with `output`: the logs, the reason it failed, or `null`. A logs action's output is cleared 1 hour after it finished.
+The action, with `output`: the logs, the reason it failed, or `null`. A completed logs action's output is cleared 1 hour after it finished, and a failed one keeps its reason.
 
 #### Limits
 
@@ -1881,7 +1889,7 @@ An action that never finished shows the status `failed` with the `output` `the d
 
 ### `list_actions`
 
-Lists a machine's last 100 actions, newest first, without their output.
+Lists a machine's actions, newest first, without their output.
 
 #### Annotations
 
@@ -1901,7 +1909,7 @@ Lists a machine's last 100 actions, newest first, without their output.
 
 #### Limits
 
-The hub keeps the last 100 actions per machine. The list isn't paged.
+The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one. The list isn't paged.
 
 #### Example call
 

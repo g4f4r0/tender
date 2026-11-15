@@ -30,7 +30,7 @@ Restart, stop or start a Docker container on any machine, and read its logs, fro
    Restarted web on apps.
    ```
 
-The command waits up to 60 seconds for the daemon. If the daemon hasn't finished by then, the command prints the action's id, and the action still runs if the daemon picks it up within 15 minutes of being queued. Check on it with `tender actions show apps ID`.
+The command waits up to 60 seconds for the daemon. If the daemon hasn't finished by then, the command prints the action's id and what happens next: a `pending` action runs if the daemon picks it up within 15 minutes of being asked, and an `in_progress` one fails if the daemon doesn't say how it ended within 15 minutes. Check on it with `tender actions show apps ID`.
 
 ## Stop and start a service
 

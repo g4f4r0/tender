@@ -63,7 +63,7 @@ The hub keeps each read as an action, and keeps its output for 1 hour after it f
    2026-11-15T11:27:13.000000000Z tenderd.service backup took 41s, longer than usual.
    ```
 
-After that hour, `actions show` says the logs were cleared. The action stays in the list, so you can still see what was read and when.
+After that hour, `actions show` says when the logs were cleared. The action stays in the list, so you can still see what was read and when.
 
 > [!WARNING]
 > The journal can hold secrets that services print. Anyone who can reach the hub can read it, so keep the hub private. An AI client that reads logs sends them to its model provider.
