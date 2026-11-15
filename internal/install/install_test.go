@@ -690,3 +690,33 @@ func TestDaemonJoinsTheDockerGroup(t *testing.T) {
 		t.Errorf("unit:\n%s", unit)
 	}
 }
+
+// With a systemd-journal group the daemon joins it too, to read the whole journal; with both
+// groups the unit has one SupplementaryGroups line.
+func TestDaemonJoinsTheJournalGroup(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(e.path("/etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, c := range []struct{ groups, want string }{
+		{"root:x:0:\nsystemd-journal:x:101:\n", "SupplementaryGroups=systemd-journal\n"},
+		{"root:x:0:\ndocker:x:999:\nsystemd-journal:x:101:\n", "SupplementaryGroups=docker systemd-journal\n"},
+	} {
+		if err := os.WriteFile(e.path("/etc/group"), []byte(c.groups), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e.in.Refreshing = false
+		opts := daemonOpts
+		if _, err := os.Stat(e.path("/etc/systemd/system/tenderd.service")); err == nil {
+			e.in.Refreshing, opts = true, DaemonOptions{}
+		}
+		if err := e.in.Daemon(ctx, opts); err != nil {
+			t.Fatal(err)
+		}
+		unit := e.read(t, "/etc/systemd/system/tenderd.service")
+		if strings.Count(unit, "SupplementaryGroups=") != 1 || !strings.Contains(unit, c.want) || !strings.Contains(unit, "# The whole journal") {
+			t.Errorf("with %q, unit:\n%s", c.groups, unit)
+		}
+	}
+}

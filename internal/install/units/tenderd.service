@@ -30,6 +30,7 @@ Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
 
 # Read every file, write nothing outside the directories above. Connecting to Docker's socket is not a
 # write, so it works on the read-only file system; the installer adds the docker group when there is one.
+# journalctl, for machine logs, only reads the journal's files; the installer adds the systemd-journal group.
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 AmbientCapabilities=CAP_DAC_READ_SEARCH
 NoNewPrivileges=yes

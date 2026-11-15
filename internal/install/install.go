@@ -349,20 +349,29 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 	return nil
 }
 
-// daemonUnit is tenderd.service. When this machine has a docker group, the daemon joins it to
-// reach Docker's socket; without one, the unit leaves it out, since systemd won't start a unit
-// whose group doesn't exist. Installing Docker later needs "tender install refresh".
+// daemonUnit is tenderd.service. The daemon joins the docker group, when there is one, to reach
+// Docker's socket, and the systemd-journal group, when there is one, to read the whole journal
+// with journalctl. A group that doesn't exist is left out, since systemd won't start a unit whose
+// group doesn't exist. Installing Docker later needs "tender install refresh".
 func (in *Installer) daemonUnit() ([]byte, error) {
 	unit, err := units.ReadFile("units/tenderd.service")
 	if err != nil {
 		return nil, err
 	}
-	if !in.hasGroup("docker") {
+	var lines, groups []string
+	if in.hasGroup("docker") {
+		lines = append(lines, "# Docker's socket. The docker group is root-equivalent: whoever is in it controls the machine.")
+		groups = append(groups, "docker")
+	}
+	if in.hasGroup("systemd-journal") {
+		lines = append(lines, "# The whole journal, for machine logs. Logs can hold secrets; the hub clears them an hour after they are read.")
+		groups = append(groups, "systemd-journal")
+	}
+	if len(groups) == 0 {
 		return unit, nil
 	}
-	return bytes.Replace(unit, []byte("Group=tender\n"), []byte("Group=tender\n"+
-		"# Docker's socket. The docker group is root-equivalent: whoever is in it controls the machine.\n"+
-		"SupplementaryGroups=docker\n"), 1), nil
+	add := strings.Join(lines, "\n") + "\nSupplementaryGroups=" + strings.Join(groups, " ") + "\n"
+	return bytes.Replace(unit, []byte("Group=tender\n"), []byte("Group=tender\n"+add), 1), nil
 }
 
 // hasGroup reports whether /etc/group has the group called name.
