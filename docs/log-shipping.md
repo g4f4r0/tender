@@ -17,7 +17,7 @@ A sink applies to every machine, or to the machines you name. Each daemon sends 
 
 ## Prerequisites
 
-1. A hub and daemons on Tender v0.3.0 or later. The daemon reads the journal through the `systemd-journal` group and the containers through the `docker` group, which the installer sets up. See [Install](install.md).
+1. A hub and daemons on Tender v0.3.0 or later. The daemon runs as root, so it can read the journal and the containers' logs. See [Install](install.md#the-daemon-runs-as-root).
 2. A collector or receiver that each machine can reach over HTTP or HTTPS. The machines connect to it directly, so it must be reachable from them, not from the hub.
 
 ## Send logs to an OpenTelemetry collector
