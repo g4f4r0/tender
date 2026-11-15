@@ -363,13 +363,13 @@ func (d *Runner) Remove(ctx context.Context, raw json.RawMessage, deleteData boo
 }
 
 // keptName makes removed, the folder removed services are kept in, and returns a path in it for
-// the folder of the service called name: its name and when, such as notes-20261115T093000Z, with
-// -2 and up when that is taken.
+// the folder of the service called name: its name and the Unix time, such as notes-1794735000,
+// with -2 and up when that is taken.
 func keptName(removed, name string) (string, error) {
 	if err := os.MkdirAll(removed, 0o700); err != nil {
 		return "", err
 	}
-	base := filepath.Join(removed, name+"-"+time.Now().UTC().Format("20060102T150405Z"))
+	base := filepath.Join(removed, name+"-"+strconv.FormatInt(time.Now().Unix(), 10))
 	kept := base
 	for i := 2; ; i++ {
 		if _, err := os.Lstat(kept); errors.Is(err, os.ErrNotExist) {
