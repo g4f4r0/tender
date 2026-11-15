@@ -139,6 +139,9 @@ func CheckEnv(env map[string]string) error {
 		switch {
 		case !envKeyPattern.MatchString(k):
 			return server.Invalid("env: %q is not a valid key: use capital letters, digits and underscores, not starting with a digit.", k)
+		case strings.HasPrefix(k, "COMPOSE_") || strings.HasPrefix(k, "DOCKER_"):
+			return server.Invalid("env: %s starts with COMPOSE_ or DOCKER_, which docker compose reads from .env as its own settings: "+
+				"give the key another name.", k)
 		case v == Hidden:
 			return server.Invalid("env: %s is \"***\", which is how the hub hides a value. Give the value itself.", k)
 		case strings.ContainsAny(v, "'\n\r\x00"):

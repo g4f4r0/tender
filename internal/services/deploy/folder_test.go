@@ -146,9 +146,19 @@ func TestCheckFilesAndEnv(t *testing.T) {
 		"hidden value":  {"KEY": Hidden},
 		"single quote":  {"KEY": "it's"},
 		"line break":    {"KEY": "a\nb"},
+		// compose reads these from .env as its own settings, such as COMPOSE_FILE.
+		"COMPOSE_":      {"COMPOSE_FILE": "/etc/evil.yaml"},
+		"DOCKER_":       {"DOCKER_HOST": "tcp://x"},
+		"COMPOSE_ bare": {"COMPOSE_PROJECT_NAME": "blog"},
 	} {
-		if err := CheckEnv(env); err == nil {
+		err := CheckEnv(env)
+		if err == nil {
 			t.Errorf("%s was taken", name)
+		}
+		if strings.HasPrefix(name, "COMPOSE_") || name == "DOCKER_" {
+			if err == nil || !strings.Contains(err.Error(), "starts with COMPOSE_ or DOCKER_, which docker compose reads from .env as its own settings") {
+				t.Errorf("%s: %v", name, err)
+			}
 		}
 	}
 	for _, n := range []string{"notes", "a", "app2"} {
