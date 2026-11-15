@@ -4,27 +4,27 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/g4f4r0/tender/internal/apps"
 	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 // newCloudflareStore returns the Cloudflare settings store, which calls the Cloudflare API, or the
 // end-to-end test's fake in its place.
-func newCloudflareStore(d *db.DB, key []byte) *apps.CloudflareStore {
-	s := apps.NewCloudflareStore(d, key)
+func newCloudflareStore(d *db.DB, key []byte) *services.CloudflareStore {
+	s := services.NewCloudflareStore(d, key)
 	s.API = expose.CloudflareBase(os.Getenv)
 	return s
 }
 
-var exposuresUsage = groupUsage("exposures", "Set up how apps' routes reach people. Tailscale and public routes need no settings; "+
+var exposuresUsage = groupUsage("exposures", "Set up how services' routes reach people. Tailscale and public routes need no settings; "+
 	"cloudflare routes need the hub's Cloudflare account and API token.", []row{
 	{"cloudflare show", "Show the Cloudflare settings"},
 	{"cloudflare set --account-id ID", "Set the Cloudflare account and API token"},
 	{"cloudflare remove", "Remove the Cloudflare settings"},
 })
 
-var cloudflareUsage = groupUsage("exposures cloudflare", "Set the Cloudflare account and API token that apps' cloudflare routes use. "+
+var cloudflareUsage = groupUsage("exposures cloudflare", "Set the Cloudflare account and API token that services' cloudflare routes use. "+
 	"The hub keeps one tunnel per machine in that account, named tender-MACHINE, and a proxied DNS record for each route.", []row{
 	{"show", "Show the Cloudflare settings"},
 	{"set --account-id ID [--api-token-file PATH]", "Set the Cloudflare account and API token"},
@@ -46,7 +46,7 @@ func runExposures(args []string, s session) error {
 
 const cloudflarePath = "/v1/exposures/cloudflare"
 
-func printCloudflare(s session, st apps.CloudflareSettings) {
+func printCloudflare(s session, st services.CloudflareSettings) {
 	say(s.out, "Cloudflare account: %s", st.AccountID)
 	say(s.out, "API token: set, hidden")
 	say(s.out, "Updated %s.", ago(s.now(), st.UpdatedAt))
@@ -54,7 +54,7 @@ func printCloudflare(s session, st apps.CloudflareSettings) {
 
 func cloudflareShow(args []string, s session) error {
 	fs := newFlagSet("exposures cloudflare show", "[--hub URL]",
-		"Show the Cloudflare account that apps' cloudflare routes use. The API token is never shown.")
+		"Show the Cloudflare account that services' cloudflare routes use. The API token is never shown.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -67,7 +67,7 @@ func cloudflareShow(args []string, s session) error {
 	if err != nil {
 		return err
 	}
-	var st apps.CloudflareSettings
+	var st services.CloudflareSettings
 	if err := hub.do(http.MethodGet, cloudflarePath, nil, &st); err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func cloudflareShow(args []string, s session) error {
 
 func cloudflareSet(args []string, s session) error {
 	fs := newFlagSet("exposures cloudflare set", "--account-id ID [--api-token-file PATH] [--hub URL]",
-		"Set the Cloudflare account and API token that apps' cloudflare routes use. The token needs "+expose.CloudflarePermissions+
+		"Set the Cloudflare account and API token that services' cloudflare routes use. The token needs "+expose.CloudflarePermissions+
 			". It asks for the token with typing hidden, or reads it from --api-token-file. The hub checks the token with Cloudflare "+
 			"before it stores it.")
 	hubURL := hubFlag(fs)
@@ -101,8 +101,8 @@ func cloudflareSet(args []string, s session) error {
 	if err != nil {
 		return err
 	}
-	var st apps.CloudflareSettings
-	if err := hub.do(http.MethodPut, cloudflarePath, apps.CloudflareInput{AccountID: *account, APIToken: &token}, &st); err != nil {
+	var st services.CloudflareSettings
+	if err := hub.do(http.MethodPut, cloudflarePath, services.CloudflareInput{AccountID: *account, APIToken: &token}, &st); err != nil {
 		return err
 	}
 	say(s.out, "Saved the Cloudflare settings. Cloudflare accepted the API token for account %s.", st.AccountID)
@@ -111,7 +111,7 @@ func cloudflareSet(args []string, s session) error {
 
 func cloudflareRemove(args []string, s session) error {
 	fs := newFlagSet("exposures cloudflare remove", "[--hub URL]",
-		"Remove the hub's Cloudflare account and API token. It refuses while an app has a cloudflare route. "+
+		"Remove the hub's Cloudflare account and API token. It refuses while a service has a cloudflare route. "+
 			"The tunnels and DNS records already in Cloudflare stay.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)

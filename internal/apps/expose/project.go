@@ -15,7 +15,7 @@ import (
 )
 
 // Tender's own containers, Caddy and cloudflared, run in the compose project tender, each from its
-// own compose file. They are not apps and don't follow the app rules: they use host networking.
+// own compose file. They are not services people deploy and don't follow those rules: they use host networking.
 const project = "tender"
 
 // The images of Tender's own containers, pinned by digest so every machine runs the same build.
@@ -151,10 +151,10 @@ func hostRoutes(adapter string, routes []Route) ([]Route, error) {
 	slices.SortFunc(out, func(a, b Route) int { return strings.Compare(a.Host, b.Host) })
 	for i, r := range out {
 		if err := CheckHost(r.Host); err != nil {
-			return nil, fmt.Errorf("the %s route of %s/%s: %w", adapter, r.App, r.Service, err)
+			return nil, fmt.Errorf("the %s route of %s/%s: %w", adapter, r.Service, r.Container, err)
 		}
 		if r.LocalPort < 1 || r.LocalPort > 65535 {
-			return nil, fmt.Errorf("the %s route of %s/%s has local port %d, which is not a TCP port", adapter, r.App, r.Service, r.LocalPort)
+			return nil, fmt.Errorf("the %s route of %s/%s has local port %d, which is not a TCP port", adapter, r.Service, r.Container, r.LocalPort)
 		}
 		if i > 0 && out[i-1].Host == r.Host {
 			return nil, fmt.Errorf("two %s routes have the host %s: a host takes one route", adapter, r.Host)

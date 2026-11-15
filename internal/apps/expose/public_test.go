@@ -89,8 +89,8 @@ func reset(t *testing.T, bin string) {
 }
 
 var (
-	web = Route{App: "blog", Service: "web", LocalPort: 20001, Host: "blog.example.com"}
-	api = Route{App: "shop", Service: "api", LocalPort: 20002, Host: "api.shop.example.com"}
+	web = Route{Service: "blog", Container: "web", LocalPort: 20001, Host: "blog.example.com"}
+	api = Route{Service: "shop", Container: "api", LocalPort: 20002, Host: "api.shop.example.com"}
 )
 
 // The first public route starts Caddy in project tender with host networking and the pinned
@@ -262,12 +262,12 @@ func TestPublicRefusesBadRoutes(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "caddy")
 	p := &Public{Dir: dir}
 	for _, routes := range [][]Route{
-		{{App: "a", Service: "s", LocalPort: 20001, Host: "localhost"}},
-		{{App: "a", Service: "s", LocalPort: 20001, Host: "Blog.Example.com"}},
-		{{App: "a", Service: "s", LocalPort: 20001, Host: "10.0.0.1"}},
-		{{App: "a", Service: "s", LocalPort: 20001, Host: "a.example.com {\n}"}},
-		{{App: "a", Service: "s", LocalPort: 0, Host: "a.example.com"}},
-		{web, {App: "other", Service: "s", LocalPort: 20009, Host: web.Host}},
+		{{Service: "a", Container: "s", LocalPort: 20001, Host: "localhost"}},
+		{{Service: "a", Container: "s", LocalPort: 20001, Host: "Blog.Example.com"}},
+		{{Service: "a", Container: "s", LocalPort: 20001, Host: "10.0.0.1"}},
+		{{Service: "a", Container: "s", LocalPort: 20001, Host: "a.example.com {\n}"}},
+		{{Service: "a", Container: "s", LocalPort: 0, Host: "a.example.com"}},
+		{web, {Service: "other", Container: "s", LocalPort: 20009, Host: web.Host}},
 	} {
 		if err := p.Apply(context.Background(), routes); err == nil {
 			t.Errorf("%+v passed", routes)

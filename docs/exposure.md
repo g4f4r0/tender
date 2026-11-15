@@ -1,6 +1,6 @@
 # Exposure
 
-An app's route makes one of its services reachable through Tailscale, a Cloudflare tunnel, or Caddy on the public internet.
+A route makes one container of a service reachable through Tailscale, a Cloudflare tunnel, or Caddy on the public internet.
 
 ## Public
 
@@ -16,10 +16,10 @@ DNS and the provider's firewall are yours. Tender never changes either.
 
 ### Add a public route
 
-1. Deploy the app with a route whose expose is `public` and whose host is the full hostname:
+1. Deploy the service with a route to its container `web`, whose expose is `public` and whose host is the full hostname:
 
    ```sh
-   tender apps deploy apps blog -f compose.yaml --route web:80:public:blog.example.com
+   tender services deploy apps blog -f compose.yaml --route web:80:public:blog.example.com
    ```
 
 2. Check it from anywhere. The first request can take a few seconds while Caddy gets the certificate:
@@ -34,7 +34,7 @@ DNS and the provider's firewall are yours. Tender never changes either.
 
 ### What Tender does on the machine
 
-1. On the first public route it starts one Caddy container, service `caddy` of the Compose project `tender`, with host networking. It isn't an app, and the app rules don't apply to it.
+1. On the first public route it starts one Caddy container, service `caddy` of the Compose project `tender`, with host networking. It isn't a service you deploy, and the rules for those don't apply to it.
 2. It writes `/var/lib/tender/daemon/caddy/Caddyfile` with one site per route, `<host> { reverse_proxy 127.0.0.1:<local_port> }`, and reloads Caddy inside the container on every deploy and remove. Caddy keeps its certificates in `/var/lib/tender/daemon/caddy/data`, which the whole-server backup includes.
 3. While ufw is active, it adds `ufw allow 80/tcp` and `ufw allow 443/tcp`, each with the comment `tender public`. A port that already has an allow rule of yours keeps it, and Tender adds none for it. Without ufw, or with ufw inactive, it adds nothing.
 4. Meanwhile the [security checks](security.md#security-checks) count 80/tcp and 443/tcp as allowed on that machine, so they raise no `security.port_exposed`.
@@ -85,10 +85,10 @@ The hub stores the token encrypted under `TENDER_ENCRYPTION_KEY`, like the other
 
 ### Add a Cloudflare route
 
-1. Deploy the app with a route whose expose is `cloudflare`:
+1. Deploy the service with a route whose expose is `cloudflare`:
 
    ```sh
-   tender apps deploy apps blog -f compose.yaml --route web:80:cloudflare:blog.example.com
+   tender services deploy apps blog -f compose.yaml --route web:80:cloudflare:blog.example.com
    ```
 
 2. Check it from anywhere:
@@ -130,4 +130,4 @@ tender exposures cloudflare remove
 Removed the Cloudflare settings. The tunnels and DNS records in Cloudflare stay.
 ```
 
-It refuses while an app has a `cloudflare` route. The tunnels stay in Cloudflare: delete one under Zero Trust, Networks, Tunnels.
+It refuses while a service has a `cloudflare` route. The tunnels stay in Cloudflare: delete one under Zero Trust, Networks, Tunnels.

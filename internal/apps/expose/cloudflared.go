@@ -31,7 +31,7 @@ func (c *Cloudflared) service() service {
 
 // cloudflaredCompose is cloudflared's compose file. TUNNEL_TOKEN, with no value, comes from the
 // environment docker compose runs in. The metrics listen on a loopback port the kernel picks, so
-// they neither reach the public address nor take a port of an app's.
+// they neither reach the public address nor take a port of a service's.
 var cloudflaredCompose = fmt.Appendf(nil, `# Written by Tender: the cloudflared that runs this machine's Cloudflare tunnel.
 services:
   cloudflared:

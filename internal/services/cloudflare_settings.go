@@ -1,4 +1,4 @@
-package apps
+package services
 
 // The hub's Cloudflare settings, for the cloudflare exposure: PUT, GET and DELETE
 // /v1/exposures/cloudflare, their MCP tools, and the client the hub's cloudflare adapter uses.
@@ -44,8 +44,8 @@ type CloudflareStore struct {
 	key []byte
 	// API is the Cloudflare API's base URL; expose.CloudflareAPI when empty.
 	API string
-	// InUse counts the cloudflare routes, which need the settings; nil counts none. The apps
-	// store sets it.
+	// InUse counts the cloudflare routes, which need the settings; nil counts none. The store of
+	// the services' routes sets it.
 	InUse func(ctx context.Context) (int, error)
 	// backoff is the client's wait before it tries again; the client's default when 0.
 	backoff time.Duration
@@ -67,7 +67,7 @@ func (s *CloudflareStore) row(ctx context.Context) (CloudflareSettings, []byte, 
 	var st CloudflareSettings
 	var sealed []byte
 	var created, updated int64
-	err := s.db.Read.QueryRowContext(ctx, `SELECT account_id, api_token, created_at, updated_at FROM app_cloudflare_settings WHERE id = 1`).
+	err := s.db.Read.QueryRowContext(ctx, `SELECT account_id, api_token, created_at, updated_at FROM service_cloudflare_settings WHERE id = 1`).
 		Scan(&st.AccountID, &sealed, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, nil, errNoCloudflare()
@@ -168,7 +168,7 @@ func (s *CloudflareStore) SetCloudflare(ctx context.Context, in CloudflareInput)
 		return CloudflareSettings{}, err
 	}
 	now := time.Now().Unix()
-	if _, err := s.db.Write.ExecContext(ctx, `INSERT INTO app_cloudflare_settings (id, account_id, api_token, created_at, updated_at)
+	if _, err := s.db.Write.ExecContext(ctx, `INSERT INTO service_cloudflare_settings (id, account_id, api_token, created_at, updated_at)
 		VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET account_id = excluded.account_id, api_token = excluded.api_token,
 		updated_at = excluded.updated_at`, in.AccountID, sealed, now, now); err != nil {
 		return CloudflareSettings{}, err
@@ -185,10 +185,10 @@ func (s *CloudflareStore) DeleteCloudflare(ctx context.Context) error {
 			return err
 		}
 		if n > 0 {
-			return server.Conflict("%d cloudflare routes need these settings. Take the routes off their apps first, or redeploy them with another expose.", n)
+			return server.Conflict("%d cloudflare routes need these settings. Take the routes off their services first, or redeploy them with another expose.", n)
 		}
 	}
-	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM app_cloudflare_settings WHERE id = 1`)
+	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM service_cloudflare_settings WHERE id = 1`)
 	if err != nil {
 		return err
 	}
@@ -264,13 +264,13 @@ const cloudflareFields = "The settings are account_id, api_token (always \"***\"
 // REST routes.
 func (s *CloudflareStore) RegisterTools(m *mcp.Server) {
 	mcp.AddReadOnly(m, "get_cloudflare_settings", "Get the Cloudflare settings",
-		"Get the hub's Cloudflare settings, which apps' cloudflare routes need: the hub keeps one tunnel per machine, named "+
+		"Get the hub's Cloudflare settings, which services' cloudflare routes need: the hub keeps one tunnel per machine, named "+
 			"tender-<machine>, and a proxied DNS record per route in that account. "+cloudflareFields+
 			" It fails with not found when Cloudflare isn't set up.",
 		func(ctx context.Context, _ noCloudflareInput) (CloudflareSettings, error) { return s.Cloudflare(ctx) })
 
 	mcp.AddWrite(m, "set_cloudflare_settings", "Set the Cloudflare settings",
-		"Set the Cloudflare account and API token that apps' cloudflare routes use. The token needs "+expose.CloudflarePermissions+
+		"Set the Cloudflare account and API token that services' cloudflare routes use. The token needs "+expose.CloudflarePermissions+
 			". The hub first asks Cloudflare whether the token reaches the account's tunnels and zones, and stores nothing if it "+
 			"doesn't. The result is the settings. "+cloudflareFields,
 		mcp.WriteOptions{Idempotent: true, OpenWorld: true},
@@ -279,7 +279,7 @@ func (s *CloudflareStore) RegisterTools(m *mcp.Server) {
 		})
 
 	mcp.AddWrite(m, "remove_cloudflare_settings", "Remove the Cloudflare settings",
-		"Remove the hub's Cloudflare account and API token. It refuses while an app has a cloudflare route. The tunnels and DNS "+
+		"Remove the hub's Cloudflare account and API token. It refuses while a service has a cloudflare route. The tunnels and DNS "+
 			"records already in Cloudflare stay. The result names what was removed.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
 		func(ctx context.Context, _ noCloudflareInput) (mcp.Removed, error) {

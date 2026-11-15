@@ -2855,7 +2855,7 @@ None.
 
 ### `get_cloudflare_settings`
 
-Gets the hub's Cloudflare settings, which apps' `cloudflare` routes need. The hub keeps one tunnel per machine in that account, named `tender-<machine>`, and a proxied DNS record per route.
+Gets the hub's Cloudflare settings, which services' `cloudflare` routes need. The hub keeps one tunnel per machine in that account, named `tender-<machine>`, and a proxied DNS record per route.
 
 #### Annotations
 
@@ -2899,7 +2899,7 @@ None.
 
 ### `set_cloudflare_settings`
 
-Sets the Cloudflare account and API token that apps' `cloudflare` routes use. The hub first asks Cloudflare whether the token reaches the account's tunnels and zones, and stores nothing if it doesn't.
+Sets the Cloudflare account and API token that services' `cloudflare` routes use. The hub first asks Cloudflare whether the token reaches the account's tunnels and zones, and stores nothing if it doesn't.
 
 #### Annotations
 
@@ -2967,7 +2967,7 @@ None.
 
 #### Limits
 
-It refuses while an app has a `cloudflare` route.
+It refuses while a service has a `cloudflare` route.
 
 #### Example call
 
@@ -2984,7 +2984,7 @@ It refuses while an app has a `cloudflare` route.
 #### Errors
 
 1. `Cloudflare isn't set up on this hub. There is nothing to remove.`
-2. `2 cloudflare routes need these settings. Take the routes off their apps first, or redeploy them with another expose.`
+2. `2 cloudflare routes need these settings. Take the routes off their services first, or redeploy them with another expose.`
 
 #### Covers
 

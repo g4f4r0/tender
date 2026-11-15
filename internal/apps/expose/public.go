@@ -109,7 +109,7 @@ func caddyfile(routes []Route) []byte {
 	b.WriteString("# Written by Tender for this machine's public routes. Tender replaces it on every deploy.\n")
 	b.WriteString("{\n\tadmin " + caddyAdmin + "\n\tservers {\n\t\tprotocols h1 h2\n\t}\n}\n")
 	for _, r := range routes {
-		fmt.Fprintf(&b, "\n# %s/%s\n%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", r.App, r.Service, r.Host, r.LocalPort)
+		fmt.Fprintf(&b, "\n# %s/%s\n%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", r.Service, r.Container, r.Host, r.LocalPort)
 	}
 	return []byte(b.String())
 }

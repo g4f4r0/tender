@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/g4f4r0/tender/internal/apps"
 	"github.com/g4f4r0/tender/internal/apps/expose"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 // The Cloudflare settings can be set, shown and removed from the command line and over MCP,
@@ -59,14 +59,14 @@ func TestCloudflareSettingsThroughTheCLIAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var st apps.CloudflareSettings
+	var st services.CloudflareSettings
 	if err := json.NewDecoder(res.Body).Decode(&st); err != nil || st.APIToken != "***" || !st.APITokenSet {
 		t.Errorf("GET: %v %+v", err, st)
 	}
 	_ = res.Body.Close()
 
 	cs := connect(t, d)
-	var got apps.CloudflareSettings
+	var got services.CloudflareSettings
 	structured(t, callTool(t, cs, "get_cloudflare_settings", map[string]any{}), &got)
 	if got.AccountID != account || got.APIToken != "***" {
 		t.Errorf("get_cloudflare_settings %+v", got)

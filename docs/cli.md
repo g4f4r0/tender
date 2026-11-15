@@ -1995,11 +1995,11 @@ Updates are auto, window: 02:00-05:00 UTC.
 
 ## `tender exposures`
 
-Sets up how apps' routes reach people. Only `cloudflare` routes need settings: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains them.
+Sets up how services' routes reach people. Only `cloudflare` routes need settings: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains them.
 
 ### `tender exposures cloudflare show`
 
-Shows the Cloudflare account that apps' `cloudflare` routes use. The API token is never shown.
+Shows the Cloudflare account that services' `cloudflare` routes use. The API token is never shown.
 
 #### Usage
 
@@ -2077,7 +2077,7 @@ Saved the Cloudflare settings. Cloudflare accepted the API token for account 012
 
 ### `tender exposures cloudflare remove`
 
-Removes the hub's Cloudflare settings. It refuses while an app has a `cloudflare` route. The tunnels and DNS records already in Cloudflare stay.
+Removes the hub's Cloudflare settings. It refuses while a service has a `cloudflare` route. The tunnels and DNS records already in Cloudflare stay.
 
 #### Usage
 
@@ -2104,7 +2104,7 @@ Removed the Cloudflare settings. The tunnels and DNS records in Cloudflare stay.
 #### Errors
 
 1. `Cloudflare isn't set up on this hub. There is nothing to remove.`
-2. `2 cloudflare routes need these settings. Take the routes off their apps first, or redeploy them with another expose.`
+2. `2 cloudflare routes need these settings. Take the routes off their services first, or redeploy them with another expose.`
 
 #### Equivalents
 

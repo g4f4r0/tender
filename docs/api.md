@@ -3148,7 +3148,7 @@ HTTP/1.1 204 No Content
 
 ## Exposures
 
-The settings an app's routes need to reach people. Only `cloudflare` routes need any: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains how the hub uses them.
+The settings services' routes need to reach people. Only `cloudflare` routes need any: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains how the hub uses them.
 
 ### `GET /v1/exposures/cloudflare`
 
@@ -3265,7 +3265,7 @@ HTTP/1.1 204 No Content
 | Status | When |
 | --- | --- |
 | `404` | Cloudflare isn't set up on this hub. |
-| `409` | An app still has a `cloudflare` route. Take the routes off first. |
+| `409` | A service still has a `cloudflare` route. Take the routes off first. |
 
 #### Equivalents
 

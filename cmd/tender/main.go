@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/g4f4r0/tender/internal/actions"
-	"github.com/g4f4r0/tender/internal/apps"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/logs"
@@ -91,7 +90,7 @@ var hubCommands = map[string]func([]string, session) error{
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
 	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations,
-		logs.Migrations, security.Migrations, updates.Migrations, apps.Migrations, server.Migrations}
+		logs.Migrations, security.Migrations, updates.Migrations, server.Migrations}
 }
 
 func main() {

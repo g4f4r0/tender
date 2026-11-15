@@ -1,20 +1,15 @@
-package apps
+package services
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/g4f4r0/tender/internal/db"
-	"github.com/g4f4r0/tender/internal/server"
 )
 
 const (
@@ -22,23 +17,10 @@ const (
 	apiToken = "cf-api-token-marker-0123456789abcdefghij"
 )
 
-var key = bytes.Repeat([]byte{7}, 32)
+var cfKey = bytes.Repeat([]byte{7}, 32)
 
-func open(t *testing.T) *db.DB {
-	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
-	if err := d.Migrate(context.Background(), Migrations); err != nil {
-		t.Fatal(err)
-	}
-	return d
-}
-
-// cloudflare is a Cloudflare API that knows one account and token, and answers status when it isn't 0.
-func cloudflare(t *testing.T, status *atomic.Int32, calls *atomic.Int32) string {
+// fakeCloudflareAPI is a Cloudflare API that knows one account and token, and answers status when it isn't 0.
+func fakeCloudflareAPI(t *testing.T, status *atomic.Int32, calls *atomic.Int32) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -61,23 +43,13 @@ func cloudflare(t *testing.T, status *atomic.Int32, calls *atomic.Int32) string 
 	return srv.URL
 }
 
-func status(err error) int {
-	var e *server.Error
-	if errors.As(err, &e) {
-		return e.Status
-	}
-	return 0
-}
-
-func ptr[T any](v T) *T { return &v }
-
 // The settings are stored once Cloudflare accepts the token, with the token sealed and shown as
 // "***"; a later set may leave the token out to keep it.
 func TestCloudflareSettings(t *testing.T) {
-	d := open(t)
+	d := newDB(t)
 	var fail, calls atomic.Int32
-	s := NewCloudflareStore(d, key)
-	s.API = cloudflare(t, &fail, &calls)
+	s := NewCloudflareStore(d, cfKey)
+	s.API = fakeCloudflareAPI(t, &fail, &calls)
 	ctx := t.Context()
 
 	if _, err := s.Cloudflare(ctx); status(err) != 404 || !strings.Contains(err.Error(), "tender exposures cloudflare set") {
@@ -95,7 +67,7 @@ func TestCloudflareSettings(t *testing.T) {
 		t.Errorf("JSON %s", b)
 	}
 	var sealed []byte
-	if err := d.Read.QueryRow(`SELECT api_token FROM app_cloudflare_settings`).Scan(&sealed); err != nil || bytes.Contains(sealed, []byte(apiToken)) {
+	if err := d.Read.QueryRow(`SELECT api_token FROM service_cloudflare_settings`).Scan(&sealed); err != nil || bytes.Contains(sealed, []byte(apiToken)) {
 		t.Errorf("the token is stored in plain text: %v", err)
 	}
 	if st, err := s.SetCloudflare(ctx, CloudflareInput{AccountID: account}); err != nil || !st.APITokenSet {
@@ -120,10 +92,10 @@ func TestCloudflareSettings(t *testing.T) {
 // A token Cloudflare refuses is a 422 that says so, Cloudflare down is a 502, and bad values never
 // reach Cloudflare; none of them stores anything or shows the token.
 func TestCloudflareSettingsRefused(t *testing.T) {
-	d := open(t)
+	d := newDB(t)
 	var fail, calls atomic.Int32
-	s := NewCloudflareStore(d, key)
-	s.API = cloudflare(t, &fail, &calls)
+	s := NewCloudflareStore(d, cfKey)
+	s.API = fakeCloudflareAPI(t, &fail, &calls)
 	ctx := t.Context()
 	for _, in := range []CloudflareInput{
 		{AccountID: "", APIToken: ptr(apiToken)},
@@ -159,10 +131,10 @@ func TestCloudflareSettingsRefused(t *testing.T) {
 
 // Removing the settings refuses while cloudflare routes need them, and answers 404 when there are none.
 func TestCloudflareSettingsRemoved(t *testing.T) {
-	d := open(t)
+	d := newDB(t)
 	var fail, calls atomic.Int32
-	s := NewCloudflareStore(d, key)
-	s.API = cloudflare(t, &fail, &calls)
+	s := NewCloudflareStore(d, cfKey)
+	s.API = fakeCloudflareAPI(t, &fail, &calls)
 	ctx := t.Context()
 	if err := s.DeleteCloudflare(ctx); status(err) != 404 {
 		t.Errorf("nothing to remove: %v", err)

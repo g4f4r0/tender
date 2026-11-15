@@ -315,7 +315,7 @@ func TestCloudflareAppliesRoutes(t *testing.T) {
 func TestCloudflareDeletesOnlyItsOwnRecords(t *testing.T) {
 	f, c := newFakeCloudflare(t)
 	example := f.addZone("example.com")
-	tun, err := c.Apply(t.Context(), "apps", []Route{web, {App: "x", Service: "y", LocalPort: 20003, Host: "gone.example.com"}})
+	tun, err := c.Apply(t.Context(), "apps", []Route{web, {Service: "x", Container: "y", LocalPort: 20003, Host: "gone.example.com"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestCloudflareDeletesOnlyItsOwnRecords(t *testing.T) {
 	f.addRecord(example, dnsRecord{Type: "A", Name: "www.example.com", Content: "192.0.2.1", TTL: 1})
 	f.addRecord(example, dnsRecord{Type: "CNAME", Name: "moved.example.com", Content: dbTunnel + ".cfargotunnel.com", TTL: 1, Comment: ptrTo(DNSComment)})
 
-	moved := Route{App: "m", Service: "s", LocalPort: 20004, Host: "moved.example.com"}
+	moved := Route{Service: "m", Container: "s", LocalPort: 20004, Host: "moved.example.com"}
 	if _, err := c.Apply(t.Context(), "apps", []Route{web, moved}); err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestCloudflareDeletesOnlyItsOwnRecords(t *testing.T) {
 		t.Errorf("records %v", names)
 	}
 
-	_, err = c.Apply(t.Context(), "apps", []Route{web, {App: "w", Service: "s", LocalPort: 20005, Host: "www.example.com"}})
+	_, err = c.Apply(t.Context(), "apps", []Route{web, {Service: "w", Container: "s", LocalPort: 20005, Host: "www.example.com"}})
 	if err == nil || !strings.Contains(err.Error(), "www.example.com already has a A record in Cloudflare that Tender didn't make") {
 		t.Errorf("a foreign record: %v", err)
 	}
@@ -377,11 +377,11 @@ func TestCloudflareMakesNoTunnelItDoesntNeed(t *testing.T) {
 	if tun, err := c.Apply(t.Context(), "apps", nil); err != nil || tun.ID != "" || f.count("POST ") != 0 {
 		t.Errorf("no routes: %v %+v %q", err, tun, f.calls)
 	}
-	_, err := c.Apply(t.Context(), "apps", []Route{{App: "a", Service: "s", LocalPort: 20001, Host: "app.example.org"}})
+	_, err := c.Apply(t.Context(), "apps", []Route{{Service: "a", Container: "s", LocalPort: 20001, Host: "app.example.org"}})
 	if err == nil || !strings.Contains(err.Error(), "no zone of the Cloudflare account holds app.example.org") || f.count("POST ") != 0 {
 		t.Errorf("host in no zone: %v %q", err, f.calls)
 	}
-	if _, err := c.Apply(t.Context(), "apps", []Route{{App: "a", Service: "s", LocalPort: 20001, Host: "notexample.com"}}); err == nil {
+	if _, err := c.Apply(t.Context(), "apps", []Route{{Service: "a", Container: "s", LocalPort: 20001, Host: "notexample.com"}}); err == nil {
 		t.Error("notexample.com matched the zone example.com")
 	}
 }
