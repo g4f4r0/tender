@@ -217,6 +217,22 @@ func TestDaemon(t *testing.T) {
 	if web = get("web"); web.CPUPercent == nil || *web.CPUPercent != 25 {
 		t.Errorf("web's second usage = %+v; want 25%% CPU", web)
 	}
+	// A restart keeps the container id but starts its CPU counter again, so the reading before it
+	// can't measure the one after.
+	f.mu.Lock()
+	c.StartedAt, c.CPU, c.System = "2026-11-15T10:00:00Z", c.CPU+1e8, c.System+4e9
+	f.mu.Unlock()
+	d.reportNow(ctx)
+	if web = get("web"); web.CPUPercent != nil {
+		t.Errorf("web's CPU right after a restart = %v; want null", *web.CPUPercent)
+	}
+	f.mu.Lock()
+	c.CPU, c.System = c.CPU+1e9, c.System+4e9
+	f.mu.Unlock()
+	d.reportNow(ctx)
+	if web = get("web"); web.CPUPercent == nil || *web.CPUPercent != 50 {
+		t.Errorf("web's CPU on the next report = %+v; want 50%%", web.CPUPercent)
+	}
 
 	if _, err := d.Service(ctx, actStop, "web", 0, 0); err != nil {
 		t.Fatal(err)

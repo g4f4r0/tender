@@ -29,7 +29,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			"exited, removing, dead, or unknown while Docker is unreachable), health (healthy, unhealthy, starting, or null without a health "+
 			"check), exit_code (while exited or dead), restart_count, restart_policy (no, always, unless-stopped or on-failure), started_at, "+
 			"memory_bytes (less the page cache it can drop), memory_limit_bytes (null without a limit) and cpu_percent (100 is one whole "+
-			"CPU; null on its first report), from the latest report and null while stopped, "+
+			"CPU; null on its first report and after a restart), from the latest report and null while stopped, "+
 			"alerts_enabled, stopped_by_tender (a Tender stop left it stopped, so it doesn't alert as down) and updated_at (RFC 3339 UTC). "+
 			"A machine without Docker has none.",
 		func(ctx context.Context, in listInput) (server.List[MachineServices], error) {

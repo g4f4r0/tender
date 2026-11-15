@@ -60,7 +60,7 @@ type Service struct {
 	// Usage from the latest report, while it runs; null when stopped or when Docker couldn't say.
 	MemoryBytes      *int64    `json:"memory_bytes"`       // less the page cache it can drop
 	MemoryLimitBytes *int64    `json:"memory_limit_bytes"` // null without a limit
-	CPUPercent       *float64  `json:"cpu_percent"`        // 100 is one whole CPU; null on its first report
+	CPUPercent       *float64  `json:"cpu_percent"`        // 100 is one whole CPU; null on its first report and after a restart
 	AlertsEnabled    bool      `json:"alerts_enabled"`
 	StoppedByTender  bool      `json:"stopped_by_tender"` // a Tender stop left it stopped, so it doesn't alert as down
 	CreatedAt        time.Time `json:"created_at"`

@@ -43,7 +43,7 @@ type Daemon struct {
 	seen    bool              // Docker answered since the daemon started, so losing it is an outage
 	problem string            // the last Docker problem logged, so it is logged once
 	hubErr  string            // the last hub error logged, so it is logged once
-	samples map[string]sample // each running container's last usage reading, by container id
+	samples map[string]sample // each running container's last usage reading, by sampleKey
 }
 
 // NewDaemon returns a daemon that reaches Docker at socket.
@@ -134,7 +134,7 @@ func (d *Daemon) reportNow(ctx context.Context) {
 
 // usage reads the memory and CPU of each running container in list, statsAtOnce at a time. CPU is
 // measured against this daemon's previous reading of the same container, so it is null on a
-// container's first report and after it is made again with a new id.
+// container's first report and after it restarts or is made again.
 func (d *Daemon) usage(ctx context.Context, list []ServiceInput) {
 	bctx, cancel := context.WithTimeout(ctx, statsBudget)
 	defer cancel()
@@ -167,21 +167,31 @@ func (d *Daemon) usage(ctx context.Context, list []ServiceInput) {
 		st := now[i]
 		if st == nil {
 			list[i].MemoryLimitBytes = nil // no usage without a reading
-			if prev, ok := d.samples[list[i].ContainerID]; ok && list[i].State == StateRunning {
-				next[list[i].ContainerID] = prev // the next reading measures CPU from the last good one
+			if prev, ok := d.samples[sampleKey(list[i])]; ok && list[i].State == StateRunning {
+				next[sampleKey(list[i])] = prev // the next reading measures CPU from the last good one
 			}
 			continue
 		}
 		mem := st.memory
 		list[i].MemoryBytes = &mem
-		if prev, ok := d.samples[list[i].ContainerID]; ok {
+		if prev, ok := d.samples[sampleKey(list[i])]; ok {
 			if p, ok := cpuPercent(prev, *st); ok {
 				list[i].CPUPercent = &p
 			}
 		}
-		next[list[i].ContainerID] = *st
+		next[sampleKey(list[i])] = *st
 	}
 	d.samples = next
+}
+
+// sampleKey names one run of a container. A re-created container has a new id, and a restarted
+// one a new start time and a CPU counter that starts again, so neither is measured against the
+// reading before it.
+func sampleKey(sv ServiceInput) string {
+	if sv.StartedAt == nil {
+		return sv.ContainerID
+	}
+	return sv.ContainerID + "@" + sv.StartedAt.Format(time.RFC3339Nano)
 }
 
 // unreachable logs once why Docker can't be reached and, when tell, tells the hub.
