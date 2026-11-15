@@ -1,0 +1,1940 @@
+# REST API
+
+The hub's REST API does everything the `tender` command and the MCP tools do, over HTTP and JSON.
+
+## Prerequisites
+
+1. A running hub. See [Install](install.md).
+2. The hub's address. The examples use `https://apps.your-tailnet.ts.net`, the hub's name on a tailnet. On the hub machine itself, use `http://127.0.0.1:8080`.
+3. `curl`, or any HTTP client.
+
+## Conventions
+
+### Authentication
+
+People and their tools send no token in this version. Anyone who can reach the hub can call every route below, so keep the hub on your tailnet or behind your own access control. See [Security](security.md).
+
+The hub refuses requests that a web page sends through a browser from another site, and requests for a host name it doesn't answer to. Both get `403`.
+
+Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, and another machine's token gets `403`. People never need a token, and should send no `Authorization` header: on a route both may call, the hub treats a request with one as a daemon's.
+
+### Requests and responses
+
+1. Every route is under `/v1`. `GET /v1/health` answers `{"status": "ok"}` while the hub can reach its database, and `503` when it can't.
+2. JSON fields have the same names as the database columns, such as `retention_days` and `created_at`.
+3. Times are RFC 3339 in UTC, such as `2026-11-15T11:27:26Z`.
+4. A request body is one JSON value of at most 1 MiB, and a larger one gets `413`. A field the route doesn't know is `400`, and a field of the wrong type is `422`.
+5. A collection answers `{"data": [...]}`. A paged collection takes `limit`, from 1 to 500 with a default of 50, and adds `next_cursor` when there are more. Pass it as `cursor` for the next page. The last page has no `next_cursor`.
+6. A create answers `201 Created` with the new object and its address in the `Location` header.
+7. `PATCH` takes a JSON Merge Patch. Send `Content-Type: application/merge-patch+json`. Fields you leave out stay as they are.
+8. A `DELETE` answers `204 No Content`.
+
+### Errors
+
+Every error is an RFC 9457 problem, with `Content-Type: application/problem+json` and a `detail` sentence that says what to do:
+
+```http
+HTTP/1.1 422 Unprocessable Entity
+Content-Type: application/problem+json
+
+{
+  "detail": "service is required for stop.",
+  "status": 422,
+  "title": "Unprocessable Entity",
+  "type": "about:blank"
+}
+```
+
+A route that doesn't exist answers `404`, and a method a route doesn't take answers `405` with an `Allow` header, both as problems. A failure inside the hub answers `500` and the hub logs the cause; the response never shows it.
+
+### Idempotency
+
+Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempotency-Key` header run once. A retry with the same key within 24 hours gets the first answer again, and the same key on another route gets `422`. The hub ignores the header on people's requests.
+
+### Actions
+
+Starting, stopping and restarting a service and reading logs happen on the machine, so `POST /v1/machines/{machine}/actions` answers `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. An action nobody picks up fails after 15 minutes.
+
+## Machines
+
+A machine is a server with a daemon that reports to the hub.
+
+### `GET /v1/machines`
+
+Lists every machine with its latest reading of CPU load, memory, disk and uptime, by name.
+
+`last_seen` and `usage` are `null` until the machine's daemon first reports.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "apps",
+      "created_at": "2026-11-15T11:27:26Z",
+      "updated_at": "2026-11-15T11:27:26Z",
+      "last_seen": "2026-11-15T11:36:35Z",
+      "usage": {
+        "id": 11,
+        "cpu_load": 0.09,
+        "memory_used_percent": 16.06,
+        "disk_used_percent": 27.72,
+        "uptime_seconds": 222901,
+        "created_at": "2026-11-15T11:36:35Z",
+        "updated_at": "2026-11-15T11:36:35Z"
+      }
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+MCP tool `list_machines`. CLI command `tender machines list`.
+
+### `POST /v1/machines`
+
+Adds a machine and returns its token, which is shown only this once.
+
+Install the daemon on the machine with this token. The hub stores only its SHA-256 hash.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, up to 63 characters. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "apps"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/machines/apps
+
+{
+  "id": 1,
+  "name": "apps",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:27:26Z",
+  "token": "<token>"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `409` | A machine with this name already exists. |
+| `422` | The name isn't lowercase letters, digits and hyphens, up to 63 characters. |
+
+MCP tool `add_machine`. CLI command `tender machines add apps`.
+
+### `GET /v1/machines/{machine}`
+
+Returns one machine with its latest reading.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "apps",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:27:26Z",
+  "last_seen": "2026-11-15T11:36:35Z",
+  "usage": {
+    "id": 11,
+    "cpu_load": 0.09,
+    "memory_used_percent": 16.06,
+    "disk_used_percent": 27.72,
+    "uptime_seconds": 222901,
+    "created_at": "2026-11-15T11:36:35Z",
+    "updated_at": "2026-11-15T11:36:35Z"
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist. |
+
+MCP tool `list_machines`. CLI command `tender machines list`.
+
+### `DELETE /v1/machines/{machine}`
+
+Removes a machine with its usage, backup settings, snapshots, history, services, actions and notifications.
+
+> [!WARNING]
+> There is no undo. The machine's token stops working at once. Its backups in the bucket stay where they are.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/machines/apps
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist. |
+
+MCP tool `remove_machine`. CLI command `tender machines remove apps --yes`.
+
+### `POST /v1/machines/{machine}/token`
+
+Replaces a machine's token and returns the new one, shown only this once.
+
+> [!WARNING]
+> The old token stops working at once, so the daemon stays offline until you install the new one with `sudo tender install daemon --token-file PATH`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/token
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "token": "<token>"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist. |
+
+MCP tool `rotate_machine_token`. CLI command `tender machines rotate-token apps`.
+
+### `GET /v1/machines/{machine}/usage`
+
+Lists a machine's readings of CPU load, memory, disk and uptime, newest first. The daemon sends one a minute.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `since` | string | No | Query. Only readings from this RFC 3339 time on. |
+| `until` | string | No | Query. Only readings up to this RFC 3339 time. |
+| `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
+| `cursor` | string | No | Query. The `next_cursor` of the previous page. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/usage?limit=2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 11,
+      "cpu_load": 0.09,
+      "memory_used_percent": 16.06,
+      "disk_used_percent": 27.72,
+      "uptime_seconds": 222901,
+      "created_at": "2026-11-15T11:36:35Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    },
+    {
+      "id": 10,
+      "cpu_load": 0.05,
+      "memory_used_percent": 15.51,
+      "disk_used_percent": 27.72,
+      "uptime_seconds": 222841,
+      "created_at": "2026-11-15T11:35:35Z",
+      "updated_at": "2026-11-15T11:35:35Z"
+    }
+  ],
+  "next_cursor": "MTc5NDc0MjUzNToxMA"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `since` or `until` isn't an RFC 3339 time, `limit` isn't from 1 to 500, or `cursor` isn't valid. |
+| `404` | The machine doesn't exist. |
+
+MCP tool `get_machine_usage`. CLI command None. `tender machines list` shows the latest memory and disk.
+
+## Backups
+
+A machine's backups are its settings, the snapshots in its repository and the history of its runs.
+
+### `GET /v1/backups`
+
+Lists every machine's backup state: its settings, latest snapshot, last backup, last check and snapshot count.
+
+A part that doesn't exist yet, such as the settings of a machine you haven't set up, is `null`.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/backups
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "machine": "apps",
+      "settings": {
+        "destination": {
+          "id": 1,
+          "name": "r2",
+          "type": "s3",
+          "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+          "bucket": "my-backups",
+          "path": "tender",
+          "created_at": "2026-11-15T11:27:26Z",
+          "updated_at": "2026-11-15T11:27:26Z"
+        },
+        "schedule": "* * * * *",
+        "retention_days": 30,
+        "created_at": "2026-11-15T11:27:38Z",
+        "updated_at": "2026-11-15T11:27:38Z"
+      },
+      "latest_snapshot": {
+        "id": 10,
+        "restic_id": "94401a6d30d1f26aafcbfed18b1f8c11a69db020fe54c5caf5363f82d6bbf1f2",
+        "size_bytes": 200006,
+        "paths": [
+          "/"
+        ],
+        "created_at": "2026-11-15T11:36:05Z",
+        "updated_at": "2026-11-15T11:36:07Z"
+      },
+      "last_backup": {
+        "id": 20,
+        "snapshot_id": 10,
+        "type": "backup",
+        "status": "completed",
+        "error": null,
+        "created_at": "2026-11-15T11:36:05Z",
+        "updated_at": "2026-11-15T11:36:07Z"
+      },
+      "last_check": {
+        "id": 3,
+        "snapshot_id": null,
+        "type": "check",
+        "status": "completed",
+        "error": null,
+        "created_at": "2026-11-15T11:27:32Z",
+        "updated_at": "2026-11-15T11:27:33Z"
+      },
+      "snapshot_count": 10
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+MCP tool `get_backup_status`. CLI command `tender backups status`.
+
+### `GET /v1/machines/{machine}/backups`
+
+Returns one machine's backup state.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "machine": "apps",
+  "settings": {
+    "destination": {
+      "id": 1,
+      "name": "r2",
+      "type": "s3",
+      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+      "bucket": "my-backups",
+      "path": "tender",
+      "created_at": "2026-11-15T11:27:26Z",
+      "updated_at": "2026-11-15T11:27:26Z"
+    },
+    "schedule": "* * * * *",
+    "retention_days": 30,
+    "created_at": "2026-11-15T11:27:38Z",
+    "updated_at": "2026-11-15T11:27:38Z"
+  },
+  "latest_snapshot": {
+    "id": 10,
+    "restic_id": "94401a6d30d1f26aafcbfed18b1f8c11a69db020fe54c5caf5363f82d6bbf1f2",
+    "size_bytes": 200006,
+    "paths": [
+      "/"
+    ],
+    "created_at": "2026-11-15T11:36:05Z",
+    "updated_at": "2026-11-15T11:36:07Z"
+  },
+  "last_backup": {
+    "id": 20,
+    "snapshot_id": 10,
+    "type": "backup",
+    "status": "completed",
+    "error": null,
+    "created_at": "2026-11-15T11:36:05Z",
+    "updated_at": "2026-11-15T11:36:07Z"
+  },
+  "last_check": {
+    "id": 3,
+    "snapshot_id": null,
+    "type": "check",
+    "status": "completed",
+    "error": null,
+    "created_at": "2026-11-15T11:27:32Z",
+    "updated_at": "2026-11-15T11:27:33Z"
+  },
+  "snapshot_count": 10
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist. |
+
+MCP tool `get_backup_status`. CLI command `tender backups status apps`.
+
+### `GET /v1/machines/{machine}/backups/settings`
+
+Returns a machine's destination, schedule and retention.
+
+The response never holds keys or passwords. Only the machine's own daemon, with its token, gets them on this route.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "destination": {
+    "id": 1,
+    "name": "r2",
+    "type": "s3",
+    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+    "bucket": "my-backups",
+    "path": "tender",
+    "created_at": "2026-11-15T11:27:26Z",
+    "updated_at": "2026-11-15T11:27:26Z"
+  },
+  "schedule": "* * * * *",
+  "retention_days": 30,
+  "created_at": "2026-11-15T11:27:38Z",
+  "updated_at": "2026-11-15T11:27:38Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist. |
+| `404` | The machine has no backup settings yet. This problem's `type` is `https://github.com/g4f4r0/tender#no-backup-settings`, so a client can tell it apart. |
+
+MCP tool `get_backup_status`. CLI command `tender backups status apps`.
+
+### `PUT /v1/machines/{machine}/backups/settings`
+
+Sets a machine's destination, schedule and retention, replacing any earlier settings.
+
+A daemon without settings picks them up within 30 seconds. A daemon that has settings checks for changes every 10 minutes.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `destination` | string | Yes | Body. The destination's name. |
+| `schedule` | string | Yes | Body. A standard 5-field cron expression, in UTC, such as `30 3 * * *`. |
+| `retention_days` | integer | Yes | Body. How many days of snapshots to keep, at least 1. |
+
+#### Example request
+
+```sh
+curl -s -X PUT https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"destination": "r2", "schedule": "30 3 * * *", "retention_days": 30}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "destination": {
+    "id": 1,
+    "name": "r2",
+    "type": "s3",
+    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+    "bucket": "my-backups",
+    "path": "tender",
+    "created_at": "2026-11-15T11:27:26Z",
+    "updated_at": "2026-11-15T11:27:26Z"
+  },
+  "schedule": "30 3 * * *",
+  "retention_days": 30,
+  "created_at": "2026-11-15T11:27:38Z",
+  "updated_at": "2026-11-15T11:40:10Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist. |
+| `422` | The schedule isn't a 5-field cron expression, `retention_days` is below 1, or the destination doesn't exist. |
+
+MCP tool `set_backup`. CLI command `tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-days 30`.
+
+### `DELETE /v1/machines/{machine}/backups/settings`
+
+Removes a machine's backup settings, so its daemon stops backing up. Its snapshots and history stay.
+
+The daemon deletes its saved copy of the settings and the repository password. The backups in the bucket stay there.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or has no backup settings. |
+
+MCP tool `unset_backup`. CLI command `tender backups unset apps`.
+
+### `GET /v1/machines/{machine}/backups/snapshots`
+
+Lists a machine's snapshots, newest first, as its daemon last read them from the repository.
+
+`restic_id` is the snapshot's ID in restic, which `restic restore` takes. `size_bytes` is `null` when restic didn't say.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
+| `cursor` | string | No | Query. The `next_cursor` of the previous page. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots?limit=2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 10,
+      "restic_id": "94401a6d30d1f26aafcbfed18b1f8c11a69db020fe54c5caf5363f82d6bbf1f2",
+      "size_bytes": 200006,
+      "paths": [
+        "/"
+      ],
+      "created_at": "2026-11-15T11:36:05Z",
+      "updated_at": "2026-11-15T11:36:07Z"
+    },
+    {
+      "id": 9,
+      "restic_id": "58db71f28802ee99c9bad66e4c84f3223bfca97bdebe45e5e05ae76ae2cf4dcf",
+      "size_bytes": 200006,
+      "paths": [
+        "/"
+      ],
+      "created_at": "2026-11-15T11:35:05Z",
+      "updated_at": "2026-11-15T11:35:07Z"
+    }
+  ],
+  "next_cursor": "MTc5NDc0MjUwNTo5"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
+| `404` | The machine doesn't exist. |
+
+MCP tool `list_backup_snapshots`. CLI command None. `tender backups status apps` shows the count.
+
+### `GET /v1/machines/{machine}/backups/snapshots/{id}`
+
+Returns one snapshot.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `id` | integer | Yes | Path. The snapshot's `id`, not its `restic_id`. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots/10
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 10,
+  "restic_id": "94401a6d30d1f26aafcbfed18b1f8c11a69db020fe54c5caf5363f82d6bbf1f2",
+  "size_bytes": 200006,
+  "paths": [
+    "/"
+  ],
+  "created_at": "2026-11-15T11:36:05Z",
+  "updated_at": "2026-11-15T11:36:07Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no snapshot with this id. |
+
+MCP tool `list_backup_snapshots`. CLI command None.
+
+### `GET /v1/machines/{machine}/backups/history`
+
+Lists a machine's backup, cleanup and check runs, newest first.
+
+A failed run has the reason in `error`. A completed backup has the snapshot it made in `snapshot_id`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `type` | string | No | Query. Only runs of this type: `backup`, `cleanup` or `check`. |
+| `status` | string | No | Query. Only runs with this status: `pending`, `in_progress`, `completed` or `failed`. |
+| `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
+| `cursor` | string | No | Query. The `next_cursor` of the previous page. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history?limit=2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 21,
+      "snapshot_id": null,
+      "type": "cleanup",
+      "status": "completed",
+      "error": null,
+      "created_at": "2026-11-15T11:36:07Z",
+      "updated_at": "2026-11-15T11:36:08Z"
+    },
+    {
+      "id": 20,
+      "snapshot_id": 10,
+      "type": "backup",
+      "status": "completed",
+      "error": null,
+      "created_at": "2026-11-15T11:36:05Z",
+      "updated_at": "2026-11-15T11:36:07Z"
+    }
+  ],
+  "next_cursor": "MTc5NDc0MjU2NToyMA"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
+| `404` | The machine doesn't exist. |
+| `422` | `type` or `status` isn't one of its values. |
+
+MCP tool `list_backup_history`. CLI command None. `tender backups status apps` shows the last backup.
+
+### `GET /v1/machines/{machine}/backups/history/{id}`
+
+Returns one run.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `id` | integer | Yes | Path. The run's id. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history/20
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 20,
+  "snapshot_id": 10,
+  "type": "backup",
+  "status": "completed",
+  "error": null,
+  "created_at": "2026-11-15T11:36:05Z",
+  "updated_at": "2026-11-15T11:36:07Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no run with this id. |
+
+MCP tool `list_backup_history`. CLI command None.
+
+## Destinations
+
+A destination is an S3 bucket and a path in it, with the access keys and the repository password that every machine's backups there use.
+
+### `GET /v1/backups/destinations`
+
+Lists every destination, by name. Keys and passwords are never part of the response.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/backups/destinations
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "r2",
+      "type": "s3",
+      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+      "bucket": "my-backups",
+      "path": "tender",
+      "created_at": "2026-11-15T11:27:26Z",
+      "updated_at": "2026-11-15T11:27:26Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+MCP tool `list_destinations`. CLI command `tender destinations list`.
+
+### `POST /v1/backups/destinations`
+
+Adds a destination. Without a password, the hub makes one and returns it this once.
+
+`password` appears in the response only when the hub made it. Save it in a password manager. Without it nobody can restore the backups, and it can't change later. The CLI asks for the keys with typing hidden, which keeps them out of your shell history.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, up to 63 characters. |
+| `type` | string | No | Body. `s3`, the only type and the default. |
+| `endpoint` | string | Yes | Body. The S3 endpoint URL, such as `https://<account-id>.r2.cloudflarestorage.com`. |
+| `bucket` | string | Yes | Body. The bucket's name. |
+| `path` | string | No | Body. A folder in the bucket. Each machine's repository goes in a folder named after it below this one. |
+| `access_key_id` | string | Yes | Body. The access key ID. The hub stores it encrypted. |
+| `secret_access_key` | string | Yes | Body. The secret access key. The hub stores it encrypted. |
+| `password` | string | No | Body. The repository password. Leave it out and the hub makes a strong one. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "r2", "endpoint": "https://<account-id>.r2.cloudflarestorage.com", "bucket": "my-backups", "path": "tender", "access_key_id": "<access key ID>", "secret_access_key": "<secret access key>"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/backups/destinations/r2
+
+{
+  "id": 1,
+  "name": "r2",
+  "type": "s3",
+  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+  "bucket": "my-backups",
+  "path": "tender",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:27:26Z",
+  "password": "<password>"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `409` | A destination with this name, or with this endpoint, bucket and path, already exists. |
+| `422` | The name isn't valid, the type isn't `s3`, the endpoint isn't an http or https URL, or the bucket or a key is missing. |
+
+MCP tool `add_destination`. CLI command `tender destinations add r2 --endpoint URL --bucket my-backups --path tender`.
+
+### `GET /v1/backups/destinations/{destination}`
+
+Returns one destination, without its keys or password.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `destination` | string | Yes | Path. The destination's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "r2",
+  "type": "s3",
+  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+  "bucket": "my-backups",
+  "path": "tender",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:27:26Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The destination doesn't exist. |
+
+MCP tool `list_destinations`. CLI command `tender destinations list`.
+
+### `PATCH /v1/backups/destinations/{destination}`
+
+Changes a destination's location or keys. The password can't change, because the repositories are encrypted with it.
+
+Move the data yourself before you point a destination at another bucket or path. Daemons check for the new location and keys every 10 minutes.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `destination` | string | Yes | Path. The destination's name. |
+| `endpoint` | string | No | Body. The new endpoint URL. |
+| `bucket` | string | No | Body. The new bucket. |
+| `path` | string | No | Body. The new folder in the bucket. |
+| `access_key_id` | string | No | Body. The new access key ID. |
+| `secret_access_key` | string | No | Body. The new secret access key. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/backups/destinations/r2 \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"access_key_id": "<new access key ID>", "secret_access_key": "<new secret access key>"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "r2",
+  "type": "s3",
+  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+  "bucket": "my-backups",
+  "path": "tender",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:40:02Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The destination doesn't exist. |
+| `409` | Another destination already uses the new endpoint, bucket and path. |
+| `422` | The body has `password`, or sets the endpoint, bucket or a key to an empty string, or the endpoint isn't an http or https URL. |
+
+MCP tool `update_destination`. CLI command None.
+
+### `DELETE /v1/backups/destinations/{destination}`
+
+Removes a destination that no machine backs up to.
+
+> [!WARNING]
+> The hub forgets the destination's keys and password. The backups already in the bucket stay there, and you need the password from your password manager to restore them.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `destination` | string | Yes | Path. The destination's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The destination doesn't exist. |
+| `409` | A machine still backs up to it. Delete those machines' backup settings first. |
+
+MCP tool `remove_destination`. CLI command `tender destinations remove r2`.
+
+## Notifications
+
+A notification is an alert about a machine, its backups or a service, and the emails it sends go to every recipient. See [Alerts](alerts.md) for each type.
+
+### `GET /v1/notifications`
+
+Lists every machine's notifications, newest first.
+
+A notification is `pending` until its email goes out, `sent` while the problem lasts and `resolved` once it is gone. `service` is `null` for an alert that isn't about one service.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `status` | string | No | Query. Only notifications with this status: `pending`, `sent` or `resolved`. |
+| `severity` | string | No | Query. Only notifications with this severity: `info`, `warning` or `critical`. |
+| `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
+| `cursor` | string | No | Query. The `next_cursor` of the previous page. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/notifications?limit=2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 3,
+      "machine": "apps",
+      "service": "web",
+      "type": "service_memory_high",
+      "severity": "warning",
+      "status": "resolved",
+      "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "created_at": "2026-11-15T11:35:35Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    },
+    {
+      "id": 2,
+      "machine": "apps",
+      "service": null,
+      "type": "docker_unreachable",
+      "severity": "critical",
+      "status": "resolved",
+      "content": "Docker on apps is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.",
+      "created_at": "2026-11-15T11:32:35Z",
+      "updated_at": "2026-11-15T11:34:35Z"
+    }
+  ],
+  "next_cursor": "MTc5NDc0MjM1NToy"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
+| `422` | `status` or `severity` isn't one of its values. |
+
+MCP tool `list_notifications`. CLI command `tender status`, which shows the open ones.
+
+### `GET /v1/machines/{machine}/notifications`
+
+Lists one machine's notifications, newest first.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `status` | string | No | Query. `pending`, `sent` or `resolved`. |
+| `severity` | string | No | Query. `info`, `warning` or `critical`. |
+| `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
+| `cursor` | string | No | Query. The `next_cursor` of the previous page. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?limit=2
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 3,
+      "machine": "apps",
+      "service": "web",
+      "type": "service_memory_high",
+      "severity": "warning",
+      "status": "resolved",
+      "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "created_at": "2026-11-15T11:35:35Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    },
+    {
+      "id": 2,
+      "machine": "apps",
+      "service": null,
+      "type": "docker_unreachable",
+      "severity": "critical",
+      "status": "resolved",
+      "content": "Docker on apps is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.",
+      "created_at": "2026-11-15T11:32:35Z",
+      "updated_at": "2026-11-15T11:34:35Z"
+    }
+  ],
+  "next_cursor": "MTc5NDc0MjM1NToy"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
+| `404` | The machine doesn't exist. |
+| `422` | `status` or `severity` isn't one of its values. |
+
+MCP tool `list_notifications`. CLI command `tender status`.
+
+### `GET /v1/machines/{machine}/notifications/{id}`
+
+Returns one of a machine's notifications.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `id` | integer | Yes | Path. The notification's id. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications/3
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 3,
+  "machine": "apps",
+  "service": "web",
+  "type": "service_memory_high",
+  "severity": "warning",
+  "status": "resolved",
+  "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+  "created_at": "2026-11-15T11:35:35Z",
+  "updated_at": "2026-11-15T11:36:35Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no notification with this id. |
+
+MCP tool `list_notifications`. CLI command None.
+
+### `GET /v1/notifications/recipients`
+
+Lists the addresses that get every alert email, in the order you added them.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/notifications/recipients
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 1,
+      "email": "ops@example.com",
+      "created_at": "2026-11-15T11:27:26Z",
+      "updated_at": "2026-11-15T11:27:26Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+MCP tool `list_recipients`. CLI command `tender recipients list`.
+
+### `POST /v1/notifications/recipients`
+
+Adds an address that gets every alert email.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `email` | string | Yes | Body. A bare address, such as `ops@example.com`, without a display name. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/recipients \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "ops@example.com"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/notifications/recipients/1
+
+{
+  "id": 1,
+  "email": "ops@example.com",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:27:26Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `409` | The address is already a recipient, in any letter case. |
+| `422` | The value isn't one bare email address. |
+
+MCP tool `add_recipient`. CLI command `tender recipients add ops@example.com`.
+
+### `GET /v1/notifications/recipients/{id}`
+
+Returns one recipient.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | integer | Yes | Path. The recipient's id. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/notifications/recipients/1
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "email": "ops@example.com",
+  "created_at": "2026-11-15T11:27:26Z",
+  "updated_at": "2026-11-15T11:27:26Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | No recipient has this id. |
+
+MCP tool `get_recipient`. CLI command None. `tender recipients list` shows every recipient.
+
+### `DELETE /v1/notifications/recipients/{id}`
+
+Removes a recipient. Alerts are still recorded when nobody is left.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | integer | Yes | Path. The recipient's id. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/notifications/recipients/1
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | No recipient has this id. |
+
+MCP tool `remove_recipient`. CLI command `tender recipients remove ops@example.com`.
+
+### `POST /v1/notifications/test`
+
+Sends a test email to every recipient, to check that alerts arrive.
+
+The subject is `Tender test email`.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/test
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+
+{
+  "sent_to": [
+    "ops@example.com"
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `422` | Email is off on this hub, or there are no recipients. |
+| `502` | The SMTP server refused the email. The detail has its answer. |
+
+MCP tool `send_test_email`. CLI command `tender email test`.
+
+## Services
+
+A service is a Docker container on a machine, as the machine's daemon reported it in its latest report. See [Services](services.md).
+
+### `GET /v1/services`
+
+Lists every machine's services, by machine, with whether its Docker answers.
+
+`docker` is `running` or `unreachable`, from the latest report, or `null` before the first. While Docker is unreachable every `state` is `unknown`.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/services
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "machine": "apps",
+      "docker": "running",
+      "data": [
+        {
+          "id": 3,
+          "machine": "apps",
+          "name": "web",
+          "project": "apps",
+          "container_id": "c0ffee04",
+          "image": "ghcr.io/example/web:2.4",
+          "state": "running",
+          "health": "healthy",
+          "exit_code": null,
+          "restart_count": 0,
+          "restart_policy": "unless-stopped",
+          "started_at": "2026-11-15T10:32:35Z",
+          "memory_bytes": 209715200,
+          "memory_limit_bytes": 1073741824,
+          "cpu_percent": 12.5,
+          "alerts_enabled": true,
+          "stopped_by_tender": false,
+          "created_at": "2026-11-15T11:27:27Z",
+          "updated_at": "2026-11-15T11:36:35Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+MCP tool `list_services`. CLI command `tender services list`.
+
+### `GET /v1/machines/{machine}/services`
+
+Lists one machine's services, by name.
+
+`memory_bytes`, `memory_limit_bytes` and `cpu_percent` are `null` for a stopped container. `memory_limit_bytes` is also `null` without a limit, and `cpu_percent` on a service's first report, where 100 is one whole CPU.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "machine": "apps",
+  "docker": "running",
+  "data": [
+    {
+      "id": 4,
+      "machine": "apps",
+      "name": "migrate",
+      "project": null,
+      "container_id": "c0ffee03",
+      "image": "migrate:1",
+      "state": "exited",
+      "health": null,
+      "exit_code": 0,
+      "restart_count": 0,
+      "restart_policy": "no",
+      "started_at": null,
+      "memory_bytes": null,
+      "memory_limit_bytes": null,
+      "cpu_percent": null,
+      "alerts_enabled": true,
+      "stopped_by_tender": false,
+      "created_at": "2026-11-15T11:27:27Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    },
+    {
+      "id": 3,
+      "machine": "apps",
+      "name": "web",
+      "project": "apps",
+      "container_id": "c0ffee04",
+      "image": "ghcr.io/example/web:2.4",
+      "state": "running",
+      "health": "healthy",
+      "exit_code": null,
+      "restart_count": 0,
+      "restart_policy": "unless-stopped",
+      "started_at": "2026-11-15T10:32:35Z",
+      "memory_bytes": 209715200,
+      "memory_limit_bytes": 1073741824,
+      "cpu_percent": 12.5,
+      "alerts_enabled": true,
+      "stopped_by_tender": false,
+      "created_at": "2026-11-15T11:27:27Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist. |
+
+MCP tool `list_services`. CLI command `tender services list apps`.
+
+### `GET /v1/machines/{machine}/services/{service}`
+
+Returns one service.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The container's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services/web
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 3,
+  "machine": "apps",
+  "name": "web",
+  "project": "apps",
+  "container_id": "c0ffee04",
+  "image": "ghcr.io/example/web:2.4",
+  "state": "running",
+  "health": "healthy",
+  "exit_code": null,
+  "restart_count": 0,
+  "restart_policy": "unless-stopped",
+  "started_at": "2026-11-15T10:32:35Z",
+  "memory_bytes": 209715200,
+  "memory_limit_bytes": 1073741824,
+  "cpu_percent": 12.5,
+  "alerts_enabled": true,
+  "stopped_by_tender": false,
+  "created_at": "2026-11-15T11:27:27Z",
+  "updated_at": "2026-11-15T11:36:35Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+
+MCP tool `list_services`. CLI command `tender services list apps`.
+
+### `PATCH /v1/machines/{machine}/services/{service}`
+
+Turns a service's alerts off or on. Turning them off resolves its open alerts.
+
+The setting belongs to the service's name, so it stays when the container is made again.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The container's name. |
+| `alerts_enabled` | boolean | No | Body. `false` to stop the service's alerts, `true` to start them again. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps/services/web \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"alerts_enabled": false}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 3,
+  "machine": "apps",
+  "name": "web",
+  "project": "apps",
+  "container_id": "c0ffee04",
+  "image": "ghcr.io/example/web:2.4",
+  "state": "running",
+  "health": "healthy",
+  "exit_code": null,
+  "restart_count": 0,
+  "restart_policy": "unless-stopped",
+  "started_at": "2026-11-15T10:32:35Z",
+  "memory_bytes": 209715200,
+  "memory_limit_bytes": 1073741824,
+  "cpu_percent": 12.5,
+  "alerts_enabled": false,
+  "stopped_by_tender": false,
+  "created_at": "2026-11-15T11:27:27Z",
+  "updated_at": "2026-11-15T11:36:35Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `422` | `alerts_enabled` isn't a boolean. |
+
+MCP tool `set_service_alerts`. CLI command `tender services alerts apps web off`.
+
+## Actions
+
+An action is work for a machine's daemon: starting, stopping or restarting a service, or reading a service's logs or the machine's journal. The hub keeps each machine's last 100.
+
+### `POST /v1/machines/{machine}/actions`
+
+Queues an action for the machine's daemon and answers at once with the action as `pending`.
+
+To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 200}`. Logs output is at most 256 KiB, dropping the oldest lines past it.
+
+> [!WARNING]
+> A `stop` takes the service offline until something starts it again. Logs can hold secrets. The hub returns them only on `GET .../actions/{id}`, clears them 1 hour after the action finishes, and never puts them in alerts or emails.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `type` | string | Yes | Body. `start`, `stop`, `restart` or `logs`. |
+| `service` | string | For `start`, `stop` and `restart` | Body. The container's name. With `logs`, read this service's logs; leave it out to read the machine's journal. |
+| `unit` | string | No | Body. Machine logs only. Only this systemd unit, such as `tenderd` or `nginx.service`. |
+| `priority` | string | No | Body. Machine logs only. Only this priority and the more severe ones: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. |
+| `since` | string | No | Body. Logs only. Only entries from this far back, such as `30m`, `1h` or `7d`, at most `7d`. |
+| `lines` | integer | No | Body. Logs only. How many of the newest lines, from 1 to 2000. The default is 200. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "restart", "service": "web"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/14
+
+{
+  "id": 14,
+  "machine": "apps",
+  "type": "restart",
+  "service": "web",
+  "unit": null,
+  "priority": null,
+  "since": null,
+  "lines": null,
+  "status": "pending",
+  "output_cleared": false,
+  "created_at": "2026-11-15T11:40:20Z",
+  "updated_at": "2026-11-15T11:40:20Z",
+  "output": null
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `422` | The type isn't one of the four, a service action has no service or has a logs field, or a logs field is out of range. |
+
+MCP tool `start_service`, `stop_service`, `restart_service`, `get_service_logs` or `get_machine_logs`. CLI command `tender services start|stop|restart|logs apps web`, or `tender logs apps`.
+
+### `GET /v1/machines/{machine}/actions`
+
+Lists a machine's last 100 actions, newest first, without their output.
+
+`output_cleared` is `true` once the hub has cleared a logs action's output.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/actions
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 7,
+      "machine": "apps",
+      "type": "logs",
+      "service": "web",
+      "unit": null,
+      "priority": null,
+      "since": "10m",
+      "lines": 3,
+      "status": "completed",
+      "output_cleared": true,
+      "created_at": "2026-11-15T11:28:14Z",
+      "updated_at": "2026-11-15T11:28:35Z"
+    },
+    {
+      "id": 6,
+      "machine": "apps",
+      "type": "logs",
+      "service": null,
+      "unit": "tenderd",
+      "priority": "warning",
+      "since": "1h",
+      "lines": 2,
+      "status": "completed",
+      "output_cleared": true,
+      "created_at": "2026-11-15T11:28:13Z",
+      "updated_at": "2026-11-15T11:28:34Z"
+    },
+    {
+      "id": 1,
+      "machine": "apps",
+      "type": "restart",
+      "service": "web",
+      "unit": null,
+      "priority": null,
+      "since": null,
+      "lines": null,
+      "status": "completed",
+      "output_cleared": false,
+      "created_at": "2026-11-15T11:28:07Z",
+      "updated_at": "2026-11-15T11:28:07Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The request has `wait`, which only the machine's daemon may send. |
+| `404` | The machine doesn't exist. |
+
+MCP tool `list_actions`. CLI command `tender actions list apps`.
+
+### `GET /v1/machines/{machine}/actions/{id}`
+
+Returns one action with its output: the logs, or why it failed.
+
+`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a logs action's output. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `id` | integer | Yes | Path. The action's id. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/actions/8
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 8,
+  "machine": "apps",
+  "type": "logs",
+  "service": null,
+  "unit": null,
+  "priority": "warning",
+  "since": null,
+  "lines": 5,
+  "status": "completed",
+  "output_cleared": false,
+  "created_at": "2026-11-15T11:28:15Z",
+  "updated_at": "2026-11-15T11:28:15Z",
+  "output": "2026-11-15T11:27:15.000000000Z tenderd.service backup took 41s, longer than usual.\n2026-11-15T11:28:15.000000000Z kernel eth0: link up\n"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no action with this id. |
+
+MCP tool `get_action`. CLI command `tender actions show apps 8`.
+
+## Daemon routes
+
+The daemons use these routes to report and to take their work. Each needs the machine's own token as `Authorization: Bearer <token>`, and you never call them yourself.
+
+| Route | What the daemon does with it |
+| --- | --- |
+| `POST /v1/machines/{machine}/usage` | Sends a reading of CPU load, memory, disk and uptime, once a minute. |
+| `GET /v1/machines/{machine}/backups/settings` | Gets the machine's settings with the destination's keys and password. People get the same route without them. |
+| `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
+| `POST /v1/machines/{machine}/backups/history` | Records a run as it starts, or a finished run it couldn't send while the hub was down. |
+| `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |
+| `PUT /v1/machines/{machine}/services` | Replaces the machine's list of services, or says Docker is unreachable, once a minute and after each start, stop or restart. |
+| `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the next pending action, and marks it `in_progress`. |
+| `PATCH /v1/machines/{machine}/actions/{id}` | Records how an action ended, with its output. |
+
+## Next steps
+
+1. [MCP reference](mcp.md) has the same operations as tools for an AI client.
+2. [CLI reference](cli.md) has the `tender` commands that call these routes.
+3. [Security](security.md) explains who can reach the hub.

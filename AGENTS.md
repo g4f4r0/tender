@@ -21,3 +21,4 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 4. REST lives under `/v1` as nested resources (`/v1/machines/{machine}/backups/snapshots`). JSON fields match column names. Errors are RFC 9457 problem details.
 5. restic runs as a subprocess with fixed argument lists, never through a shell. Status comes from its exit code.
 6. Plain names. Add a package, option, or file only when the current milestone needs it.
+7. Every route people may call has an MCP tool, listed in `mcpCoverage` in `cmd/tender/parity_test.go`. User docs are plain Markdown in `docs/`; `docs/api.md` and `docs/mcp.md` name every such route and tool, and the same test fails when one is missing.
