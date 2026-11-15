@@ -116,13 +116,15 @@ func (s *Store) tailnetNames(ctx context.Context) (map[int64]string, error) {
 	return out, rs.Err()
 }
 
-// routeURL is where a route answers, or nil for a tailscale route of a machine whose tailnet name
+// routeURL is where a route answers, without the port when it is 443, or nil for a tailscale route of a machine whose tailnet name
 // isn't known yet.
 func routeURL(r Route, tailnet string) *string {
 	var u string
 	switch {
 	case r.Host != nil:
 		u = "https://" + *r.Host
+	case r.HTTPSPort != nil && tailnet != "" && *r.HTTPSPort == 443:
+		u = "https://" + tailnet
 	case r.HTTPSPort != nil && tailnet != "":
 		u = "https://" + tailnet + ":" + strconv.Itoa(*r.HTTPSPort)
 	default:
