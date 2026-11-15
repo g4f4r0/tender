@@ -644,6 +644,18 @@ func TestUnitsFollowTheDecisions(t *testing.T) {
 	if strings.Contains(string(daemon), "LoadCredential") {
 		t.Error("daemon unit still loads credentials")
 	}
+	// The daemon runs at normal priority, so a backup can't starve its pings; it lowers only restic,
+	// which the system call filter must let it do.
+	for _, line := range strings.Split(string(daemon), "\n") {
+		for _, starves := range []string{"Nice=", "CPUSchedulingPolicy=", "IOSchedulingClass=", "IOSchedulingPriority=", "CPUWeight=", "IOWeight="} {
+			if strings.HasPrefix(line, starves) {
+				t.Errorf("daemon unit lowers the whole daemon: %s", line)
+			}
+		}
+	}
+	if !strings.Contains(string(daemon), "\nSystemCallFilter=setpriority sched_setscheduler ioprio_set\n") {
+		t.Error("daemon unit doesn't let the daemon lower restic's priority")
+	}
 	for _, want := range []string{"User=tender", "CapabilityBoundingSet=", "StateDirectory=tender/hub", "Restart=always",
 		"EnvironmentFile=/etc/tender/hub.env", "ExecStart=/usr/local/bin/tender hub",
 		"InaccessiblePaths=-/etc/tender/credentials"} {

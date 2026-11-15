@@ -11,10 +11,9 @@ Group=tender
 ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml
 Restart=always
 RestartSec=30
-# Be gentle with the host while backing it up.
-Nice=10
-IOSchedulingClass=idle
-CPUSchedulingPolicy=idle
+# The daemon runs at normal priority, so its Docker pings and reports keep time. It starts restic at the
+# lowest CPU and IO priority, to be gentle with the host while backing it up; the system call filter below
+# lets it lower a priority, and without CAP_SYS_NICE it can't raise one.
 
 # Own directories: /var/lib/tender/daemon, /var/cache/tender (restic cache), /etc/tender (root-owned, read-only).
 StateDirectory=tender/daemon
@@ -56,6 +55,7 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+SystemCallFilter=setpriority sched_setscheduler ioprio_set
 SocketBindDeny=any
 UMask=0077
 KeyringMode=private

@@ -174,6 +174,7 @@ func (r *Restic) scrub(s string) string {
 
 // run starts restic and returns its exit code and parsed stderr. A non-nil error means restic
 // couldn't be started. SIGINT cancels it so it releases its lock; SIGKILL follows after 30 s.
+// It runs at the lowest CPU and IO priority; see startGently.
 func (r *Restic) run(ctx context.Context, stdout io.Writer, args ...string) (*stderrParser, int, error) {
 	tmp := filepath.Join(r.StateDir, "tmp")
 	for _, dir := range []string{tmp, r.CacheDir} {
@@ -201,7 +202,10 @@ func (r *Restic) run(ctx context.Context, stdout io.Writer, args ...string) (*st
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGINT) }
 	cmd.WaitDelay = 30 * time.Second
 
-	err := cmd.Run()
+	err := startGently(cmd)
+	if err == nil {
+		err = cmd.Wait()
+	}
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
