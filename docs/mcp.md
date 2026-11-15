@@ -1487,7 +1487,7 @@ Turns alerts on or off for one service. Alerts are on for every new service.
 
 #### Returns
 
-The service, as `list_services` shows it. With alerts off, its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
+The service, as `list_services` shows it. With alerts off, its open alerts resolve within a minute. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
 #### Limits
 

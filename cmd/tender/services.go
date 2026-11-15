@@ -205,7 +205,7 @@ func servicesLogs(args []string, s session) error {
 func servicesAlerts(args []string, s session) error {
 	fs := newFlagSet("services alerts", "MACHINE SERVICE on|off [--hub URL]",
 		"Turn a service's alert emails on or off. They are on for every new service: an email when it stops, keeps restarting, "+
-			"turns unhealthy or uses more than 90% of its memory limit. Off, its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried. The switch follows the service's name.")
+			"turns unhealthy or uses more than 90% of its memory limit. Off, its open alerts resolve within a minute. The switch follows the service's name.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -226,7 +226,7 @@ func servicesAlerts(args []string, s session) error {
 	if on {
 		say(s.out, "Alerts for %s on %s are on.", service, machine)
 	} else {
-		say(s.out, "Alerts for %s on %s are off. Its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried.", service, machine)
+		say(s.out, "Alerts for %s on %s are off. Its open alerts resolve within a minute.", service, machine)
 	}
 	return nil
 }
