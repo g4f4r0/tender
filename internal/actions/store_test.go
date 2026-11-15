@@ -91,6 +91,7 @@ func TestValidate(t *testing.T) {
 		"since too long":         {Input{Type: TypeLogs, Since: ptr("8d")}, "since must be"},
 		"since not a duration":   {Input{Type: TypeLogs, Since: ptr("yesterday")}, "since must be"},
 		"zero lines":             {Input{Type: TypeLogs, Lines: ptr(0)}, "lines must be"},
+		"negative lines":         {Input{Type: TypeLogs, Lines: ptr(-5)}, "lines must be"},
 		"too many lines":         {Input{Type: TypeLogs, Lines: ptr(2001)}, "lines must be"},
 	} {
 		err := c.in.validate()

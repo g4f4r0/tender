@@ -21,7 +21,7 @@ type serviceInput struct {
 type serviceLogsInput struct {
 	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
 	Service string `json:"service" jsonschema:"service name, the container name, as list_services shows it"`
-	Lines   int    `json:"lines,omitempty" jsonschema:"how many of the newest lines, 1 to 2000, default 200"`
+	Lines   *int   `json:"lines,omitempty" jsonschema:"how many of the newest lines, 1 to 2000, default 200"`
 	Since   string `json:"since,omitempty" jsonschema:"only lines from this far back, such as 30m, 1h or 7d, at most 7d; leave out for no limit"`
 }
 
@@ -29,7 +29,7 @@ type machineLogsInput struct {
 	Machine  string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
 	Unit     string `json:"unit,omitempty" jsonschema:"only this systemd unit, such as tenderd or nginx.service; leave out for every unit"`
 	Priority string `json:"priority,omitempty" jsonschema:"only this priority and the more severe ones: emerg, alert, crit, err, warning, notice, info or debug"`
-	Lines    int    `json:"lines,omitempty" jsonschema:"how many of the newest entries, 1 to 2000, default 200"`
+	Lines    *int   `json:"lines,omitempty" jsonschema:"how many of the newest entries, 1 to 2000, default 200"`
 	Since    string `json:"since,omitempty" jsonschema:"only entries from this far back, such as 30m, 1h or 7d, at most 7d; leave out for no limit"`
 }
 
@@ -78,14 +78,14 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		"Get a service's newest lines of output, stdout and stderr together, each line starting with Docker's timestamp. "+logsLimits+
 			actionFields+waitText,
 		func(ctx context.Context, in serviceLogsInput) (Action, error) {
-			return s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeLogs, Service: &in.Service, Lines: lines(in.Lines), Since: opt(in.Since)})
+			return s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeLogs, Service: &in.Service, Lines: in.Lines, Since: opt(in.Since)})
 		})
 	mcp.AddReadOnly(m, "get_machine_logs", "Get machine logs",
 		"Get the newest entries of a machine's systemd journal, read by the daemon with journalctl, one per line: the time in UTC, "+
 			"the unit (or the program) and the message. Filter by unit, priority and since. "+logsLimits+actionFields+waitText,
 		func(ctx context.Context, in machineLogsInput) (Action, error) {
 			return s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeLogs, Unit: opt(in.Unit), Priority: opt(in.Priority),
-				Lines: lines(in.Lines), Since: opt(in.Since)})
+				Lines: in.Lines, Since: opt(in.Since)})
 		})
 
 	mcp.AddReadOnly(m, "get_action", "Get an action",
@@ -116,13 +116,6 @@ func opt(s string) *string {
 		return nil
 	}
 	return &s
-}
-
-func lines(n int) *int {
-	if n <= 0 {
-		return nil
-	}
-	return &n
 }
 
 // toolAction queues an action and waits for it. A failed action is the tool's error. A missing

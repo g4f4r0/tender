@@ -50,7 +50,11 @@ func TestServiceTools(t *testing.T) {
 		case a.Service != nil && *a.Service == "worker":
 			return actions.Patch{Status: actions.StatusFailed, Output: ptr("Could not " + a.Type + " worker: Docker answered 500: boom.")}
 		case a.Type == actions.TypeLogs && a.Service == nil:
-			return actions.Patch{Status: actions.StatusCompleted, Output: ptr("2026-11-15T10:00:00.000000000Z " + *a.Unit + " journal line\n")}
+			unit := "kernel"
+			if a.Unit != nil {
+				unit = *a.Unit
+			}
+			return actions.Patch{Status: actions.StatusCompleted, Output: ptr("2026-11-15T10:00:00.000000000Z " + unit + " journal line\n")}
 		case a.Type == actions.TypeLogs:
 			return actions.Patch{Status: actions.StatusCompleted, Output: ptr(strings.Repeat("log line\n", *a.Lines))}
 		}
@@ -129,6 +133,17 @@ func TestServiceTools(t *testing.T) {
 	res = callTool(t, cs, "restart_service", map[string]any{"machine": "g4f4r0-code", "service": "nope"})
 	if !res.IsError || errorText(res) != `Service "nope" doesn't exist on g4f4r0-code. Call list_services to see the names.` {
 		t.Errorf("unknown service = %s", errorText(res))
+	}
+	// lines below 1 is a mistake to name, as REST and the CLI do, not a quiet default.
+	for _, n := range []int{0, -5} {
+		for tool, args := range map[string]map[string]any{
+			"get_service_logs": {"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": n},
+			"get_machine_logs": {"machine": "g4f4r0-code", "lines": n},
+		} {
+			if res := callTool(t, cs, tool, args); !res.IsError || !strings.Contains(errorText(res), "lines must be a whole number from 1 to 2000") {
+				t.Errorf("%s with lines %d: %+v, want the lines error", tool, n, res)
+			}
+		}
 	}
 	if res := callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 5000}); !res.IsError {
 		t.Error("5000 lines were accepted")

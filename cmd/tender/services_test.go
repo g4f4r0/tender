@@ -259,6 +259,10 @@ func TestLogs(t *testing.T) {
 	}
 	mustFail(t, h, a, `logs needs one machine name. Run "tender logs --help" for usage.`, "logs")
 	mustFail(t, h, a, `--since must be a duration such as 30m, 1h or 7d, at most 7d. Run "tender logs --help" for usage.`, "logs", "apps", "--since", "forever")
+	for _, n := range []string{"0", "-5", "2001"} {
+		mustFail(t, h, a, `--lines must be from 1 to 2000. Run "tender logs --help" for usage.`, "logs", "apps", "--lines", n)
+		mustFail(t, h, a, `--lines must be from 1 to 2000. Run "tender services logs --help" for usage.`, "services", "logs", "apps", "web-1", "--lines", n)
+	}
 
 	// tender actions list and show.
 	want := "ID   TYPE   OF                                          STATUS      ASKED\n" +
