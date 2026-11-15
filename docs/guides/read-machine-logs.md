@@ -4,7 +4,7 @@ Print the newest entries of a machine's systemd journal, filtered by unit, prior
 
 ## Prerequisites
 
-1. A daemon on the machine, installed or updated with Tender v0.3.0 or later, so it is in the `systemd-journal` group.
+1. A daemon on the machine, installed or updated with Tender v0.3.0 or later, so it runs as root and can read the journal.
 2. The `tender` command on a machine that can reach the hub.
 
 ## Read the journal
@@ -71,7 +71,7 @@ After that hour, `actions show` says when the logs were cleared. The action stay
 ## If it fails
 
 1. `Could not read the machine's logs: journalctl is not installed on this machine, so Tender can't read its logs.` means the machine has no systemd journal.
-2. `apps has no logs.` for a unit you know writes to the journal usually means the daemon isn't in the `systemd-journal` group yet. Run `sudo tender install refresh` on the machine.
+2. `apps has no logs.` for a unit you know writes to the journal usually means the daemon runs a version before v0.3.0, without access to the journal. Run `sudo tender install refresh` on the machine.
 
 ## Next steps
 

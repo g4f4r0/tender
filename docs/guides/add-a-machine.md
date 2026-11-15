@@ -63,5 +63,5 @@ The first backup starts within a minute. The next ones follow the schedule.
 
 ## Next steps
 
-1. [Install](../install.md#docker-and-the-journal) explains the groups the daemon joins.
+1. [Install](../install.md#the-daemon-runs-as-root) explains why the daemon runs as root.
 2. [Backups](../backups.md) explains what a backup covers.

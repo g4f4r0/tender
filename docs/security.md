@@ -1,6 +1,6 @@
 # Security
 
-Learn who can reach the hub, how Tender stores your keys and passwords, and what the daemon can do on each machine.
+Learn who can reach the hub, how Tender stores your keys and passwords, what the daemon can do on each machine, and what it checks.
 
 ## The hub has no login
 
@@ -25,7 +25,7 @@ Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in t
 
 Each daemon signs in with its own token. The hub stores only a SHA-256 hash of it. A token works only for its own machine: it can't report for another machine or get another machine's keys.
 
-The daemon reads its token from `/etc/tender/credentials/hub-token`, readable only by root and the `tender` user. If a token leaks, rotate it:
+The daemon reads its token from `/etc/tender/credentials/hub-token`, readable only by root and the `tender` group. If a token leaks, rotate it:
 
 ```sh
 tender machines rotate-token apps
@@ -39,18 +39,93 @@ sudo tender install daemon --token-file /root/apps-token
 
 ## What the daemon can do
 
-The daemon runs as the `tender` system user under a systemd sandbox:
+The daemon, `tenderd`, runs as root. It backs up every file, controls Docker and reads every unit's journal, which made it root-equivalent even as the `tender` user, so Tender says so plainly. The hub, the part on the network, stays the unprivileged `tender` user.
 
-1. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, so it can back them up.
-2. It can write only to its own folder, `/var/lib/tender/daemon`, and to restic's cache, `/var/cache/tender`.
-3. On a machine with Docker, it is in the `docker` group, so it can list, start, stop and restart containers and read their logs.
-4. On a machine with systemd's journal, it is in the `systemd-journal` group, so it can read every unit's logs.
-5. It may lower a process's CPU and IO priority, which it does for restic, but without `CAP_SYS_NICE` it can't raise one. [Backups](backups.md#destinations-settings-and-runs) explains why.
+A systemd sandbox keeps a bug in the daemon from changing the system:
+
+1. It holds three capabilities only. `CAP_DAC_READ_SEARCH` reads every file, for backups. `CAP_NET_ADMIN` reads the firewall's rules, and `CAP_SYS_PTRACE` names the process behind each listening socket, for the security checks. Without `CAP_DAC_OVERRIDE` it can't write another user's files.
+2. With `ProtectSystem=strict`, it can write only its own folder, `/var/lib/tender/daemon`, and restic's cache, `/var/cache/tender`.
+3. `NoNewPrivileges`, the `ProtectKernel` settings and a system call filter keep it from loading modules, changing the clock or gaining privileges.
+4. It may lower a process's CPU and IO priority, which it does for restic, but without `CAP_SYS_NICE` it can't raise one. [Backups](backups.md#destinations-settings-and-runs) explains why.
+
+Two jobs must change the whole system, so they run outside the sandbox, as transient units that systemd starts through `systemd-run --wait --collect`:
+
+1. `tenderupdate` installs a Tender release, as [Updates](updates.md#how-an-update-works) explains. It takes only a version, and installs only a release signed with Tender's key.
+2. `tenderupgrade` upgrades the system's packages when someone runs `tender machines upgrade`.
 
 > [!WARNING]
-> The `docker` group is root-equivalent: whoever can use Docker's socket controls the whole machine. The daemon uses it only for the things above, but anyone who can reach the hub can ask it to. That is one more reason to keep the hub private.
+> Anyone who can reach the hub can ask a daemon to stop a service, read logs, upgrade packages or update Tender. That is one more reason to keep the hub private.
 
-The daemon keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
+The daemon keeps the last settings it got from the hub, readable only by root, so backups go on when the hub is unreachable.
+
+## Signed releases
+
+Every update checks that the release's `SHA256SUMS` carries an ed25519 signature from a key built into Tender, then checks the binary against `SHA256SUMS`. A release someone changed on GitHub fails the signature and never installs. Updates also refuse prereleases, drafts and older versions. [Updates](updates.md#signed-releases) has the key.
+
+Tender v0.2.2 and earlier can't check signatures, so the one `sudo tender update` from them to v0.3.0 checks only the release's checksums. Every update after it checks the signature.
+
+## Security checks
+
+The daemon checks its machine when it starts and every 15 minutes, and reports what it found to the hub. It only reads, and changes nothing. The checks run on Debian and Ubuntu; on any other system each one says `unsupported` and never alerts.
+
+| Check | What it reads | Alert |
+| --- | --- | --- |
+| Firewall | `ufw status verbose`, or without ufw, the input chains of `nft -j list chains`, or `iptables -S INPUT`. | `firewall_off` when no active firewall denies incoming traffic by default. |
+| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Docker's published ports are flagged, because they go around ufw. | `port_exposed`, one per port, unless the port is on the machine's allowlist. |
+| SSH | `PasswordAuthentication` and `PermitRootLogin` from `sshd -T`. | `ssh_weak` when either allows a password. |
+| Updates | A simulated `apt-get dist-upgrade`, counting the updates from a security repository, and whether unattended-upgrades is on. | `security_updates_pending` after 3 days, `auto_updates_off`. |
+| Reboot | `/var/run/reboot-required` and its age. | `reboot_required` after 7 days. |
+
+See the latest checks of every machine, or one in full:
+
+```sh
+tender security apps
+```
+
+```text
+Security checks of apps, collected 4 minutes ago.
+
+Firewall: ufw, incoming deny
+SSH: keys only
+Updates: 3 pending, 1 security
+Security updates pending since 2 hours ago.
+Reboot: not needed
+
+Listening on a public address:
+PORT        ADDRESS   PROCESS     NOTE
+41641/udp   0.0.0.0   tailscaled  allowed
+8080/tcp    0.0.0.0   -           published by Docker for web, around ufw
+
+Allow an expected port with: tender machines set apps --allow-port PORT
+```
+
+Allow the ports that should be reachable, such as Tailscale's:
+
+```sh
+tender machines set apps --allow-port 41641/udp
+```
+
+```text
+apps: updates inherit, allowed ports 41641/udp, security alerts on.
+```
+
+Take one off with `--deny-port`, and turn a machine's security alerts off with `--security-alerts off`. [Alerts](alerts.md#security-alerts) explains when each alert opens.
+
+## Upgrade a machine's packages
+
+Install the pending security updates, through the machine's daemon:
+
+```sh
+tender machines upgrade apps
+```
+
+```text
+Upgrading the security packages on apps. This can take a few minutes.
+...
+Upgraded the security packages on apps.
+```
+
+It runs `unattended-upgrade -v` in the `tenderupgrade` unit. With `--all-packages` it runs `apt-get upgrade`, non-interactive and keeping the config files you changed. A service may restart when its package upgrades. Tender never reboots a machine: when an upgrade needs one, `tender security` and the `reboot_required` alert say so, and you reboot when it suits you.
 
 ## Logs can hold secrets
 
@@ -71,4 +146,6 @@ The MCP tools never return bucket keys or passwords. Keys you pass to `add_desti
 ## Next steps
 
 1. [Install](install.md) sets up the hub privately on your tailnet.
-2. [Backups](backups.md) explains how the repository password protects your data.
+2. [Updates](updates.md) explains how Tender updates itself.
+3. [Alerts](alerts.md#security-alerts) explains the security alerts.
+4. [Backups](backups.md) explains how the repository password protects your data.

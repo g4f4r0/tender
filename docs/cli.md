@@ -95,11 +95,11 @@ warning    just now   The service web on apps uses 950 MiB, 92% of its 1 GiB mem
 
 ## `tender machines`
 
-Add the machines that back up, and manage their tokens.
+Add the machines that back up, manage their tokens and settings, and upgrade their packages.
 
 ### `tender machines list`
 
-Lists the machines, when each last reported, and its memory and disk use from the latest report.
+Lists the machines, when each last reported, its memory and disk use from the latest report, and the Tender version its daemon runs.
 
 #### Usage
 
@@ -120,11 +120,11 @@ tender machines list
 ```
 
 ```text
-NAME   LAST SEEN   MEMORY   DISK
-apps   just now    15%      28%
+NAME   LAST SEEN   MEMORY   DISK   VERSION
+apps   just now    15%      28%    0.3.1
 ```
 
-A machine whose daemon never reported shows `never`, with `-` for memory and disk. With no machines, it prints `No machines yet. Add one with: tender machines add NAME` and exits 0.
+A machine whose daemon never reported shows `never`, with `-` for memory and disk. A daemon before v0.3.0 reports no version, shown as `-`. With no machines, it prints `No machines yet. Add one with: tender machines add NAME` and exits 0.
 
 #### Errors
 
@@ -269,6 +269,92 @@ Give it to the daemon on that machine: sudo tender install daemon --token-file P
 | REST route | MCP tool |
 | --- | --- |
 | `POST /v1/machines/{machine}/token` | `rotate_machine_token` |
+
+### `tender machines set`
+
+Changes a machine's settings: its own update mode, its security allowlist and its security alerts.
+
+#### Usage
+
+```sh
+tender machines set NAME [--updates inherit|auto|manual] [--allow-port PORT ...]
+                         [--deny-port PORT ...] [--security-alerts on|off] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The machine's name. |
+| `--updates` | string | No | `auto` or `manual` for the machine's own update mode, or `inherit` for the hub's. |
+| `--allow-port` | string | No | A port with its protocol, such as `41641/udp`, that may listen on a public address without a `port_exposed` alert. Repeat it for more. |
+| `--deny-port` | string | No | A port to take off the allowlist. Repeat it for more. |
+| `--security-alerts` | string | No | `on` or `off` for the machine's security alerts. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender machines set apps --allow-port 41641/udp
+```
+
+```text
+apps: updates inherit, allowed ports 41641/udp, security alerts on.
+```
+
+#### Errors
+
+1. `machines set needs --updates, --allow-port, --deny-port or --security-alerts. Run "tender machines set --help" for usage.`
+2. `"41641" is not a port. Write each port with its protocol, such as 41641/udp or 443/tcp.`
+3. `updates must be inherit, auto or manual.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/machines/{machine}` | `update_machine` |
+
+### `tender machines upgrade`
+
+Upgrades a Debian or Ubuntu machine's system packages through its daemon: the security updates, with `unattended-upgrade`, or every package with `--all-packages`, with `apt-get upgrade`, keeping the config files you changed. It runs in the `tenderupgrade` unit, waits up to 45 minutes and prints the end of the upgrade's output. Tender never reboots the machine.
+
+#### Usage
+
+```sh
+tender machines upgrade NAME [--all-packages] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The machine's name. |
+| `--all-packages` | flag | No | Upgrade every package, not only the security updates. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender machines upgrade apps
+```
+
+```text
+Upgrading the security packages on apps. This can take a few minutes.
+Packages that will be upgraded: libssl3 openssl
+All upgrades installed
+Upgraded the security packages on apps.
+```
+
+#### Errors
+
+1. `Could not upgrade the security packages: ...`, or `Could not upgrade every package: ...` with `--all-packages`, with the upgrade's last line.
+2. `this daemon doesn't know the action "upgrade"; update Tender on this machine`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/actions` | `upgrade_machine` |
 
 ## `tender destinations`
 
@@ -1178,7 +1264,7 @@ sudo tender install hub --smtp-host "" --smtp-from ""
 Installs and starts the daemon on this machine. It checks the token with the hub before it changes anything.
 
 > [!WARNING]
-> On a machine with Docker, the daemon joins the `docker` group, which is root-equivalent. See [Install](install.md#docker-and-the-journal).
+> The daemon runs as root, in a systemd sandbox. See [Install](install.md#the-daemon-runs-as-root).
 
 #### Usage
 
@@ -1224,7 +1310,7 @@ The daemon is running. It gets its destination, schedule and keys from the hub. 
 
 ### `tender install refresh`
 
-Checks the pinned restic, rewrites the service units with the groups the machine has, and restarts the installed services. The configs and the credentials stay. Run it after you install Docker on a machine that has a daemon.
+Checks the pinned restic, rewrites the service units and restarts the installed services. The configs and the credentials stay. On a daemon installed before v0.3.0 it also moves the daemon to root: it gives the daemon's state and cache folders to root and takes the `tender` user out of the `docker` and `systemd-journal` groups. `tender update` runs it for you.
 
 #### Usage
 
@@ -1260,46 +1346,196 @@ Restarted tenderd
 
 ### `tender update`
 
-Updates Tender to the latest release, checked against the release checksums, then refreshes and restarts its services.
+Updates Tender to the latest stable release, or to `--version`. With machine names or `--all`, the hub rolls the release out, one machine at a time with the hub's own machine last, and that needs no sudo. Without a machine, it updates this machine, as root. [Updates](updates.md) explains both.
+
+Every update checks the release's signature and checksums, waits up to 30 minutes for a running backup or action, and rolls back if the services aren't healthy within 2 minutes. It refuses prereleases. Only the update by hand can go back to an older release.
 
 #### Usage
 
 ```sh
-sudo tender update [--version vX.Y.Z]
+tender update MACHINE ...|--all [--version X.Y.Z] [--hub URL]
+sudo tender update [--version X.Y.Z]
 ```
 
 #### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `--version` | string | No | The release to install, such as `v0.3.0`. The default is the latest. |
+| `MACHINE` | string | No | A machine to update through the hub. Name one or more. |
+| `--all` | flag | No | Update every machine on Tender v0.3.0 or later through the hub. |
+| `--version` | string | No | The release to install, such as `0.3.1`. The default is the latest. |
+| `--hub` | URL | No | The hub's address, for an update through the hub. |
 
 #### Example
+
+```sh
+tender update --all
+```
+
+```text
+Started rollout 3 of Tender 0.3.1, one machine at a time: db, apps.
+Follow it with: tender updates show
+```
 
 ```sh
 sudo tender update
 ```
 
 ```text
-Updating Tender 0.2.2 to v0.3.0
-Downloaded Tender v0.3.0 and checked it against the release checksums
-Installed Tender v0.3.0 at /usr/local/bin/tender
+Updating Tender 0.3.0 to v0.3.1
+Downloaded Tender v0.3.1 and checked its signature and checksums
+Installed Tender v0.3.1 at /usr/local/bin/tender
 Restarted tenderd
 
-Updated to Tender v0.3.0.
+Updated to Tender v0.3.1.
 ```
 
 #### Errors
 
-1. `update needs root. Run it again with sudo.`
-2. `Tender is not installed on this machine yet. Run "sudo tender install daemon" or "sudo tender install hub" first`
-3. `"0.3" is not a tender version. Use a release such as v0.1.0`
+1. `updating this machine needs root. Run it again with sudo, or update it through the hub, which needs no sudo: tender update MACHINE, or tender update --all`
+2. `Rollout 3 is still in progress. Wait for it to end; it updates one machine at a time.`
+3. `db runs a Tender before v0.3.0, which can't update through the hub. Update it once by hand, on that machine: sudo tender update`
+4. `Tender v0.3.2-rc.1 is a prerelease, and Tender only updates to stable releases. Name a stable release, such as 0.3.1.`
+5. `the signature of Tender v0.3.1 does not match its checksums, so nothing was changed. ...`
+6. `Tender v0.3.1 failed its health check, so it rolled back to Tender 0.3.0: ...`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| None | None |
+| `POST /v1/updates/rollouts` | `start_update` |
+
+## `tender updates`
+
+See and set how Tender updates itself.
+
+### `tender updates show`
+
+Shows the update settings, the newest release the hub found on GitHub, each machine's version and mode, and the last 5 rollouts.
+
+#### Usage
+
+```sh
+tender updates show [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender updates show
+```
+
+```text
+Mode: auto, window: 02:00-05:00 UTC.
+Latest release: 0.3.1, checked 2 hours ago.
+
+MACHINE   VERSION   MODE               UPDATE
+apps      0.3.0     auto               yes
+db        0.3.1     manual (its own)   -
+
+Rollout 3 of 0.3.1, in progress, started 1 minute ago:
+  db: completed
+  apps: in progress
+```
+
+#### Errors
+
+None of its own.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/updates` | `get_updates` |
+
+### `tender updates set`
+
+Changes the hub's update mode or window. A machine with its own mode keeps it.
+
+#### Usage
+
+```sh
+tender updates set [--mode auto|manual] [--window HH:MM-HH:MM] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--mode` | string | No | `auto` rolls out each new stable release by itself; `manual` waits for `tender update`. |
+| `--window` | string | No | When auto mode may start a rollout, in UTC, such as `02:00-05:00`. `""` is any time. |
+| `--hub` | URL | No | The hub's address. |
+
+Pass at least one of `--mode` and `--window`. The other keeps its setting.
+
+#### Example
+
+```sh
+tender updates set --mode auto --window 02:00-05:00
+```
+
+```text
+Updates are auto, window: 02:00-05:00 UTC.
+```
+
+#### Errors
+
+1. `updates set needs --mode or --window. Run "tender updates set --help" for usage.`
+2. `mode must be auto or manual.`
+3. `window must be two UTC times, such as 02:00-05:00.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PUT /v1/updates/settings` | `set_update_settings` |
+
+## `tender security`
+
+### `tender security`
+
+Shows what each machine's daemon found in its security checks: the firewall, the ports open on a public address, SSH, pending updates and a needed reboot. With a machine, it shows that machine's checks in full. [Security](security.md#security-checks) explains each check.
+
+#### Usage
+
+```sh
+tender security [MACHINE] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MACHINE` | string | No | The machine to show in full. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender security
+```
+
+```text
+MACHINE   FIREWALL             EXPOSED    SSH         UPDATES                REBOOT
+apps      ufw, incoming deny   8080/tcp   keys only   3 pending, 1 security  not needed
+db        ufw, incoming deny   none       keys only   0 pending              not needed
+```
+
+#### Errors
+
+1. `This machine hasn't sent a security report yet. Its daemon sends one when it starts and every 15 minutes, from Tender v0.3.0 on.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/machines/{machine}/security` | `get_security` |
 
 ## `tender hub`
 
@@ -1350,7 +1586,7 @@ level=INFO msg="hub listening" address=127.0.0.1:8080 database=/var/lib/tender/h
 
 ### `tender daemon`
 
-Runs the daemon, which backs up the machine on the schedule the hub sets, reports usage and Docker services, and runs the actions the hub queues. Its `tenderd` service runs it as the `tender` user.
+Runs the daemon, which backs up the machine on the schedule the hub sets, reports usage, Docker services and security checks, and runs the actions the hub queues. Its `tenderd` service runs it as root, in a systemd sandbox.
 
 #### Usage
 
@@ -1382,7 +1618,7 @@ level=INFO msg="run finished" type=cleanup status=completed error=""
 
 #### Errors
 
-1. `cannot read the hub token in /etc/tender/credentials. Run "sudo tender install daemon --token-file PATH" to save it, ...`
+1. `cannot read the hub token in /etc/tender/credentials. Run "sudo tender install daemon --token-file PATH" to save it.`
 
 #### Equivalents
 
