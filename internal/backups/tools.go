@@ -83,8 +83,8 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 
 	mcp.AddReadOnly(m, "list_backup_snapshots", "List backup snapshots",
-		"List one machine's restic snapshots, newest first. Each has restic_id, size_bytes (null when unknown), the backed-up "+
-			"paths and created_at (the snapshot time, RFC 3339 UTC). At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older snapshots.",
+		"List one machine's restic snapshots, newest first. Each has id, restic_id, size_bytes (null when unknown), the backed-up "+
+			"paths, created_at (the snapshot time, RFC 3339 UTC) and updated_at. At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older snapshots.",
 		func(ctx context.Context, in snapshotsInput) (server.List[Snapshot], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {
@@ -99,9 +99,9 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 
 	mcp.AddReadOnly(m, "list_backup_history", "List backup runs",
-		"List one machine's backup, cleanup and check runs, newest first, optionally of one type or status. Each has type, "+
+		"List one machine's backup, cleanup and check runs, newest first, optionally of one type or status. Each has id, type, "+
 			"status (pending, in_progress, completed or failed), error (null unless it failed), snapshot_id and created_at (when it "+
-			"started, RFC 3339 UTC). At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older runs.",
+			"started, RFC 3339 UTC) and updated_at. At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older runs.",
 		func(ctx context.Context, in historyInput) (server.List[History], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {
@@ -119,9 +119,9 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 
 	mcp.AddReadOnly(m, "list_destinations", "List backup destinations",
-		"List the places backups go, by name. Each has type (s3), endpoint, bucket and path (the folder inside the bucket, "+
+		"List the places backups go, by name. Each has id, name, type (s3), endpoint, bucket and path (the folder inside the bucket, "+
 			"empty for its top); each machine's repository is a folder named after the machine under it. Keys and passwords are "+
-			"never shown. Use a name here as the destination of set_backup.",
+			"never shown. Each also has created_at and updated_at (RFC 3339 UTC). Use a name here as the destination of set_backup.",
 		func(ctx context.Context, _ struct{}) (server.List[Destination], error) {
 			list, err := s.Destinations(ctx)
 			return server.List[Destination]{Data: list}, err
@@ -133,7 +133,8 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 	mcp.AddWrite(m, "add_destination", "Add a backup destination",
 		"Add a place to send backups: an S3-compatible bucket, such as Cloudflare R2. Each machine gets its own folder in it. "+
 			"Without a password, the hub makes one and returns it in the result, shown only this once: tell the owner to save it "+
-			"somewhere safe, because the backups can't be restored without it. A password you pass is not returned."+secrets,
+			"somewhere safe, because the backups can't be restored without it. A password you pass is not returned. The result is the "+
+			"destination, as list_destinations shows it, with password when the hub made it."+secrets,
 		mcp.WriteOptions{},
 		func(ctx context.Context, in addDestinationInput) (DestinationCreated, error) {
 			return s.AddDestination(ctx, DestinationInput(in))
@@ -141,7 +142,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddWrite(m, "update_destination", "Update a backup destination",
 		"Change a destination's endpoint, bucket, path or keys; anything left out stays as it is. The password can't change, "+
-			"because the repositories are encrypted with it."+secrets,
+			"because the repositories are encrypted with it. The result is the destination, as list_destinations shows it."+secrets,
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in updateDestinationInput) (Destination, error) {
 			if in.Password != nil {
@@ -164,7 +165,8 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddWrite(m, "set_backup", "Set a machine's backups",
 		"Set where, when and for how long a machine's backups are kept: a destination, a cron schedule in UTC and the days to keep "+
-			"snapshots. It replaces any earlier settings, and the machine's daemon picks them up on its next check. The result is the settings.",
+			"snapshots. It replaces any earlier settings. A daemon without settings picks them up within 30 seconds; a daemon that "+
+			"already has some checks every 10 minutes. The result is the settings: destination, schedule, retention_days, created_at and updated_at.",
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in setBackupInput) (Settings, error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)

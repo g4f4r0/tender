@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -165,7 +166,7 @@ func TestToolsList(t *testing.T) {
 		"list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients", "list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
-		"add_machine": {false, false}, "rotate_machine_token": {false, false}, "remove_machine": {true, true},
+		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
 		"add_destination": {false, false}, "update_destination": {false, true}, "remove_destination": {true, true},
 		"set_backup": {false, true}, "unset_backup": {true, true},
 		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
@@ -199,6 +200,53 @@ func TestToolsList(t *testing.T) {
 	}
 	if want := slices.Sorted(maps.Keys(writes)); !reflect.DeepEqual(slices.Sorted(slices.Values(gotWrites)), want) {
 		t.Errorf("write tools = %v, want %v", gotWrites, want)
+	}
+}
+
+// Each tool's description names every field of what it returns, or the tool whose result it
+// matches ("as list_services shows it"), so a client knows what it gets without calling it. Every
+// paged tool states its page size.
+func TestToolDescriptionsSayWhatTheyReturn(t *testing.T) {
+	// Fields in a result's type that a tool never fills, and why.
+	sameAs := regexp.MustCompile(`as (\w+) shows it`)
+	never := map[string]string{
+		"set_backup credentials": "only the machine's own daemon gets the keys, over REST",
+	}
+	list, err := connect(t, seeded(t)).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type schema struct {
+		Properties map[string]schema `json:"properties"`
+		Items      *schema           `json:"items"`
+	}
+	for _, tool := range list.Tools {
+		var in, out schema
+		for _, c := range []struct {
+			from any
+			to   *schema
+		}{{tool.InputSchema, &in}, {tool.OutputSchema, &out}} {
+			b, _ := json.Marshal(c.from)
+			if err := json.Unmarshal(b, c.to); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, paged := in.Properties["cursor"]; paged && !strings.Contains(tool.Description, "1 to 500, default 50") {
+			t.Errorf("%s is paged, but its description doesn't give the page size (1 to 500, default 50)", tool.Name)
+		}
+		fields := out.Properties
+		if data, ok := fields["data"]; ok && data.Items != nil {
+			fields = data.Items.Properties // a list: the fields of each element
+		}
+		if m := sameAs.FindStringSubmatch(tool.Description); m != nil && m[1] != tool.Name && slices.ContainsFunc(list.Tools,
+			func(o *sdk.Tool) bool { return o.Name == m[1] }) {
+			continue // it names the tool whose fields it has; that tool's own description is checked
+		}
+		for name := range fields {
+			if _, ok := never[tool.Name+" "+name]; !ok && !regexp.MustCompile(`\b`+name+`\b`).MatchString(tool.Description) {
+				t.Errorf("%s returns %s, but its description doesn't say so", tool.Name, name)
+			}
+		}
 	}
 }
 

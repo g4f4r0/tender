@@ -28,18 +28,18 @@ type addMachineInput struct {
 // RegisterTools adds the machines tools to s. They use the same store methods as the REST routes.
 func (s *Store) RegisterTools(m *mcp.Server) {
 	mcp.AddReadOnly(m, "list_machines", "List machines",
-		"List every machine that reports to this hub, by name. Each has last_seen (when its latest usage reading was taken, RFC 3339 UTC, "+
+		"List every machine that reports to this hub, by name. Each has id, name, last_seen (when its latest usage reading was taken, RFC 3339 UTC, "+
 			"null before the first) and usage, its latest reading: cpu_load (1-minute load average), memory_used_percent and "+
-			"disk_used_percent (0 to 100) and uptime_seconds. Start here to learn the machine names the other tools take.",
+			"disk_used_percent (0 to 100) and uptime_seconds, then created_at and updated_at. Start here to learn the machine names the other tools take.",
 		func(ctx context.Context, _ noInput) (server.List[Overview], error) {
 			machines, err := s.List(ctx)
 			return server.List[Overview]{Data: machines}, err
 		})
 
 	mcp.AddReadOnly(m, "get_machine_usage", "Get machine usage",
-		"Get one machine's usage readings, newest first, optionally between since and until. Each reading has cpu_load (1-minute "+
-			"load average), memory_used_percent and disk_used_percent (0 to 100), uptime_seconds and created_at (when it was taken, "+
-			"RFC 3339 UTC). At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older readings.",
+		"Get one machine's usage readings, newest first, optionally between since and until. Each reading has id, cpu_load (1-minute "+
+			"load average), memory_used_percent and disk_used_percent (0 to 100), uptime_seconds, created_at (when it was taken, "+
+			"RFC 3339 UTC) and updated_at. At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older readings.",
 		func(ctx context.Context, in usageInput) (server.List[Usage], error) {
 			id, err := mcp.Machine(ctx, s.Lookup, in.Machine)
 			if err != nil {
@@ -65,7 +65,8 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 		})
 
 	mcp.AddWrite(m, "add_machine", "Add a machine",
-		"Add a machine to the hub. The result has its token, shown only this once: it is not stored and can't be read again. "+
+		"Add a machine to the hub. The result has its id, name, created_at, updated_at and token, the token shown only this once: "+
+			"it is not stored and can't be read again. "+
 			"Give it to the owner to install on that machine with \"tender install daemon\"; if it is lost, call rotate_machine_token.",
 		mcp.WriteOptions{},
 		func(ctx context.Context, in addMachineInput) (MachineCreated, error) {
@@ -78,9 +79,9 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 		})
 
 	mcp.AddWrite(m, "rotate_machine_token", "Rotate a machine's token",
-		"Replace a machine's token. The old token stops working at once, so its daemon can't report until the new token is installed "+
+		"Replace a machine's token. The old token stops working at once, so its daemon is cut off until the new token is installed "+
 			"on that machine. The new token is in the result, shown only this once.",
-		mcp.WriteOptions{},
+		mcp.WriteOptions{Destructive: true},
 		func(ctx context.Context, in machineInput) (Token, error) {
 			if _, err := mcp.Machine(ctx, s.Lookup, in.Machine); err != nil {
 				return Token{}, err

@@ -31,9 +31,10 @@ type noInput struct{}
 // when email is off, and names hub, the hub's host name, in the message.
 func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Sender, hub string) {
 	mcp.AddReadOnly(m, "list_notifications", "List notifications",
-		"List alerts, newest first, optionally of one machine, status or severity. Each has machine (null for the hub itself), "+
+		"List alerts, newest first, optionally of one machine, status or severity. Each has id, machine (null for the hub itself), "+
 			"service (the Docker service it is about, else null), type, severity (info, warning or critical), status (pending and sent are open, resolved is closed), content and "+
-			"created_at (RFC 3339 UTC). Leave status out to get all of them. Pass next_cursor as cursor for older ones.",
+			"created_at and updated_at (RFC 3339 UTC). Leave status out to get all of them. At most limit a page, 1 to 500, default 50; "+
+			"pass next_cursor as cursor for older ones.",
 		func(ctx context.Context, in listInput) (server.List[Notification], error) {
 			var machineID int64
 			if in.Machine != "" {
@@ -52,7 +53,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Se
 		})
 
 	mcp.AddReadOnly(m, "list_recipients", "List alert recipients",
-		"List the email addresses that get every alert email, in the order they were added. Each has an id, for remove_recipient, and email.",
+		"List the email addresses that get every alert email, in the order they were added. Each has id (for get_recipient and remove_recipient), email, created_at and updated_at (RFC 3339 UTC).",
 		func(ctx context.Context, _ noInput) (server.List[Recipient], error) {
 			rs, err := s.Recipients(ctx)
 			return server.List[Recipient]{Data: rs}, err
@@ -84,7 +85,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Se
 
 	mcp.AddWrite(m, "send_test_email", "Send a test email",
 		"Send the test email to every recipient, to check that alert emails arrive. It is refused when email is off on the hub "+
-			"or when there are no recipients, and the error says what to set.",
+			"or when there are no recipients, and the error says what to set. The result is sent_to, the addresses it went to.",
 		mcp.WriteOptions{OpenWorld: true},
 		func(ctx context.Context, _ noInput) (TestResult, error) {
 			return s.SendTest(ctx, sender, hub)
