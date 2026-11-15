@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,7 +77,7 @@ func (t *Tailscale) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, t.bin(), args...)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err := cmd.Run()
-	if errors.Is(err, exec.ErrNotFound) {
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 		return nil, errNoTailscale
 	}
 	if err != nil {
