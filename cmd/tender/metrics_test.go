@@ -52,7 +52,12 @@ func TestMetrics(t *testing.T) {
 	// The hub serves it to people, as text.
 	hub := httptest.NewServer(newHub(d, testKey, nil, quiet))
 	defer hub.Close()
-	res, err := http.Get(hub.URL + "/metrics")
+	req, err := http.NewRequest("GET", hub.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

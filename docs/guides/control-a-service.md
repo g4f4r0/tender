@@ -5,7 +5,7 @@ Restart, stop or start a Docker container on any machine, and read its logs, fro
 ## Prerequisites
 
 1. A daemon on the machine, reporting its services. `tender services list apps` lists them.
-2. The `tender` command on a machine that can reach the hub. Off the hub machine, set `TENDER_HUB` or pass `--hub`.
+2. The `tender` command on a machine that can reach the hub, with your API token in `TENDER_TOKEN`. Off the hub machine, set `TENDER_HUB` or pass `--hub`.
 
 ## Restart a service
 

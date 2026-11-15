@@ -6,7 +6,8 @@ The `tender` command manages the hub, its machines, backups, services, log sinks
 
 1. The `tender` binary at `/usr/local/bin/tender`. The installer puts it there on every machine with a hub or a daemon. See [Install](install.md).
 2. Network access to the hub, for every command that talks to it.
-3. Root, only for `tender install` and `tender update`. The `hub` and `daemon` commands run as their systemd services.
+3. An API token in `TENDER_TOKEN`, for every command that talks to the hub. See [Global behavior](#global-behavior).
+4. Root, only for `tender install`, `tender update` and the first `tender tokens add`. The `hub` and `daemon` commands run as their systemd services.
 
 ## Global behavior
 
@@ -16,7 +17,16 @@ Commands that talk to the hub find it in this order:
 2. The `TENDER_HUB` environment variable.
 3. `http://127.0.0.1:8080`, where the hub listens on its own machine. On the hub machine you need neither.
 
-They need no token, because the hub has no login in this version. See [Security](security.md).
+They send an API token, from the first of:
+
+1. The `--token TOKEN` option. It shows in your shell history and the process list, so prefer the variable.
+2. The `TENDER_TOKEN` environment variable, such as `export TENDER_TOKEN=tender_...`.
+
+Make the first token on the hub machine with `sudo tender tokens add NAME`, as [`tender tokens add`](#tender-tokens-add) explains. Without a token, a command stops with:
+
+```text
+tender: the hub at https://apps.your-tailnet.ts.net needs an API token. Set TENDER_TOKEN to one, or pass --token TOKEN. Make the first one on the hub machine with: sudo tender tokens add NAME
+```
 
 Options and arguments can come in any order, so `tender machines add apps --hub URL` and `tender machines add --hub URL apps` are the same.
 
@@ -1698,6 +1708,141 @@ ID   ADDED           EVENT                   SEVERITY   ABOUT      STATUS   MESS
 | --- | --- |
 | `GET /v1/notifications` and `GET /v1/machines/{machine}/notifications` | `list_notifications` |
 
+## `tender tokens`
+
+Make, list and delete the API tokens that people and AI clients send to the hub.
+
+### `tender tokens list`
+
+Lists the API tokens, when each was last used and when it was made. The tokens themselves are never shown again.
+
+#### Usage
+
+```sh
+tender tokens list [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender tokens list
+```
+
+```text
+NAME          LAST USED   CREATED
+claude-code   never       just now
+laptop        just now    2 hours ago
+```
+
+#### Errors
+
+1. `the hub at URL needs an API token. ...` without one.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/tokens` | `list_tokens` |
+
+### `tender tokens add`
+
+Makes an API token and prints it once.
+
+As root without a token, such as `sudo tender tokens add laptop` on the hub machine, it writes to the hub's database directly, which is how you make the first token. `sudo` leaves out `TENDER_TOKEN`, so this works even when you have one. Otherwise it asks the hub, with the token you have.
+
+#### Usage
+
+```sh
+tender tokens add NAME [--hub URL]
+sudo tender tokens add NAME [--database PATH]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The token's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters, such as `laptop` or `claude-code`. |
+| `--hub` | URL | No | The hub's address, when it asks the hub. |
+| `--database` | path | No | The hub's database, when it writes to it directly. The default is `TENDER_DATABASE`, else the one in `/etc/tender/hub.env`, else `/var/lib/tender/hub/hub.db`. |
+
+#### Example
+
+```sh
+sudo tender tokens add laptop
+```
+
+```text
+Made API token laptop.
+
+The token, shown only now. Save it before you go on:
+  tender_<43 characters>
+
+Use it from the tender command:
+  export TENDER_TOKEN=tender_<43 characters>
+```
+
+#### Errors
+
+1. `Token names are lowercase letters, digits and hyphens, up to 63 characters, such as laptop or claude-code.`
+2. `Token "laptop" already exists. Choose another name, or remove it first with: tender tokens remove laptop`
+3. `there is no hub database at /var/lib/tender/hub/hub.db, so this is not the hub machine, or the hub has not run yet. ...` as root on another machine. Set `TENDER_TOKEN` there instead.
+4. `the database at PATH has no current schema. Start the hub once on this version, with "sudo systemctl restart tenderhub", then run this again: ...`
+5. `--database works only as root, without a token, on the hub machine. ...`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/tokens` | None, so an AI client can't make itself more access. |
+
+### `tender tokens remove`
+
+Deletes an API token. Every client that sends it is refused from its next request on.
+
+> [!WARNING]
+> Deleting the last token locks everyone out until you make a new one with `sudo tender tokens add NAME` on the hub machine. The daemons keep working.
+
+#### Usage
+
+```sh
+tender tokens remove NAME --yes [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The token to delete. |
+| `--yes` | flag | Yes | Confirms the removal. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender tokens remove claude-code --yes
+```
+
+```text
+Deleted API token claude-code. Clients that send it are refused.
+```
+
+#### Errors
+
+1. `this deletes the API token claude-code, and every client that uses it is refused. Run "tender tokens remove claude-code --yes" to confirm` without `--yes`.
+2. `Token "claude-code" doesn't exist. List the tokens with: tender tokens list`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/tokens/{token}` | `delete_token` |
+
 ## `tender install`
 
 Set up this machine. Every `install` command needs root. Most people run them through `install.sh`, which downloads and checks the binary first; see [Install](install.md).
@@ -1734,7 +1879,7 @@ The tender command on this machine finds it by itself.
 Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
 ```
 
-The output goes on with the next steps: add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
+The output goes on with the next steps: make your API token with `sudo tender tokens add NAME`, then add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
 
 The host and the sender go together, so pass both empty to turn alert emails off:
 
@@ -1886,6 +2031,8 @@ Restarted tenderd
 
 Updated to Tender v0.3.1.
 ```
+
+On the hub's machine, an update to v0.4 or later of a hub with no API token ends with one more line: `From v0.4 the hub refuses every request from people and AI clients until it has an API token; make the first one on this machine with: sudo tender tokens add NAME.`
 
 #### Errors
 

@@ -28,6 +28,7 @@ Without a machine, it updates this machine, as root: sudo tender update. Only th
 Options:
   --all             update every machine through the hub
   --hub URL         the hub's address (default: $TENDER_HUB, else http://127.0.0.1:8080)
+  --token TOKEN     the API token (default: $TENDER_TOKEN)
   --version X.Y.Z   the release to install (default: the latest)
 `
 	if out.String() != want {

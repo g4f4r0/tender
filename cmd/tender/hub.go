@@ -23,6 +23,7 @@ import (
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/tokens"
 )
 
 const defaultDatabase = config.DefaultDatabase
@@ -54,8 +55,8 @@ Options:
 	{"--database PATH", "SQLite database file; overrides " + config.EnvDatabase},
 	{"--listen ADDR", "Address to listen on; overrides " + config.EnvListen},
 }) + `
-The hub has no login: it listens on 127.0.0.1 and is reached through Tailscale Serve or your
-own proxy.
+The hub listens on 127.0.0.1 and is reached through Tailscale Serve or your own proxy. People
+and MCP clients send an API token; make the first one with: sudo tender tokens add NAME
 Docs: ` + docsURL + `
 `
 
@@ -101,6 +102,9 @@ func writable(path string) error {
 func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger) *server.Server {
 	ms := machines.NewStore(d)
 	srv := server.New(d, log, ms)
+	ts := tokens.NewStore(d)
+	srv.RequireTokens(ts)
+	ts.Routes(srv)
 	ms.Routes(srv)
 	backups.NewStore(d, key).Routes(srv)
 	notifications.NewStore(d, key).Routes(srv, sender, hubIdentity())
@@ -134,6 +138,7 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	logs.NewStore(d, key).RegisterTools(s)
 	newSecurity(d, ms).RegisterTools(s, ms.Lookup)
 	newUpdates(d, ms, as).RegisterTools(s)
+	tokens.NewStore(d).RegisterTools(s)
 	return s
 }
 
@@ -275,6 +280,12 @@ func serveHub(args []string, log *slog.Logger) error {
 		return err
 	}
 
+	if has, err := tokens.NewStore(d).Any(ctx); err != nil {
+		return err
+	} else if !has {
+		log.Warn("the hub has no API tokens, so it refuses every request from people and MCP clients until it has one. " +
+			"Make the first one on this machine with: sudo tender tokens add NAME")
+	}
 	hub := newHub(d, cfg.EncryptionKey, sender, log)
 	ms := machines.NewStore(d)
 	go hub.PruneKeys(ctx)

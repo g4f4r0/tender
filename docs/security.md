@@ -2,9 +2,9 @@
 
 Learn who can reach the hub, how Tender stores your keys and passwords, what the daemon can do on each machine, and what it checks.
 
-## The hub has no login
+## Who can reach the hub
 
-The hub has no login in this version. Anyone who can reach it can add, change and remove machines, destinations, log sinks and notification channels, stop and restart services, read service and journal logs, and read the metrics at `/metrics`. Keep it on your tailnet or behind your own access control, and never expose it to the internet.
+From v0.4, every request from people and AI clients needs an API token: the REST API, `POST /mcp` and `/metrics`. Only `GET /v1/health` is open. A token can add, change and remove machines, destinations, log sinks and notification channels, stop and restart services, and read service and journal logs, so treat it like a root password. Keep the hub on your tailnet or behind your own access control too, and never expose it to the internet.
 
 The installer publishes the hub on your tailnet with Tailscale Serve, so only devices on your tailnet reach it. The hub itself listens on `127.0.0.1:8080` only.
 
@@ -28,6 +28,36 @@ Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in t
 A log sink's secrets are an OTLP sink's `headers`, a webhook sink's signing `secret`, and the query string of either one's URL, which can carry a key and shows as `?***`. The hub stores them in its database encrypted under the same key, and every route, MCP tool and CLI command shows them as `"***"`. The only time one is shown is a webhook secret the hub made, once, in the answer that added the sink.
 
 The hub sends a sink's whole config, secrets included, only to the daemons of the machines the sink applies to, signed in with their own tokens. Each daemon keeps the list in `/var/lib/tender/daemon/logs/sinks.json`, which only root can read, so it can go on sending while the hub is down. `last_error` never holds a sink's answer or its URL.
+
+## API tokens
+
+People, scripts and AI clients send an API token as `Authorization: Bearer <token>`. A token is `tender_` and 32 random bytes in base64url, shown once when it is made. The hub stores only its SHA-256 hash, and notes when it was last used.
+
+1. Make the first token on the hub machine, as root:
+
+   ```sh
+   sudo tender tokens add laptop
+   ```
+
+   As root with no token, `tender tokens add` writes to the hub's database directly, so it works while the hub has no token. Anywhere else, it asks the hub with the token you have.
+
+2. Give each person and each AI client its own token, so you can delete one without the others:
+
+   ```sh
+   tender tokens add claude-code
+   ```
+
+3. Delete a token that leaked or that nobody uses. `tender tokens list` shows when each was last used:
+
+   ```sh
+   tender tokens remove claude-code --yes
+   ```
+
+   Clients that send it are refused from their next request on.
+
+No MCP tool makes a token, so an AI client can list and delete tokens but never give itself more access. `tender mcp --stdio` on the hub machine needs no token, because it reads the database directly, which only root and the hub can do.
+
+A machine token never works as an API token, and an API token never works as a machine's.
 
 ## Machine tokens
 
@@ -62,7 +92,7 @@ Two jobs must change the whole system, so they run outside the sandbox, as trans
 2. `tenderupgrade` upgrades the system's packages when someone runs `tender machines upgrade`. Its output is `tenderupgrade.log`. Nothing pipes it, so a daemon that restarts never stops apt in the middle: the upgrade runs on, and the next daemon waits for it and reports it instead of starting another.
 
 > [!WARNING]
-> Anyone who can reach the hub can ask a daemon to stop a service, read logs, upgrade packages or update Tender. That is one more reason to keep the hub private.
+> Anyone with an API token can ask a daemon to stop a service, read logs, upgrade packages or update Tender. Give each person and client its own token, and delete the ones you no longer use.
 
 The daemon keeps the last settings it got from the hub, readable only by root, so backups go on when the hub is unreachable.
 
@@ -151,7 +181,7 @@ An exec channel runs a program on the hub for each notification, as [Adapters](a
 
 Service logs and the journal can hold tokens, passwords or customer data that an application printed. Tender treats them that way:
 
-1. Logs come back only as the output of the logs action that asked for them. Like every route, that output is open to anyone who can reach the hub.
+1. Logs come back only as the output of the logs action that asked for them. Like every route, that output is open to anyone with an API token.
 2. The hub clears the output of every completed logs action 1 hour after it finishes. A failed logs action holds why it failed, not logs, so it keeps its output.
 3. Cleared logs leave no bytes in the hub's database files, `hub.db`, `hub.db-wal` and `hub.db-shm`. The hub runs SQLite with `secure_delete`, which zeroes what a write frees, and after a pass that clears logs it empties the write-ahead log with `wal_checkpoint(TRUNCATE)`. A checkpoint that a reader holds up is tried again by the next minute's pass.
 4. The daemon writes logs to disk only to send them to a [log sink](log-shipping.md): each sink's batches wait in `/var/lib/tender/daemon/logs/`, a folder only root can read, up to 64 MiB, until the sink takes them. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.

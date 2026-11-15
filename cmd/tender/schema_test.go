@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -38,7 +39,18 @@ func schema(t *testing.T) *db.DB {
 			t.Fatal(err)
 		}
 	}
+	addTestToken(t, d)
 	return d
+}
+
+// testToken is the API token every test database has, from addTestToken, and every test command sends.
+const testToken = "tender_test-token-of-the-tests"
+
+// addTestToken stores testToken, as "tests", in d.
+func addTestToken(t *testing.T, d *db.DB) {
+	t.Helper()
+	sum := sha256.Sum256([]byte(testToken))
+	must(t, d, `INSERT INTO api_tokens (name, token_hash, created_at, updated_at) VALUES ('tests', ?, 1, 1)`, sum[:])
 }
 
 func exec(t *testing.T, d *db.DB, query string, args ...any) error {
@@ -65,13 +77,13 @@ func rows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 func TestSchemaAppliesTwice(t *testing.T) {
 	d := schema(t)
-	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 19 {
-		t.Fatalf("migrations rows = %d, want 19 (machines twice, backups three times, notifications four times, services twice, actions three times, "+
-			"logs, security, updates, server twice)", n)
+	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 20 {
+		t.Fatalf("migrations rows = %d, want 20 (machines twice, backups three times, notifications four times, services twice, actions three times, "+
+			"logs, security, updates, tokens, server twice)", n)
 	}
 	for _, table := range []string{"machines", "machine_usage", "backup_destinations", "backup_settings",
 		"backup_snapshots", "backup_history", "notifications", "notification_channels", "notification_deliveries", "service_engines", "services", "actions",
-		"log_sinks", "log_sink_status", "idempotency_keys", "security_states", "update_settings", "update_rollouts", "update_rollout_machines"} {
+		"log_sinks", "log_sink_status", "idempotency_keys", "security_states", "update_settings", "update_rollouts", "update_rollout_machines", "api_tokens"} {
 		if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table); n != 1 {
 			t.Errorf("table %s missing", table)
 		}
@@ -171,6 +183,7 @@ func TestV022RecipientsBecomeEmailChannels(t *testing.T) {
 	if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE name = 'notification_recipients'`); n != 0 {
 		t.Error("notification_recipients is still there")
 	}
+	addTestToken(t, d)
 	srv := httptest.NewServer(newHub(d, testKey, nil, quiet))
 	defer srv.Close()
 	status, body := restCall(t, srv.URL, "GET", "/v1/notifications/channels", "", nil)

@@ -18,6 +18,7 @@ import (
 	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/tokens"
 	"github.com/g4f4r0/tender/internal/updates"
 )
 
@@ -45,6 +46,7 @@ Work with the hub, from any machine that can reach it:
 	{"security [MACHINE]", "Show the machines' security checks"},
 	{"update MACHINE ...|--all", "Update Tender on machines, through the hub"},
 	{"updates COMMAND", "show, set"},
+	{"tokens COMMAND", "list, add, remove: the API tokens people and AI clients send"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
@@ -64,7 +66,9 @@ Other:
 	{"version", "Print the version"},
 	{"help", "Print this help"},
 }) + `
-Commands that talk to the hub take --hub URL, or read TENDER_HUB (default ` + defaultHub + `).
+Commands that talk to the hub take --hub URL, or read TENDER_HUB (default ` + defaultHub + `),
+and send the API token in TENDER_TOKEN, or --token. Make the first one on the hub machine
+with: sudo tender tokens add NAME
 Run "tender COMMAND --help" for a command's options.
 Docs: ` + docsURL + `
 `
@@ -83,12 +87,13 @@ var hubCommands = map[string]func([]string, session) error{
 	"notifications": runNotifications,
 	"updates":       runUpdates,
 	"security":      runSecurity,
+	"tokens":        runTokens,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
 	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations,
-		logs.Migrations, security.Migrations, updates.Migrations, server.Migrations}
+		logs.Migrations, security.Migrations, updates.Migrations, tokens.Migrations, server.Migrations}
 }
 
 func main() {

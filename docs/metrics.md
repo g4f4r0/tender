@@ -6,12 +6,12 @@ This page explains how to scrape the hub and what each metric holds. Nothing is 
 
 ## Scrape the hub
 
-`/metrics` takes the same access rule as the rest of the API: anyone who can reach the hub can read it, and no token is needed. See [Security](security.md#the-hub-has-no-login).
+`/metrics` takes the same access rule as the rest of the API: it needs an API token. Make one for the scraper, such as `sudo tender tokens add prometheus` on the hub machine, and keep it in a file only the scraper can read. See [Security](security.md#api-tokens).
 
 1. Check that the hub answers:
 
    ```sh
-   curl -s https://apps.your-tailnet.ts.net/metrics | grep tender_build_info
+   curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/metrics | grep tender_build_info
    ```
 
    It prints the hub's version:
@@ -29,6 +29,8 @@ This page explains how to scrape the hub and what each metric holds. Nothing is 
      - job_name: tender
        scrape_interval: 1m
        scheme: https
+       authorization:
+         credentials_file: /etc/prometheus/tender-token
        static_configs:
          - targets: ["apps.your-tailnet.ts.net"]
    ```

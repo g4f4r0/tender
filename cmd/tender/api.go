@@ -38,29 +38,44 @@ func say(w io.Writer, format string, a ...any) {
 	_, _ = fmt.Fprintf(w, format+"\n", a...)
 }
 
-// hubFlag adds --hub to fs. TENDER_HUB sets its default.
+// envToken is the environment variable the tender command reads its API token from.
+const envToken = "TENDER_TOKEN"
+
+// hubFlag adds --hub and --token to fs. TENDER_HUB sets the default of --hub; newHubAPI reads
+// TENDER_TOKEN when --token is not passed, so the token never shows in a usage text.
 func hubFlag(fs *flag.FlagSet) *string {
 	def := os.Getenv("TENDER_HUB")
 	if def == "" {
 		def = defaultHub
 	}
+	fs.String("token", "", "`TOKEN` the API token (default: $"+envToken+")")
 	return fs.String("hub", def, "`URL` the hub's address (default: $TENDER_HUB, else "+defaultHub+")")
+}
+
+// apiToken is the API token for a command: --token when passed, else TENDER_TOKEN.
+func apiToken(fs *flag.FlagSet) string {
+	if f := fs.Lookup("token"); f != nil && f.Value.String() != "" {
+		return f.Value.String()
+	}
+	return os.Getenv(envToken)
 }
 
 // hubAPI is a connection to the hub for one command.
 type hubAPI struct {
-	c   *client.Client
-	url string
+	c     *client.Client
+	url   string
+	token bool // whether the command has an API token to send
 }
 
-// newHubAPI checks the hub's address and returns a client for it. The people routes need no token.
+// newHubAPI checks the hub's address and returns a client for it, which sends the API token.
 func newHubAPI(fs *flag.FlagSet, raw string) (*hubAPI, error) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, usageError(fs, "the hub address %q is not an http or https URL, such as %s", raw, defaultHub)
 	}
 	raw = strings.TrimRight(raw, "/")
-	return &hubAPI{c: client.New(raw, ""), url: raw}, nil
+	token := apiToken(fs)
+	return &hubAPI{c: client.New(raw, token), url: raw, token: token != ""}, nil
 }
 
 // do sends one request. in and out may be nil.
@@ -89,6 +104,12 @@ func (h *hubAPI) explain(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.As(err, &answer) && answer.Status == http.StatusUnauthorized && !h.token:
+		return &hubAnswer{answer.Status, "the hub at " + h.url + " needs an API token. Set " + envToken + " to one, or pass --token TOKEN. " +
+			"Make the first one on the hub machine with: sudo tender tokens add NAME"}
+	case errors.As(err, &answer) && answer.Status == http.StatusUnauthorized:
+		return &hubAnswer{answer.Status, "the hub at " + h.url + " refused the API token in " + envToken + " or --token: it was deleted or mistyped. " +
+			"List the tokens on the hub machine with: sudo tender tokens list, and make a new one with: sudo tender tokens add NAME"}
 	case errors.As(err, &answer):
 		if answer.Detail != "" {
 			return &hubAnswer{answer.Status, answer.Detail}

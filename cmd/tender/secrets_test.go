@@ -28,7 +28,11 @@ func restCall(t *testing.T, base, method, path, token string, body any) (int, st
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token != "" {
+	switch token {
+	case "":
+		req.Header.Set("Authorization", "Bearer "+testToken)
+	case "-":
+	default:
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	res, err := http.DefaultClient.Do(req)

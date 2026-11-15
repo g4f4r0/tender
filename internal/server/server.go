@@ -32,6 +32,7 @@ type Server struct {
 	db       *db.DB
 	log      *slog.Logger
 	machines Machines
+	tokens   Tokens     // people's API tokens; nil serves people routes to anyone
 	keys     sync.Mutex // serializes requests that carry an Idempotency-Key
 	stopping chan struct{}
 	stopOnce sync.Once

@@ -6,17 +6,38 @@ The hub's REST API does everything the `tender` command and the MCP tools do, ov
 
 1. A running hub. See [Install](install.md).
 2. The hub's address. The examples use `https://apps.your-tailnet.ts.net`, the hub's name on a tailnet. On the hub machine itself, use `http://127.0.0.1:8080`.
-3. `curl`, or any HTTP client.
+3. An API token in `TENDER_TOKEN`. Make the first one on the hub machine with `sudo tender tokens add NAME`, as [Tokens](#tokens) explains.
+4. `curl`, or any HTTP client.
 
 ## Conventions
 
 ### Authentication
 
-People and their tools send no token in this version. Anyone who can reach the hub can call every route below, so keep the hub on your tailnet or behind your own access control. See [Security](security.md).
+Every route below needs an API token, as `Authorization: Bearer <token>`, except `GET /v1/health`. `POST /mcp` needs it too. An API token starts with `tender_`, and [Tokens](#tokens) makes, lists and deletes them. The examples send it from `TENDER_TOKEN`:
 
-The hub refuses a browser request from another website that would change something, and a request for a host name it doesn't answer to. Both get `403`. [Security](security.md#the-hub-has-no-login) lists the names it answers to.
+```sh
+export TENDER_TOKEN=tender_...
+```
 
-Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, another machine's token gets `403`, and a machine that doesn't exist gets `404`. People never need a token, and should send no `Authorization` header: on a route both may call, the hub treats a request with one as a daemon's.
+A request without a token, or with a wrong one, gets `401`:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/problem+json
+
+{
+  "detail": "Send an API token as \"Authorization: Bearer <token>\"; the tender command sends TENDER_TOKEN. Make the first one on the hub machine with: sudo tender tokens add NAME",
+  "status": 401,
+  "title": "Unauthorized",
+  "type": "about:blank"
+}
+```
+
+A hub updated to v0.4 has no API token until you make one, so until then it refuses every request but health and its daemons'.
+
+The hub refuses a browser request from another website that would change something, and a request for a host name it doesn't answer to. Both get `403`. [Security](security.md#who-can-reach-the-hub) lists the names it answers to.
+
+Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, another machine's token gets `403`, and a machine that doesn't exist gets `404`. A machine token never works as an API token, and an API token never works as a machine's: on a route both may call, the hub tells them apart by looking the token up.
 
 ### Requests and responses
 
@@ -55,6 +76,153 @@ Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempoten
 
 Starting, stopping and restarting a service, reading logs and testing a destination happen on the machine, so `POST /v1/machines/{machine}/actions` and `POST /v1/backups/destinations/{destination}/test` answer `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. [Services](services.md#how-actions-reach-a-machine) explains the steps, and when an action fails because the daemon didn't pick it up or didn't say how it ended.
 
+## Tokens
+
+An API token lets a person, a script or an AI client use the REST API and `POST /mcp`. The hub stores only its SHA-256 hash, and shows the token once, when it is made.
+
+### `GET /v1/tokens`
+
+Lists the API tokens by name, with when each was last used. The tokens themselves are never shown.
+
+`last_used_at` is the last request with the token, to the minute, and `null` before the first.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/tokens
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 2,
+      "name": "claude-code",
+      "last_used_at": null,
+      "created_at": "2026-11-15T12:04:10Z",
+      "updated_at": "2026-11-15T12:04:10Z"
+    },
+    {
+      "id": 1,
+      "name": "laptop",
+      "last_used_at": "2026-11-15T12:05:00Z",
+      "created_at": "2026-11-15T12:00:00Z",
+      "updated_at": "2026-11-15T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `401` | The request has no valid API token. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_tokens` | `tender tokens list` |
+
+### `POST /v1/tokens`
+
+Makes an API token and returns it, shown only this once.
+
+The token is `tender_` and 32 random bytes in base64url. This route needs a token itself, so the first one comes from `sudo tender tokens add NAME` on the hub machine, which writes to the hub's database directly. No MCP tool makes a token, so an AI client can't give itself more access.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters, such as `laptop` or `claude-code`. |
+
+#### Example request
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/tokens/claude-code
+
+{
+  "id": 2,
+  "name": "claude-code",
+  "last_used_at": null,
+  "created_at": "2026-11-15T12:04:10Z",
+  "updated_at": "2026-11-15T12:04:10Z",
+  "token": "tender_<43 characters>"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `401` | The request has no valid API token. |
+| `409` | A token has this name. Choose another, or delete it first. |
+| `422` | The name breaks the naming rule. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| None, so an AI client can't make itself more access. | `tender tokens add claude-code` |
+
+### `DELETE /v1/tokens/{token}`
+
+Deletes an API token by name. Every client that sends it is refused from its next request on.
+
+> [!WARNING]
+> Deleting the last token locks everyone out of the REST API and `POST /mcp` until you make a new one with `sudo tender tokens add NAME` on the hub machine. The daemons keep working.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token` | string | Yes | Path. The token's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/tokens/claude-code
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `401` | The request has no valid API token. |
+| `404` | No token has this name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `delete_token` | `tender tokens remove claude-code --yes` |
+
 ## Machines
 
 A machine is a server with a daemon that reports to the hub.
@@ -72,7 +240,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines
 ```
 
 #### Example response
@@ -130,7 +298,7 @@ Install the daemon on the machine with this token. The hub stores only its SHA-2
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines \
   -H 'Content-Type: application/json' \
   -d '{"name": "apps"}'
 ```
@@ -178,7 +346,7 @@ Returns one machine with its latest reading.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps
 ```
 
 #### Example response
@@ -237,7 +405,7 @@ Removes a machine with its usage, backup settings, snapshots, history, services,
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/machines/apps
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps
 ```
 
 #### Example response
@@ -274,7 +442,7 @@ Replaces a machine's token and returns the new one, shown only this once.
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/token
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/token
 ```
 
 #### Example response
@@ -317,7 +485,7 @@ Lists a machine's readings of CPU load, memory, disk and uptime, newest first. T
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/usage?limit=2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/usage?limit=2
 ```
 
 #### Example response
@@ -380,7 +548,7 @@ Changes a machine's settings: its own update mode, the ports that may listen on 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"security_allowed_ports": ["41641/udp"]}'
 ```
@@ -436,7 +604,7 @@ Each check has `check`, which is `ok`, `error` (with the reason in `error`) or `
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/security
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/security
 ```
 
 #### Example response
@@ -496,7 +664,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/backups
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups
 ```
 
 #### Example response
@@ -591,7 +759,7 @@ Returns one machine's backup state.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups
 ```
 
 #### Example response
@@ -684,7 +852,7 @@ The response never holds keys or passwords. Only the machine's own daemon, with 
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
 ```
 
 #### Example response
@@ -749,7 +917,7 @@ A daemon without settings picks them up within 30 seconds. A daemon that has set
 #### Example request
 
 ```sh
-curl -s -X PUT https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings \
+curl -s -X PUT -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings \
   -H 'Content-Type: application/json' \
   -d '{"destination": "r2", "schedule": "30 3 * * *", "retention_days": 30}'
 ```
@@ -814,7 +982,7 @@ The daemon deletes its saved copy of the settings and the repository password. T
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
 ```
 
 #### Example response
@@ -852,7 +1020,7 @@ Lists a machine's snapshots, newest first, as its daemon last read them from the
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots?limit=2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots?limit=2
 ```
 
 #### Example response
@@ -915,7 +1083,7 @@ Returns one snapshot.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots/10
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots/10
 ```
 
 #### Example response
@@ -967,7 +1135,7 @@ A failed run has the reason in `error`. A completed backup has the snapshot it m
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history?limit=2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history?limit=2
 ```
 
 #### Example response
@@ -1029,7 +1197,7 @@ Returns one run.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history/20
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history/20
 ```
 
 #### Example response
@@ -1088,7 +1256,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/backups/destinations
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations
 ```
 
 #### Example response
@@ -1150,7 +1318,7 @@ Adds a destination. Without a password, the hub makes one and returns it this on
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations \
   -H 'Content-Type: application/json' \
   -d '{"name": "r2", "config": {"endpoint": "https://<account-id>.r2.cloudflarestorage.com", "bucket": "my-backups", "path": "tender", "access_key_id": "<access key ID>", "secret_access_key": "<secret access key>"}}'
 ```
@@ -1158,7 +1326,7 @@ curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
 An SFTP destination:
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations \
   -H 'Content-Type: application/json' \
   -d '{"name": "nas", "type": "sftp", "config": {"host": "nas.example.com", "user": "tender", "path": "/srv/restic"}}'
 ```
@@ -1217,7 +1385,7 @@ Returns one destination, with its secrets shown as `"***"` and without its passw
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
 ```
 
 #### Example response
@@ -1273,7 +1441,7 @@ Move the data yourself before you point a destination at another place. Daemons 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/backups/destinations/r2 \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/r2 \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"config": {"access_key_id": "<new access key ID>", "secret_access_key": "<new secret access key>"}}'
 ```
@@ -1334,7 +1502,7 @@ The hub hands the destination's config, with its secrets, to that daemon with th
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations/nas/test \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/nas/test \
   -H 'Content-Type: application/json' \
   -d '{"machine": "apps"}'
 ```
@@ -1396,7 +1564,7 @@ Removes a destination that no machine backs up to.
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
 ```
 
 #### Example response
@@ -1441,7 +1609,7 @@ A notification has an `event`, a `severity` and a `message`. Its `status` is `pe
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications?limit=1
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications?limit=1
 ```
 
 #### Example response
@@ -1513,7 +1681,7 @@ Lists one machine's notifications, newest first, in the same shape as [`GET /v1/
 #### Example request
 
 ```sh
-curl -s 'https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?open=true&limit=1'
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" 'https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?open=true&limit=1'
 ```
 
 #### Example response
@@ -1592,7 +1760,7 @@ Returns one of a machine's notifications, with its deliveries.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications/3
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/notifications/3
 ```
 
 #### Example response
@@ -1653,7 +1821,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications/channels
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels
 ```
 
 #### Example response
@@ -1731,7 +1899,7 @@ For a `webhook` channel the hub makes the signing secret. This answer is the onl
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/channels \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels \
   -H 'Content-Type: application/json' \
   -d '{"name": "pager", "type": "webhook", "config": {"url": "https://pager.example.com/tender"}}'
 ```
@@ -1789,7 +1957,7 @@ Returns one channel, with its secrets hidden.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications/channels/pager
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels/pager
 ```
 
 #### Example response
@@ -1848,7 +2016,7 @@ Turning a channel off fails what it still owed, with the error `The channel was 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/notifications/channels/chat \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels/chat \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"config": {"webhook_url": "<new Slack webhook URL>"}, "min_severity": "warning"}'
 ```
@@ -1904,7 +2072,7 @@ Removes a channel and its record of deliveries. Notifications are still recorded
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/notifications/channels/chat
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels/chat
 ```
 
 #### Example response
@@ -1940,7 +2108,7 @@ The test is one notification, with one delivery per channel, and `GET /v1/notifi
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/test
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/test
 ```
 
 #### Example response
@@ -2006,7 +2174,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/services
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/services
 ```
 
 #### Example response
@@ -2078,7 +2246,7 @@ Lists one machine's services, by name.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services
 ```
 
 #### Example response
@@ -2168,7 +2336,7 @@ Returns one service.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services/web
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services/web
 ```
 
 #### Example response
@@ -2231,7 +2399,7 @@ The setting follows the service's name, as [Services](services.md#what-a-service
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps/services/web \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services/web \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"alerts_enabled": false}'
 ```
@@ -2312,7 +2480,7 @@ To upgrade a Debian or Ubuntu machine's packages, send `{"type": "upgrade", "pac
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/actions \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/actions \
   -H 'Content-Type: application/json' \
   -d '{"type": "restart", "service": "web"}'
 ```
@@ -2374,7 +2542,7 @@ Lists a machine's actions, newest first, without their output.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/actions
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/actions
 ```
 
 #### Example response
@@ -2469,7 +2637,7 @@ Returns one action with its output: the logs, or why it failed.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/actions/8
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/actions/8
 ```
 
 #### Example response
@@ -2527,7 +2695,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates
 ```
 
 #### Example response
@@ -2571,7 +2739,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates/settings
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/settings
 ```
 
 #### Example response
@@ -2612,7 +2780,7 @@ Replaces the hub's update settings. The hub looks at GitHub again within 10 seco
 #### Example request
 
 ```sh
-curl -s -X PUT https://apps.your-tailnet.ts.net/v1/updates/settings \
+curl -s -X PUT -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/settings \
   -H 'Content-Type: application/json' \
   -d '{"mode": "auto", "window": "02:00-05:00"}'
 ```
@@ -2655,7 +2823,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates/rollouts
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/rollouts
 ```
 
 #### Example response
@@ -2711,7 +2879,7 @@ Starts a rollout of a stable release to the machines named, or to every machine 
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/updates/rollouts \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/rollouts \
   -H 'Content-Type: application/json' \
   -d '{"version": "0.3.1", "machines": []}'
 ```
@@ -2769,7 +2937,7 @@ Returns one rollout with its machines, as `GET /v1/updates/rollouts` lists it.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates/rollouts/4
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/rollouts/4
 ```
 
 #### Example response
@@ -2845,7 +3013,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/logs/sinks
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks
 ```
 
 #### Example response
@@ -2923,7 +3091,7 @@ For a `webhook` sink without a `secret`, the response has `secret`, the one the 
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks \
   -H 'Content-Type: application/json' \
   -d '{"name": "otel", "type": "otlp", "config": {"endpoint": "https://otel.example.com:4318/v1/logs", "headers": {"Authorization": "Bearer <key>"}}}'
 ```
@@ -2931,7 +3099,7 @@ curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
 A webhook sink for one machine's nginx journal and its web container:
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks \
   -H 'Content-Type: application/json' \
   -d '{"name": "hook", "type": "webhook", "config": {"url": "https://logs.example.com/tender"}, "machines": ["apps"], "sources": {"journal": {"units": ["nginx.service"], "min_priority": "warning"}, "services": {"names": ["web"]}}}'
 ```
@@ -2992,7 +3160,7 @@ Returns one sink, with each machine's status and its secrets shown as `"***"`.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
 ```
 
 #### Example response
@@ -3063,7 +3231,7 @@ Changes a sink's `config`, `enabled`, `sources` or `machines`, as a JSON merge p
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/logs/sinks/otel \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks/otel \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"sources": {"journal": {"min_priority": "warning"}, "services": null}}'
 ```
@@ -3125,7 +3293,7 @@ Removes a sink and every machine's status of it.
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
 ```
 
 #### Example response
@@ -3159,7 +3327,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/metrics
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/metrics
 ```
 
 #### Example response
@@ -3222,4 +3390,4 @@ The daemons use these routes to report and to take their work. Each needs the ma
 
 1. [MCP reference](mcp.md) has the same operations as tools for an AI client.
 2. [CLI reference](cli.md) has the `tender` commands that call these routes.
-3. [Security](security.md) explains who can reach the hub.
+3. [Security](security.md) explains who can reach the hub and how tokens are kept.
