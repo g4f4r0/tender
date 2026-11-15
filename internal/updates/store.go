@@ -46,7 +46,7 @@ type Store struct {
 	machines func(context.Context) ([]Machine, error)
 	actions  Actions
 	releases Releases
-	// HubMachine is the name of the machine the hub runs on, which a rollout updates last; "" when
+	// HubMachine is the name of the machine the hub runs on, which a rollout updates first; "" when
 	// the hub's machine has no daemon.
 	HubMachine string
 }
@@ -267,15 +267,16 @@ func sentenceless(s string) string {
 	return s
 }
 
-// create stores a rollout of version to ms, with the hub's own machine last.
+// create stores a rollout of version to ms, with the hub's own machine first: a newer hub takes the
+// reports of older daemons, so the others follow it.
 func (s *Store) create(ctx context.Context, version string, auto bool, ms []Machine) (Rollout, error) {
 	ordered := slices.Clone(ms)
 	slices.SortStableFunc(ordered, func(a, b Machine) int {
 		switch {
 		case a.Name == s.HubMachine && b.Name != s.HubMachine:
-			return 1
-		case b.Name == s.HubMachine && a.Name != s.HubMachine:
 			return -1
+		case b.Name == s.HubMachine && a.Name != s.HubMachine:
+			return 1
 		}
 		return 0
 	})

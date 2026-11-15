@@ -176,7 +176,7 @@ func (r *rig) call(method, path string, body any) (int, string) {
 	return res.StatusCode, string(b)
 }
 
-func TestAutoRolloutOneMachineAtATimeHubLast(t *testing.T) {
+func TestAutoRolloutOneMachineAtATimeHubFirst(t *testing.T) {
 	r := newRig(t)
 	r.step(t0) // nothing known of GitHub yet
 	if len(r.actions.list) != 0 {
@@ -184,8 +184,8 @@ func TestAutoRolloutOneMachineAtATimeHubLast(t *testing.T) {
 	}
 	r.check(t0)
 	r.step(t0)
-	r.want(1, "in_progress", "a:in_progress", "b:pending", "hub:pending")
-	if len(r.actions.list) != 1 || r.actions.list[0].machine != 2 || r.actions.list[0].version != "0.3.1" {
+	r.want(1, "in_progress", "hub:in_progress", "a:pending", "b:pending")
+	if len(r.actions.list) != 1 || r.actions.list[0].machine != 1 || r.actions.list[0].version != "0.3.1" {
 		t.Fatalf("actions = %+v", r.actions.list[0])
 	}
 	r.step(t0.Add(time.Minute)) // a's update hasn't ended
@@ -195,16 +195,16 @@ func TestAutoRolloutOneMachineAtATimeHubLast(t *testing.T) {
 	r.complete("0.3.1", t0.Add(2*time.Minute))
 	r.step(t0.Add(2 * time.Minute))
 	r.step(t0.Add(2 * time.Minute))
-	r.want(1, "in_progress", "a:completed", "b:in_progress", "hub:pending")
+	r.want(1, "in_progress", "hub:completed", "a:in_progress", "b:pending")
 	r.complete("0.3.1", t0.Add(3*time.Minute))
 	r.step(t0.Add(3 * time.Minute))
 	r.step(t0.Add(3 * time.Minute))
 	r.complete("0.3.1", t0.Add(4*time.Minute))
 	r.step(t0.Add(4 * time.Minute))
 	r.step(t0.Add(4 * time.Minute))
-	r.want(1, "completed", "a:completed", "b:completed", "hub:completed")
-	if got := []int64{r.actions.list[0].machine, r.actions.list[1].machine, r.actions.list[2].machine}; !slices.Equal(got, []int64{2, 3, 1}) {
-		t.Errorf("update order = %v, want a, b, then the hub", got)
+	r.want(1, "completed", "hub:completed", "a:completed", "b:completed")
+	if got := []int64{r.actions.list[0].machine, r.actions.list[1].machine, r.actions.list[2].machine}; !slices.Equal(got, []int64{1, 2, 3}) {
+		t.Errorf("update order = %v, want the hub, then a and b", got)
 	}
 	r.step(t0.Add(5 * time.Minute)) // every machine is on 0.3.1: no new rollout
 	if rs, _ := r.store.Rollouts(context.Background()); len(rs) != 1 {
@@ -248,7 +248,7 @@ func TestAutoModeLeavesOut(t *testing.T) {
 		r.machines[i].LastSeen = ptr(t0.Add(time.Hour))
 	}
 	r.step(t0.Add(time.Hour + time.Minute))
-	r.want(1, "in_progress", "a:in_progress", "b:pending", "hub:pending")
+	r.want(1, "in_progress", "hub:in_progress", "a:pending", "b:pending")
 }
 
 func TestFailedUpdateStopsTheRollout(t *testing.T) {
@@ -258,13 +258,13 @@ func TestFailedUpdateStopsTheRollout(t *testing.T) {
 	a := r.actions.list[0]
 	a.status, a.output = StatusFailed, "Tender 0.3.1 failed its health check, so it rolled back to Tender 0.3.0: tenderd is not active."
 	r.step(t0.Add(time.Minute))
-	r.want(1, "failed", "a:failed", "b:pending", "hub:pending")
+	r.want(1, "failed", "hub:failed", "a:pending", "b:pending")
 	ro, _ := r.store.Rollout(context.Background(), 1)
-	if ro.Error == nil || !strings.Contains(*ro.Error, "stopped at a") || !strings.Contains(*ro.Machines[0].Error, "rolled back") {
+	if ro.Error == nil || !strings.Contains(*ro.Error, "stopped at hub") || !strings.Contains(*ro.Machines[0].Error, "rolled back") {
 		t.Errorf("rollout = %+v", ro)
 	}
 	f, err := r.store.Failures(context.Background())
-	if err != nil || len(f) != 1 || f[2].Version != "0.3.1" || !strings.Contains(f[2].Reason, "health check") {
+	if err != nil || len(f) != 1 || f[1].Version != "0.3.1" || !strings.Contains(f[1].Reason, "health check") {
 		t.Errorf("failures = %+v %v", f, err)
 	}
 	r.step(t0.Add(2 * time.Minute)) // auto mode doesn't try 0.3.1 again
@@ -273,7 +273,7 @@ func TestFailedUpdateStopsTheRollout(t *testing.T) {
 	}
 
 	// A person can try again; a success clears the failure.
-	if _, err := r.store.Start(context.Background(), RolloutInput{Machines: []string{"a"}}); err != nil {
+	if _, err := r.store.Start(context.Background(), RolloutInput{Machines: []string{"hub"}}); err != nil {
 		t.Fatal(err)
 	}
 	r.step(t0.Add(3 * time.Minute))
@@ -288,17 +288,17 @@ func TestStepTimeouts(t *testing.T) {
 	r := newRig(t)
 	r.check(t0)
 	r.step(t0)
-	r.actions.list[0].status, r.actions.list[0].changed = StatusCompleted, t0.Add(time.Minute) // completed, but a still reports 0.3.0
+	r.actions.list[0].status, r.actions.list[0].changed = StatusCompleted, t0.Add(time.Minute) // completed, but the hub still reports 0.3.0
 	r.step(t0.Add(3 * time.Minute))
-	r.want(1, "in_progress", "a:in_progress", "b:pending", "hub:pending")
+	r.want(1, "in_progress", "hub:in_progress", "a:pending", "b:pending")
 	r.step(t0.Add(7 * time.Minute))
-	r.want(1, "failed", "a:failed", "b:pending", "hub:pending")
+	r.want(1, "failed", "hub:failed", "a:pending", "b:pending")
 
 	r = newRig(t)
 	r.check(t0)
 	r.step(t0)
 	r.step(t0.Add(49 * time.Minute))
-	r.want(1, "in_progress", "a:in_progress", "b:pending", "hub:pending")
+	r.want(1, "in_progress", "hub:in_progress", "a:pending", "b:pending")
 	r.step(t0.Add(51 * time.Minute))
 	if ro, _ := r.store.Rollout(context.Background(), 1); ro.Status != StatusFailed || !strings.Contains(*ro.Machines[0].Error, "online") {
 		t.Errorf("rollout = %+v", ro)
@@ -331,7 +331,7 @@ func TestStartRefuses(t *testing.T) {
 	}
 	r.releases.err = nil
 	ro, err := r.store.Start(ctx, RolloutInput{Version: "v0.3.1"})
-	if err != nil || ro.Version != "0.3.1" || len(ro.Machines) != 3 || ro.Machines[2].Machine != "hub" || ro.Auto {
+	if err != nil || ro.Version != "0.3.1" || len(ro.Machines) != 3 || ro.Machines[0].Machine != "hub" || ro.Auto {
 		t.Fatalf("every machine: %+v %v", ro, err)
 	}
 	var e *server.Error
@@ -401,7 +401,7 @@ func TestRoutes(t *testing.T) {
 		t.Errorf("bad mode: %d %s", status, body)
 	}
 	status, body = r.call("POST", "/v1/updates/rollouts", map[string]any{"machines": []string{"hub", "b"}})
-	if status != 202 || !strings.Contains(body, `"machines":[{"machine":"b"`) {
+	if status != 202 || !strings.Contains(body, `"machines":[{"machine":"hub"`) {
 		t.Fatalf("POST rollouts: %d %s", status, body)
 	}
 	if status, body := r.call("GET", "/v1/updates/rollouts/1", nil); status != 200 || !strings.Contains(body, `"version":"0.3.1"`) {

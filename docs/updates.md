@@ -9,7 +9,7 @@ Tender updates itself on every machine from the hub, one machine at a time, with
 
 ## How an update works
 
-The hub asks GitHub for the latest stable release every 6 hours. A rollout updates the machines to one release, one at a time, with the hub's own machine last. On each machine:
+The hub asks GitHub for the latest stable release every 6 hours. A rollout updates the machines to one release, one at a time, with the hub's own machine first. On each machine:
 
 1. The daemon starts the update job, `tender update --apply VERSION`, as the transient systemd unit `tenderupdate`. The job runs outside the daemon's sandbox and outlives the daemon's restart.
 2. The job downloads the release, checks the signature of its `SHA256SUMS` against the keys built into Tender, then checks the binary against `SHA256SUMS`. A release that isn't signed by Tender's key never installs.

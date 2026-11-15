@@ -19,7 +19,7 @@ import (
 func runUpdate(args []string, version string, s session) error {
 	fs := newFlagSet("update", "[MACHINE ...|--all] [--version X.Y.Z] [--hub URL]",
 		"Update Tender to the latest stable release, or to --version.\n\n"+
-			"With machine names or --all, the hub rolls the release out: one machine at a time, the hub's own machine last, "+
+			"With machine names or --all, the hub rolls the release out: one machine at a time, the hub's own machine first, "+
 			"each checking the release's signature, waiting for a running backup, and rolling back if it isn't healthy within "+
 			"2 minutes. That needs no sudo. Follow it with: tender updates show\n\n"+
 			"Without a machine, it updates this machine, as root: sudo tender update. Only that way can --version go back to an "+

@@ -128,7 +128,7 @@ sudo tender update --version 0.3.0
 
 ### Update to v0.3.0
 
-A machine on v0.2.2 or earlier needs one update by hand, the last one that needs sudo. Update the hub first, then each daemon.
+A machine on v0.2.2 or earlier needs one update by hand, the last one that needs sudo. Update the hub's machine first, because a newer hub takes the reports of older daemons, then each other machine.
 
 1. On each machine, run:
 

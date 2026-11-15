@@ -45,7 +45,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "set_update_settings", "Set the update settings",
 		"Set how Tender updates itself on every machine that inherits the hub's mode: auto, where the hub rolls each new stable "+
-			"release out, one machine at a time with the hub's own machine last, inside the window; or manual, where nothing updates "+
+			"release out, one machine at a time with the hub's own machine first, inside the window; or manual, where nothing updates "+
 			"until start_update. A machine can override the mode with update_machine. The result is the settings: mode, window, "+
 			"created_at and updated_at.",
 		mcp.WriteOptions{Idempotent: true},
@@ -59,7 +59,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "start_update", "Update Tender on machines",
 		"Start a rollout that updates Tender to a stable release, the latest by default, on the machines named or on every machine. "+
-			"It updates one machine at a time, the hub's own machine last. Each machine checks the release's signature, waits up to 30 "+
+			"It updates one machine at a time, the hub's own machine first. Each machine checks the release's signature, waits up to 30 "+
 			"minutes for a running backup, swaps the binary and restarts; if it isn't healthy within 2 minutes it rolls back, and the "+
 			"rollout stops there with an update.failed alert. It refuses prereleases and downgrades, and machines before v0.3.0. "+
 			"The result is the rollout, which goes on after the tool returns: follow it with get_updates. "+rolloutFields,

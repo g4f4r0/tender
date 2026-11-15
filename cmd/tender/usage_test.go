@@ -19,7 +19,7 @@ func TestFlagSetUsage(t *testing.T) {
 Update Tender to the latest stable release, or to --version.
 
 With machine names or --all, the hub rolls the release out: one machine at a time, the hub's own
-machine last, each checking the release's signature, waiting for a running backup, and rolling
+machine first, each checking the release's signature, waiting for a running backup, and rolling
 back if it isn't healthy within 2 minutes. That needs no sudo. Follow it with: tender updates show
 
 Without a machine, it updates this machine, as root: sudo tender update. Only that way can

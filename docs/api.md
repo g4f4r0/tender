@@ -2387,7 +2387,7 @@ None of its own.
 
 ### `POST /v1/updates/rollouts`
 
-Starts a rollout of a stable release to the machines named, or to every machine on Tender v0.3.0 or later, and answers `202 Accepted` with the rollout. The hub's own machine goes last. Follow it with `GET /v1/updates/rollouts/{id}`.
+Starts a rollout of a stable release to the machines named, or to every machine on Tender v0.3.0 or later, and answers `202 Accepted` with the rollout. The hub's own machine goes first, because a newer hub takes the reports of older daemons. Follow it with `GET /v1/updates/rollouts/{id}`.
 
 #### Parameters
 
