@@ -47,6 +47,11 @@ var typeText = map[string]struct{ title, tool string }{
 	TypeBackupFailed:  {"backup failed", "list_backup_history"},
 	TypeBackupStale:   {"no recent backup", "get_backup_status"},
 	TypeDiskFull:      {"disk almost full", "get_machine_usage"},
+
+	// A service alert's title follows the service's name: "web-1 stopped".
+	TypeServiceDown:       {"stopped", "list_services"},
+	TypeServiceRestarting: {"keeps restarting", "list_services"},
+	TypeServiceUnhealthy:  {"unhealthy", "list_services"},
 }
 
 // Message is one email, before it gets its headers.

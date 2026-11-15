@@ -22,7 +22,7 @@ func NewStore(d *db.DB) *Store { return &Store{db: d} }
 
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 const selectNotifications = `
-SELECT n.id, m.name, n.type, n.severity, n.status, n.content, n.created_at, n.updated_at
+SELECT n.id, m.name, n.service, n.type, n.severity, n.status, n.content, n.created_at, n.updated_at
 FROM notifications n LEFT JOIN machines m ON m.id = n.machine_id`
 
 type scanner interface{ Scan(dest ...any) error }
@@ -30,7 +30,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Notification, error) {
 	var n Notification
 	var created, updated int64
-	err := row.Scan(&n.ID, &n.Machine, &n.Type, &n.Severity, &n.Status, &n.Content, &created, &updated)
+	err := row.Scan(&n.ID, &n.Machine, &n.Service, &n.Type, &n.Severity, &n.Status, &n.Content, &created, &updated)
 	n.CreatedAt, n.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return n, err
 }
@@ -74,8 +74,17 @@ func (s *Store) Get(ctx context.Context, machineID, id int64) (Notification, err
 	return n, err
 }
 
-// key names a rule's notification: the type and the machine's name.
-type key struct{ typ, machine string }
+// key names a rule's notification: the type, the machine's name and, for a service alert, the
+// service's name.
+type key struct{ typ, machine, service string }
+
+func keyOf(n Notification) key {
+	k := key{typ: n.Type, machine: *n.Machine}
+	if n.Service != nil {
+		k.service = *n.Service
+	}
+	return k
+}
 
 // open returns the unresolved notifications of the rules, by type and machine.
 func (s *Store) open(ctx context.Context) (map[key]Notification, error) {
@@ -91,7 +100,7 @@ func (s *Store) open(ctx context.Context) (map[key]Notification, error) {
 			return nil, err
 		}
 		if _, ok := typeText[n.Type]; ok {
-			out[key{n.Type, *n.Machine}] = n
+			out[keyOf(n)] = n
 		}
 	}
 	return out, rows.Err()
@@ -108,9 +117,13 @@ func sortedByID(m map[key]Notification) []Notification {
 
 // insert opens a pending notification. Its updated_at equals its created_at until it is emailed.
 func (s *Store) insert(ctx context.Context, machineID int64, f finding, now time.Time) error {
+	var service *string
+	if f.service != "" {
+		service = &f.service
+	}
 	_, err := s.db.Write.ExecContext(ctx,
-		`INSERT INTO notifications (machine_id, type, severity, status, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		machineID, f.typ, f.severity, StatusPending, f.content, now.Unix(), now.Unix())
+		`INSERT INTO notifications (machine_id, service, type, severity, status, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		machineID, service, f.typ, f.severity, StatusPending, f.content, now.Unix(), now.Unix())
 	return err
 }
 

@@ -13,6 +13,10 @@ const (
 	TypeBackupFailed  = "backup_failed"
 	TypeBackupStale   = "backup_stale"
 	TypeDiskFull      = "disk_full"
+
+	TypeServiceDown       = "service_down"
+	TypeServiceRestarting = "service_restarting"
+	TypeServiceUnhealthy  = "service_unhealthy"
 )
 
 // The thresholds of the rules.
@@ -24,6 +28,10 @@ const (
 	diskCriticalPercent = 95
 
 	runFailed = "failed" // the status of a failed backup run
+
+	// serviceReports is how many reports in a row must find a service down, restarting or
+	// unhealthy before it alerts, so a quick restart or a deploy doesn't.
+	serviceReports = 2
 )
 
 // Machine is what the rules need to know about one machine. The hub's wiring fills it from the
@@ -40,6 +48,25 @@ type Machine struct {
 	BackupSettingsCreatedAt time.Time
 	LastBackup              *Run      // the newest finished (completed or failed) backup run; nil before the first
 	LastCompletedBackup     time.Time // when the newest completed backup started; zero before the first
+
+	Services []Service // the Docker services its daemon reports
+}
+
+// Service is what the rules need to know about one Docker service. The hub's wiring fills it
+// from the services store.
+type Service struct {
+	Name            string
+	State           string // Docker's: created, running, paused, restarting, exited, removing or dead
+	ExitCode        *int64
+	RestartCount    int64
+	AlertsEnabled   bool
+	StoppedByTender bool // a Tender stop left it stopped
+
+	// How many reports in a row found it down (exited or dead), restarting (in the restarting
+	// state, or with a restart count that grew) and unhealthy.
+	DownReports       int
+	RestartingReports int
+	UnhealthyReports  int
 }
 
 // Run is one backup run.
@@ -49,9 +76,10 @@ type Run struct {
 	Time   time.Time
 }
 
-// finding is a condition that holds now.
+// finding is a condition that holds now. service is set for an alert about a Docker service.
 type finding struct {
 	typ, severity, content string
+	service                string
 }
 
 // evaluate returns the conditions that hold for m at now.
@@ -67,7 +95,7 @@ func evaluate(m Machine, now time.Time) []finding {
 		if m.LastSeen != nil {
 			content = fmt.Sprintf("%s hasn't reported to the hub since %s (%s ago).", m.Name, formatTime(lastSeen), formatDuration(now.Sub(lastSeen)))
 		}
-		out = append(out, finding{TypeMachineSilent, SeverityCritical, content})
+		out = append(out, finding{TypeMachineSilent, SeverityCritical, content, ""})
 	}
 
 	if m.HasBackupSettings {
@@ -78,7 +106,7 @@ func evaluate(m Machine, now time.Time) []finding {
 			} else {
 				content += "."
 			}
-			out = append(out, finding{TypeBackupFailed, SeverityCritical, content})
+			out = append(out, finding{TypeBackupFailed, SeverityCritical, content, ""})
 		}
 
 		since := m.LastCompletedBackup // never completed: count from when the settings were made
@@ -94,7 +122,7 @@ func evaluate(m Machine, now time.Time) []finding {
 			if !m.LastCompletedBackup.IsZero() {
 				content = fmt.Sprintf("%s has had no completed backup since %s (%s ago).", m.Name, formatTime(since), formatDuration(age))
 			}
-			out = append(out, finding{TypeBackupStale, severity, content})
+			out = append(out, finding{TypeBackupStale, severity, content, ""})
 		}
 	}
 
@@ -104,7 +132,40 @@ func evaluate(m Machine, now time.Time) []finding {
 			severity = SeverityCritical
 		}
 		percent := strconv.FormatFloat(m.DiskUsedPercent, 'f', 1, 64)
-		out = append(out, finding{TypeDiskFull, severity, fmt.Sprintf("The disk on %s is %s%% full.", m.Name, strings.TrimSuffix(percent, ".0"))})
+		out = append(out, finding{TypeDiskFull, severity, fmt.Sprintf("The disk on %s is %s%% full.", m.Name, strings.TrimSuffix(percent, ".0")), ""})
+	}
+
+	// A silent machine already alerts; its services, whose state is as old as its last report, don't.
+	if len(out) > 0 && out[0].typ == TypeMachineSilent {
+		return out
+	}
+	for _, s := range m.Services {
+		if s.AlertsEnabled {
+			out = append(out, evaluateService(m.Name, s)...)
+		}
+	}
+	return out
+}
+
+// evaluateService returns the conditions that hold for one service of the machine called machine.
+func evaluateService(machine string, s Service) []finding {
+	var out []finding
+	if s.DownReports >= serviceReports && !s.StoppedByTender {
+		content := fmt.Sprintf("The service %s on %s stopped.", s.Name, machine)
+		if s.State == "dead" {
+			content = fmt.Sprintf("The service %s on %s is dead: Docker could not stop or remove it cleanly.", s.Name, machine)
+		} else if s.ExitCode != nil {
+			content = fmt.Sprintf("The service %s on %s stopped with exit code %d.", s.Name, machine, *s.ExitCode)
+		}
+		out = append(out, finding{TypeServiceDown, SeverityCritical, content, s.Name})
+	}
+	if s.RestartingReports >= serviceReports {
+		content := fmt.Sprintf("The service %s on %s keeps restarting. Docker has restarted it %s.", s.Name, machine, plural(s.RestartCount, "time"))
+		out = append(out, finding{TypeServiceRestarting, SeverityCritical, content, s.Name})
+	}
+	if s.UnhealthyReports >= serviceReports {
+		content := fmt.Sprintf("The service %s on %s is unhealthy: its health check fails.", s.Name, machine)
+		out = append(out, finding{TypeServiceUnhealthy, SeverityWarning, content, s.Name})
 	}
 	return out
 }

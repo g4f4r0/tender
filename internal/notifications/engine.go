@@ -93,16 +93,18 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 		return err
 	}
 	holds := map[key]bool{}
+	silent := map[string]bool{} // machines whose service alerts stay as they are
 	for _, m := range ms {
 		for _, f := range evaluate(m, now) {
-			k := key{f.typ, m.Name}
+			k := key{f.typ, m.Name, f.service}
 			holds[k] = true
+			silent[m.Name] = silent[m.Name] || f.typ == TypeMachineSilent
 			switch n, ok := open[k]; {
 			case !ok:
 				if err := e.store.insert(ctx, m.ID, f, now); err != nil {
 					return err
 				}
-				e.log.Info("notification opened", "type", f.typ, "machine", m.Name, "severity", f.severity)
+				e.log.Info("notification opened", "type", f.typ, "machine", m.Name, "service", f.service, "severity", f.severity)
 			case severityRank(f.severity) != severityRank(n.Severity):
 				if err := e.store.changeSeverity(ctx, n, f, now); err != nil {
 					return err
@@ -117,9 +119,10 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 		return err
 	}
 	for _, n := range sortedByID(rows) {
-		k := key{n.Type, *n.Machine}
+		k := keyOf(n)
+		frozen := k.service != "" && silent[k.machine] // a silent machine's service alerts stay open
 		switch {
-		case !holds[k]:
+		case !holds[k] && !frozen:
 			err = e.resolve(ctx, now, n, to)
 		case n.Status == StatusPending && to != nil:
 			err = e.sendPending(ctx, now, n, to)
@@ -173,8 +176,12 @@ func (e *Engine) send(ctx context.Context, now time.Time, n Notification, kind s
 		return false
 	}
 	text := typeText[n.Type]
+	title := text.title
+	if n.Service != nil {
+		title = *n.Service + " " + title
+	}
 	data := emailData{
-		Machine: *n.Machine, Title: text.title, Content: n.Content, Severity: n.Severity,
+		Machine: *n.Machine, Title: title, Content: n.Content, Severity: n.Severity,
 		Since: formatTime(n.CreatedAt), Duration: formatDuration(now.Sub(n.CreatedAt)), ResolvedAt: formatTime(now),
 		Tool: text.tool, Hub: e.hub, Color: "#b00020",
 	}

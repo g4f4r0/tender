@@ -17,6 +17,7 @@ const (
 type Notification struct {
 	ID        int64     `json:"id"`
 	Machine   *string   `json:"machine"` // the machine's name; null for an alert about the hub itself
+	Service   *string   `json:"service"` // the Docker service's name; null for an alert about something else
 	Type      string    `json:"type"`
 	Severity  string    `json:"severity"` // info, warning or critical
 	Status    string    `json:"status"`   // pending, sent or resolved

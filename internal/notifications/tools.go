@@ -32,7 +32,7 @@ type noInput struct{}
 func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Sender, hub string) {
 	mcp.AddReadOnly(m, "list_notifications", "List notifications",
 		"List alerts, newest first, optionally of one machine, status or severity. Each has machine (null for the hub itself), "+
-			"type, severity (info, warning or critical), status (pending and sent are open, resolved is closed), content and "+
+			"service (the Docker service it is about, else null), type, severity (info, warning or critical), status (pending and sent are open, resolved is closed), content and "+
 			"created_at (RFC 3339 UTC). Leave status out to get all of them. Pass next_cursor as cursor for older ones.",
 		func(ctx context.Context, in listInput) (server.List[Notification], error) {
 			var machineID int64
