@@ -38,22 +38,35 @@ func IsDaemon(ctx context.Context) bool {
 }
 
 // Daemon serves a route that only the machine named by {machine} may call, with its bearer token.
-func (s *Server) Daemon(h HandlerFunc) http.Handler { return s.wrap(h, s.daemon) }
+func (s *Server) Daemon(h HandlerFunc) http.Handler { return caller{s.wrap(h, s.daemon), CallerDaemon} }
 
 // People serves a route for people and their tools: no login, the hub is only reachable
 // through the owner's own network access control. A route with {machine} answers 404 for an
 // unknown machine. Tailscale Serve's Tailscale-User-Login header is logged when present.
-func (s *Server) People(h HandlerFunc) http.Handler { return s.wrap(h, s.people) }
+func (s *Server) People(h HandlerFunc) http.Handler { return caller{s.wrap(h, s.people), CallerPeople} }
 
 // DaemonOrPeople serves a route that the machine itself or people may call. A request with an
 // Authorization header is treated as a daemon; IsDaemon tells the handler which it got.
 func (s *Server) DaemonOrPeople(h HandlerFunc) http.Handler {
-	return s.wrap(h, func(r *http.Request) (int64, bool, error) {
+	return caller{s.wrap(h, func(r *http.Request) (int64, bool, error) {
 		if r.Header.Get("Authorization") != "" {
 			return s.daemon(r)
 		}
 		return s.people(r)
-	})
+	}), CallerBoth}
+}
+
+// Who may call a route.
+const (
+	CallerPeople = "people" // people and their tools
+	CallerDaemon = "daemon" // only the machine's daemon, with its token
+	CallerBoth   = "both"   // either; the handler tells them apart
+)
+
+// caller is a route's handler with who may call it, so Routes can list them.
+type caller struct {
+	http.Handler
+	who string
 }
 
 func (s *Server) wrap(h HandlerFunc, identify func(*http.Request) (id int64, daemon bool, err error)) http.Handler {

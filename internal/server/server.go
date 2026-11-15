@@ -35,6 +35,14 @@ type Server struct {
 	keys     sync.Mutex // serializes requests that carry an Idempotency-Key
 	stopping chan struct{}
 	stopOnce sync.Once
+	routes   []Route
+}
+
+// Route is one registered route and who may call it: CallerPeople, CallerDaemon or CallerBoth,
+// or "" for a handler registered without People, Daemon or DaemonOrPeople.
+type Route struct {
+	Pattern string
+	Caller  string
 }
 
 // New returns a server with GET /v1/health registered. Machines resolves tokens and names.
@@ -52,7 +60,17 @@ func (s *Server) Stopping() <-chan struct{} { return s.stopping }
 func (s *Server) StopWaiting() { s.stopOnce.Do(func() { close(s.stopping) }) }
 
 // Handle registers a route, such as "GET /v1/machines/{machine}".
-func (s *Server) Handle(pattern string, h http.Handler) { s.mux.Handle(pattern, h) }
+func (s *Server) Handle(pattern string, h http.Handler) {
+	who := ""
+	if c, ok := h.(caller); ok {
+		who = c.who
+	}
+	s.routes = append(s.routes, Route{Pattern: pattern, Caller: who})
+	s.mux.Handle(pattern, h)
+}
+
+// Routes lists the routes registered with Handle, in order.
+func (s *Server) Routes() []Route { return append([]Route{}, s.routes...) }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
