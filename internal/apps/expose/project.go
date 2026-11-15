@@ -145,20 +145,40 @@ func CheckHost(host string) error {
 	return nil
 }
 
-// hostRoutes checks the routes of an adapter that serves hosts, and returns them sorted by host.
-func hostRoutes(adapter string, routes []Route) ([]Route, error) {
-	out := slices.Clone(routes)
-	slices.SortFunc(out, func(a, b Route) int { return strings.Compare(a.Host, b.Host) })
-	for i, r := range out {
-		if err := CheckHost(r.Host); err != nil {
-			return nil, fmt.Errorf("the %s route of %s/%s: %w", adapter, r.Service, r.Container, err)
-		}
-		if r.LocalPort < 1 || r.LocalPort > 65535 {
-			return nil, fmt.Errorf("the %s route of %s/%s has local port %d, which is not a TCP port", adapter, r.Service, r.Container, r.LocalPort)
-		}
-		if i > 0 && out[i-1].Host == r.Host {
-			return nil, fmt.Errorf("two %s routes have the host %s: a host takes one route", adapter, r.Host)
+// routeError is the failure of route r: why, then the route it fails, as in "..., so the route to
+// web in blog can't have it", then fix, a sentence saying what to do, when there is one.
+func routeError(r Route, why, fix string) *RouteError {
+	msg := fmt.Sprintf("%s, so the route to %s in %s can't have it", why, r.Container, r.Service)
+	if fix != "" {
+		msg += ". " + fix
+	}
+	return &RouteError{Service: r.Service, Container: r.Container, Err: errors.New(msg)}
+}
+
+// hostRoutes checks the routes of an adapter that serves hosts. It returns the good ones sorted by
+// host, and a *RouteError for each bad one: a host that isn't a hostname, a local port that isn't a
+// TCP port, or a host that more than one route has, which fails every route that has it, so
+// neither takes the other's.
+func hostRoutes(adapter string, routes []Route) ([]Route, []error) {
+	count := map[string]int{}
+	for _, r := range routes {
+		count[r.Host]++
+	}
+	var good []Route
+	var errs []error
+	for _, r := range routes {
+		switch {
+		case CheckHost(r.Host) != nil:
+			errs = append(errs, routeError(r, CheckHost(r.Host).Error(), ""))
+		case r.LocalPort < 1 || r.LocalPort > 65535:
+			errs = append(errs, routeError(r, fmt.Sprintf("local port %d is not a TCP port", r.LocalPort), ""))
+		case count[r.Host] > 1:
+			errs = append(errs, routeError(r, fmt.Sprintf("%s is the host of %d %s routes, and a host takes one route", r.Host, count[r.Host], adapter),
+				"Give each route its own host"))
+		default:
+			good = append(good, r)
 		}
 	}
-	return out, nil
+	slices.SortFunc(good, func(a, b Route) int { return strings.Compare(a.Host, b.Host) })
+	return good, errs
 }
