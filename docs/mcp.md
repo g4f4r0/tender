@@ -64,6 +64,7 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` |
 | `GET /v1/machines/{machine}/actions` | `list_actions` |
 | `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
+| `GET /metrics` | None. It is for Prometheus scrapers, and the typed tools return the same data. |
 | `POST /mcp` | None. It is the MCP endpoint itself. |
 
 The routes only a machine's daemon calls with its token, such as usage reports and backup runs, have no tools. They are listed in the [API reference](api.md).

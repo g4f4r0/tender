@@ -104,6 +104,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	notifications.NewStore(d, key).Routes(srv, sender, hubIdentity())
 	services.NewStore(d).Routes(srv)
 	newActions(d).Routes(srv)
+	srv.Handle("GET /metrics", srv.People(metricsRoute(metricSources(d), time.Now)))
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
 	tools := newTools(d, key, sender, log).Handler()

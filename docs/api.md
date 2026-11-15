@@ -2238,6 +2238,59 @@ Content-Type: application/json
 | --- | --- |
 | `get_action` | `tender actions show apps 8` |
 
+## Metrics
+
+### `GET /metrics`
+
+Serves the machines, services, backups and open alerts in the Prometheus text format, version 0.0.4, for a scraper. [Metrics](metrics.md) lists every metric.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/metrics
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+
+# HELP tender_build_info The hub's version, as the version label; always 1.
+# TYPE tender_build_info gauge
+tender_build_info{version="v0.3.0"} 1
+# HELP tender_machine_cpu_load The machine's 1-minute load average, from its latest reading.
+# TYPE tender_machine_cpu_load gauge
+tender_machine_cpu_load{machine="apps"} 0.09
+# HELP tender_service_state 1 for the service's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.
+# TYPE tender_service_state gauge
+tender_service_state{machine="apps",service="web",runtime="docker",state="running"} 1
+# HELP tender_backup_last_age_seconds How old the machine's newest snapshot is.
+# TYPE tender_backup_last_age_seconds gauge
+tender_backup_last_age_seconds{machine="apps"} 31560
+# HELP tender_alerts_open How many alerts are open, by type and severity.
+# TYPE tender_alerts_open gauge
+tender_alerts_open{type="backup_failed",severity="critical"} 0
+```
+
+The example shows a few lines of each kind. The real page has every metric.
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub couldn't read its database. The answer is a problem, never part of a page. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| None. The typed tools, such as `list_machines`, `list_services` and `get_backup_status`, return the same data. | None. Read it with `curl`, or use `tender status`. |
+
 ## Daemon routes
 
 The daemons use these routes to report and to take their work. Each needs the machine's own token as `Authorization: Bearer <token>`, and you never call them yourself.

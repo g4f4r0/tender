@@ -51,7 +51,8 @@ var mcpCoverage = map[string]string{
 	"POST /v1/machines/{machine}/actions":               "start_service, stop_service, restart_service, get_service_logs, get_machine_logs",
 	"GET /v1/machines/{machine}/actions":                "list_actions",
 	"GET /v1/machines/{machine}/actions/{id}":           "get_action",
-	"POST /mcp": "none: it is the MCP endpoint itself",
+	"POST /mcp":    "none: it is the MCP endpoint itself",
+	"GET /metrics": "none: it is for Prometheus scrapers, and the typed tools already return the same data",
 }
 
 func toolNames(t *testing.T) []string {
