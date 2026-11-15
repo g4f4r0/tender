@@ -137,6 +137,24 @@ func TestCollectOnUbuntu(t *testing.T) {
 	}
 }
 
+// A DHCP client's socket on the public address, as systemd-networkd's, is not an open port. Only
+// UDP 68 and 546 are left out: a TCP socket on those ports is still listed.
+func TestParseSSLeavesOutDHCPClients(t *testing.T) {
+	out := `udp   UNCONN 0      0      167.104.162.114%eth0:68        0.0.0.0:*    users:(("systemd-network",pid=7,fd=19))
+udp   UNCONN 0      0                 0.0.0.0:68         0.0.0.0:*    users:(("dhclient",pid=8,fd=6))
+udp   UNCONN 0      0      [2a01:4f8::1]%eth0:546          [::]:*    users:(("systemd-network",pid=7,fd=20))
+udp   UNCONN 0      0                 0.0.0.0:67         0.0.0.0:*    users:(("dnsmasq",pid=9,fd=4))
+tcp   LISTEN 0      4096              0.0.0.0:546        0.0.0.0:*    users:(("odd",pid=10,fd=3))
+`
+	var keys []string
+	for _, l := range parseSS([]byte(out)) {
+		keys = append(keys, l.Key())
+	}
+	if want := []string{"67/udp", "546/tcp"}; !reflect.DeepEqual(keys, want) {
+		t.Errorf("listeners = %v, want %v", keys, want)
+	}
+}
+
 func TestCollectWithoutUfw(t *testing.T) {
 	for name, c := range map[string]struct {
 		scripts map[string]string

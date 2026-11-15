@@ -245,11 +245,16 @@ func (c *Collector) listeners(ctx context.Context) Listeners {
 	return l
 }
 
+// dhcpClient are the UDP ports a DHCP client binds to get the machine's address: 68 for DHCPv4 and
+// 546 for DHCPv6. systemd-networkd and dhclient bind them on the public address, but they only take
+// the DHCP server's answers, so they serve nothing.
+var dhcpClient = map[int]bool{68: true, 546: true}
+
 var ssProcess = regexp.MustCompile(`users:\(\("([^"]+)"`)
 
 // parseSS reads "ss -H -l -n -t -u -p": Netid State Recv-Q Send-Q Local:Port Peer:Port [Process].
 // A socket on a loopback, link-local or tailnet address, or bound to the loopback device, is left
-// out. Each port and protocol shows once.
+// out, and so is a DHCP client's (see dhcpClient). Each port and protocol shows once.
 func parseSS(out []byte) []Listener {
 	list := []Listener{}
 	seen := map[string]bool{}
@@ -260,7 +265,7 @@ func parseSS(out []byte) []Listener {
 			continue
 		}
 		host, port, ok := splitAddress(f[4])
-		if !ok {
+		if !ok || (f[0] == "udp" && dhcpClient[port]) {
 			continue
 		}
 		if dev := strings.Index(host, "%"); dev >= 0 {
