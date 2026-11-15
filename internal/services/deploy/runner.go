@@ -342,8 +342,8 @@ func (d *Runner) Remove(ctx context.Context, raw json.RawMessage, deleteData boo
 		errs = append(errs, fmt.Errorf("its containers are gone, but its routes could not all be taken out: %w", err))
 	}
 	if run == dir {
-		kept := filepath.Join(d.Dir, ".removed", dep.Name+"-"+strconv.FormatInt(time.Now().Unix(), 10))
-		if err := os.MkdirAll(filepath.Dir(kept), 0o700); err != nil {
+		kept, err := keptName(filepath.Join(d.Dir, ".removed"), dep.Name)
+		if err != nil {
 			return out.String(), errors.Join(append(errs, err)...)
 		}
 		if err := os.Rename(dir, kept); err != nil {
@@ -360,6 +360,23 @@ func (d *Runner) Remove(ctx context.Context, raw json.RawMessage, deleteData boo
 		}
 	}
 	return out.String(), errors.Join(errs...)
+}
+
+// keptName makes removed, the folder removed services are kept in, and returns a path in it for
+// the folder of the service called name: its name and when, such as notes-20261115T093000Z, with
+// -2 and up when that is taken.
+func keptName(removed, name string) (string, error) {
+	if err := os.MkdirAll(removed, 0o700); err != nil {
+		return "", err
+	}
+	base := filepath.Join(removed, name+"-"+time.Now().UTC().Format("20060102T150405Z"))
+	kept := base
+	for i := 2; ; i++ {
+		if _, err := os.Lstat(kept); errors.Is(err, os.ErrNotExist) {
+			return kept, nil
+		}
+		kept = base + "-" + strconv.Itoa(i)
+	}
 }
 
 // Managed reports whether name is a service Tender deployed on this machine: its folder has a
