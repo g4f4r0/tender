@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/machines"
@@ -33,6 +34,8 @@ Work with the hub, from any machine that can reach it:
 	{"destinations COMMAND", "list, add, remove"},
 	{"backups COMMAND", "status, set, unset"},
 	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
+	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
+	{"actions COMMAND", "list, show"},
 	{"recipients COMMAND", "list, add, remove"},
 	{"email test", "Send a test email to every recipient"},
 }) + `
@@ -66,13 +69,15 @@ var hubCommands = map[string]func([]string, session) error{
 	"destinations": runDestinations,
 	"backups":      runBackups,
 	"services":     runServices,
+	"logs":         runLogs,
+	"actions":      runActions,
 	"recipients":   runRecipients,
 	"email":        runEmail,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
-	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, server.Migrations}
+	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations, server.Migrations}
 }
 
 func main() {

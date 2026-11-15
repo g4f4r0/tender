@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -160,6 +161,7 @@ type inspected struct {
 	}
 	HostConfig struct {
 		RestartPolicy struct{ Name string }
+		Memory        int64 // the memory limit in bytes, 0 for none
 	}
 }
 
@@ -208,6 +210,10 @@ func (d *Docker) Containers(ctx context.Context) ([]ServiceInput, error) {
 			code := in.State.ExitCode
 			sv.ExitCode = &code
 		}
+		if state == StateRunning && in.HostConfig.Memory > 0 {
+			limit := in.HostConfig.Memory
+			sv.MemoryLimitBytes = &limit
+		}
 		if t, err := time.Parse(time.RFC3339Nano, in.State.StartedAt); err == nil && t.Year() > 1 {
 			t = t.UTC().Truncate(time.Second)
 			sv.StartedAt = &t
@@ -215,6 +221,63 @@ func (d *Docker) Containers(ctx context.Context) ([]ServiceInput, error) {
 		out = append(out, sv)
 	}
 	return out, nil
+}
+
+// sample is one reading of a container's usage. cpu and system are Docker's cumulative CPU times,
+// in nanoseconds, of the container and of the whole machine.
+type sample struct {
+	memory      int64
+	cpu, system uint64
+	cpus        uint32
+}
+
+// Stats reads a container's memory use and CPU times once, without Docker's second sample.
+// Memory is what the container uses less the page cache it can drop, as "docker stats" shows it.
+func (d *Docker) Stats(ctx context.Context, id string) (sample, error) {
+	var st struct {
+		MemoryStats struct {
+			Usage uint64            `json:"usage"`
+			Stats map[string]uint64 `json:"stats"`
+		} `json:"memory_stats"`
+		CPUStats struct {
+			CPUUsage struct {
+				TotalUsage  uint64   `json:"total_usage"`
+				PercpuUsage []uint64 `json:"percpu_usage"`
+			} `json:"cpu_usage"`
+			SystemCPUUsage uint64 `json:"system_cpu_usage"`
+			OnlineCPUs     uint32 `json:"online_cpus"`
+		} `json:"cpu_stats"`
+	}
+	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/stats?stream=false&one-shot=true", &st); err != nil {
+		return sample{}, err
+	}
+	m := st.MemoryStats
+	if m.Usage == 0 {
+		return sample{}, errors.New("Docker sent no memory use")
+	}
+	cache := m.Stats["inactive_file"]                // cgroup v2
+	if v, ok := m.Stats["total_inactive_file"]; ok { // cgroup v1
+		cache = v
+	}
+	used := int64(m.Usage)
+	if cache < m.Usage {
+		used = int64(m.Usage - cache)
+	}
+	cpus := st.CPUStats.OnlineCPUs
+	if cpus == 0 {
+		cpus = uint32(len(st.CPUStats.CPUUsage.PercpuUsage))
+	}
+	return sample{memory: used, cpu: st.CPUStats.CPUUsage.TotalUsage, system: st.CPUStats.SystemCPUUsage, cpus: cpus}, nil
+}
+
+// cpuPercent is the container's share of the machine's CPU between two samples, where 100 is one
+// whole CPU, as "docker stats" shows it. It is false when the samples can't tell.
+func cpuPercent(prev, now sample) (float64, bool) {
+	if now.system <= prev.system || now.cpu < prev.cpu || now.cpus == 0 {
+		return 0, false
+	}
+	p := float64(now.cpu-prev.cpu) / float64(now.system-prev.system) * float64(now.cpus) * 100
+	return math.Round(p*10) / 10, true
 }
 
 // Act starts, stops or restarts a container. A stop waits as long as the container's own stop
@@ -229,14 +292,15 @@ func (d *Docker) Act(ctx context.Context, typ, name string) error {
 }
 
 // Logs returns a container's last lines, stdout and stderr together, with Docker's timestamps:
-// at most MaxLines lines and MaxOutputBytes, the newest kept.
-func (d *Docker) Logs(ctx context.Context, name string, lines int) (string, error) {
+// at most MaxLines lines and MaxOutputBytes, the newest kept, and only from since ago when since
+// isn't 0.
+func (d *Docker) Logs(ctx context.Context, name string, lines int, since time.Duration) (string, error) {
 	lines = max(1, min(lines, MaxLines))
 	var in inspected
 	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(name)+"/json", &in); err != nil {
 		return "", err
 	}
-	body, err := d.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(name)+"/logs?stdout=1&stderr=1&timestamps=1&tail="+strconv.Itoa(lines))
+	body, err := d.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(name)+"/logs?stdout=1&stderr=1&timestamps=1&tail="+strconv.Itoa(lines)+sinceParam(since))
 	if err != nil {
 		return "", err
 	}
@@ -251,6 +315,14 @@ func (d *Docker) Logs(ctx context.Context, name string, lines int) (string, erro
 		return "", fmt.Errorf("read the logs from Docker: %w", err)
 	}
 	return t.text(lines), nil
+}
+
+// sinceParam is Docker's since parameter, in Unix seconds, for logs from since ago.
+func sinceParam(since time.Duration) string {
+	if since <= 0 {
+		return ""
+	}
+	return "&since=" + strconv.FormatInt(time.Now().Add(-since).Unix(), 10)
 }
 
 // demux copies the payloads of Docker's multiplexed stream to w: each frame is an 8-byte header,

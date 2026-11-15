@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/client"
 	"github.com/g4f4r0/tender/internal/config"
@@ -22,7 +23,8 @@ import (
 func runDaemon(args []string, log *slog.Logger) error {
 	fs := newFlagSet("daemon", "[--config PATH] [--state PATH]",
 		"Run the daemon: it backs up this machine on the schedule the hub sets and reports every run to the hub, "+
-			"reports this machine's Docker services and runs the actions the hub queues for them. It reaches Docker at "+
+			"reports this machine's Docker services, and runs the actions the hub queues: service starts, stops, restarts "+
+			"and logs, and reads of this machine's journal with journalctl. It reaches Docker at "+
 			services.DefaultSocket+", or at the socket in TENDER_DOCKER_SOCKET. "+
 			"Run it as a service; \"sudo tender install daemon\" sets that up.")
 	configPath := fs.String("config", config.DefaultDaemonPath, "`PATH` the daemon config file")
@@ -60,10 +62,17 @@ func runDaemon(args []string, log *slog.Logger) error {
 	if socket == "" {
 		socket = services.DefaultSocket
 	}
-	wg.Add(1)
+	sd := services.NewDaemon(hub, cfg.Machine, socket, log)
+	ad := actions.NewDaemon(hub, cfg.Machine, log)
+	ad.Services = sd
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		services.NewDaemon(hub, cfg.Machine, socket, log).Run(ctx)
+		sd.Run(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		ad.Run(ctx)
 	}()
 
 	a := backups.NewDaemon(hub, cfg.Machine, *state, log)

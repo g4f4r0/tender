@@ -84,7 +84,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddReadOnly(m, "list_backup_snapshots", "List backup snapshots",
 		"List one machine's restic snapshots, newest first. Each has restic_id, size_bytes (null when unknown), the backed-up "+
-			"paths and created_at (the snapshot time, RFC 3339 UTC). Pass next_cursor as cursor for older snapshots.",
+			"paths and created_at (the snapshot time, RFC 3339 UTC). At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older snapshots.",
 		func(ctx context.Context, in snapshotsInput) (server.List[Snapshot], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {
@@ -101,7 +101,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 	mcp.AddReadOnly(m, "list_backup_history", "List backup runs",
 		"List one machine's backup, cleanup and check runs, newest first, optionally of one type or status. Each has type, "+
 			"status (pending, in_progress, completed or failed), error (null unless it failed), snapshot_id and created_at (when it "+
-			"started, RFC 3339 UTC). Pass next_cursor as cursor for older runs.",
+			"started, RFC 3339 UTC). At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older runs.",
 		func(ctx context.Context, in historyInput) (server.List[History], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {
@@ -153,7 +153,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddWrite(m, "remove_destination", "Remove a backup destination",
 		"Remove a destination that no machine uses; it is refused while one does, and the error names them. "+
-			"The backups already in the bucket stay there.",
+			"The backups already in the bucket stay there. The result names what was removed.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
 		func(ctx context.Context, in removeDestinationInput) (mcp.Removed, error) {
 			if err := s.DeleteDestination(ctx, in.Destination); err != nil {
@@ -164,7 +164,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddWrite(m, "set_backup", "Set a machine's backups",
 		"Set where, when and for how long a machine's backups are kept: a destination, a cron schedule in UTC and the days to keep "+
-			"snapshots. It replaces any earlier settings, and the machine's daemon picks them up on its next check.",
+			"snapshots. It replaces any earlier settings, and the machine's daemon picks them up on its next check. The result is the settings.",
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in setBackupInput) (Settings, error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
@@ -175,7 +175,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 
 	mcp.AddWrite(m, "unset_backup", "Stop a machine's backups",
-		"Remove a machine's backup settings, so it stops backing up. Its snapshots and history stay. Call set_backup to start again.",
+		"Remove a machine's backup settings, so it stops backing up. Its snapshots and history stay. Call set_backup to start again. The result names what was removed.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
 		func(ctx context.Context, in unsetBackupInput) (mcp.Removed, error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)

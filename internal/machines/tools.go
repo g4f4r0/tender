@@ -39,7 +39,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 	mcp.AddReadOnly(m, "get_machine_usage", "Get machine usage",
 		"Get one machine's usage readings, newest first, optionally between since and until. Each reading has cpu_load (1-minute "+
 			"load average), memory_used_percent and disk_used_percent (0 to 100), uptime_seconds and created_at (when it was taken, "+
-			"RFC 3339 UTC). Pass next_cursor as cursor for older readings.",
+			"RFC 3339 UTC). At most limit a page, 1 to 500, default 50; pass next_cursor as cursor for older readings.",
 		func(ctx context.Context, in usageInput) (server.List[Usage], error) {
 			id, err := mcp.Machine(ctx, s.Lookup, in.Machine)
 			if err != nil {
@@ -91,7 +91,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "remove_machine", "Remove a machine",
 		"Remove a machine and everything the hub knows about it: usage, backup settings, snapshots, history and notifications. "+
-			"This can't be undone. Its backups in the bucket stay where they are, and its daemon can no longer report.",
+			"This can't be undone. Its backups in the bucket stay where they are, and its daemon can no longer report. The result names what was removed.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
 		func(ctx context.Context, in machineInput) (mcp.Removed, error) {
 			if _, err := mcp.Machine(ctx, s.Lookup, in.Machine); err != nil {

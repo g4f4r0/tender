@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
@@ -83,6 +84,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	backups.NewStore(d, key).Routes(srv)
 	notifications.NewStore(d).Routes(srv, sender, hubName())
 	services.NewStore(d).Routes(srv)
+	newActions(d).Routes(srv)
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
 	tools := newTools(d, key, sender, log).Handler()
@@ -101,7 +103,33 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	backups.NewStore(d, key).RegisterTools(s, ms.Lookup)
 	notifications.NewStore(d).RegisterTools(s, ms.Lookup, sender, hubName())
 	services.NewStore(d).RegisterTools(s, ms.Lookup)
+	newActions(d).RegisterTools(s, ms.Lookup)
 	return s
+}
+
+// newActions returns the actions store, which hears about services from the services store.
+func newActions(d *db.DB) *actions.Store {
+	as := actions.NewStore(d, services.NewStore(d))
+	if keep, err := logsKeep(os.Getenv); err == nil {
+		as.Keep = keep
+	}
+	return as
+}
+
+// envLogsKeep overrides how long a logs action keeps its output, for tests only.
+const envLogsKeep = "TENDER_LOGS_KEEP"
+
+// logsKeep is how long a logs action keeps its output: an hour, or envLogsKeep.
+func logsKeep(getenv func(string) string) (time.Duration, error) {
+	v := getenv(envLogsKeep)
+	if v == "" {
+		return actions.DefaultKeep, nil
+	}
+	keep, err := time.ParseDuration(v)
+	if err != nil || keep <= 0 {
+		return 0, fmt.Errorf("%s must be a duration such as 1h, got %q", envLogsKeep, v)
+	}
+	return keep, nil
 }
 
 // checkKey is an error unless key opens every secret stored in the database at path.
@@ -136,6 +164,9 @@ func serveHub(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if _, err := logsKeep(os.Getenv); err != nil {
+		return err
+	}
 	sender := mailSender(cfg.SMTP)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -158,9 +189,10 @@ func serveHub(args []string, log *slog.Logger) error {
 	ms := machines.NewStore(d)
 	go hub.PruneKeys(ctx)
 	go ms.PruneUsage(ctx, log)
+	go newActions(d).Sweep(ctx, log)
 	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
 	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d)))
-	// No write timeout: a daemon's long poll for service actions holds its request up to 30 s.
+	// No write timeout: a daemon's long poll for actions holds its request up to 30 s.
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.Guard(hub, cfg.Hosts, log),

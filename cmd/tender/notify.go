@@ -63,7 +63,9 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 					m.Services = append(m.Services, notifications.Service{
 						Name: s.Name, State: s.State, ExitCode: s.ExitCode, RestartCount: s.RestartCount, RestartPolicy: s.RestartPolicy,
 						AlertsEnabled: s.AlertsEnabled, StoppedByTender: s.StoppedByTender,
+						MemoryBytes: s.MemoryBytes, MemoryLimitBytes: s.MemoryLimitBytes,
 						DownReports: s.DownReports, RestartingReports: s.RestartingReports, UnhealthyReports: s.UnhealthyReports,
+						MemoryHighReports: s.MemoryHighReports,
 					})
 				}
 			}

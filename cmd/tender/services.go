@@ -1,16 +1,14 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/services"
 )
 
@@ -20,23 +18,17 @@ var servicesUsage = groupUsage("services", "See and control each machine's Docke
 	{"start MACHINE SERVICE", "Start a service"},
 	{"stop MACHINE SERVICE", "Stop a service"},
 	{"restart MACHINE SERVICE", "Restart a service"},
-	{"logs MACHINE SERVICE [--lines N]", "Print a service's last lines of output"},
+	{"logs MACHINE SERVICE [--lines N] [--since D]", "Print a service's newest lines of output"},
 	{"alerts MACHINE SERVICE on|off", "Turn a service's alert emails on or off"},
 })
-
-// How long a command waits for the daemon to finish an action, and how often it asks. Tests shorten them.
-var (
-	actionWait  = services.ActionWait
-	actionCheck = time.Second
-)
 
 // runServices runs "tender services list|start|stop|restart|logs|alerts".
 func runServices(args []string, s session) error {
 	return runGroup("services", servicesUsage, args, s.out, map[string]func([]string) error{
 		"list":    func(a []string) error { return servicesList(a, s) },
-		"start":   func(a []string) error { return servicesAct(a, s, services.TypeStart) },
-		"stop":    func(a []string) error { return servicesAct(a, s, services.TypeStop) },
-		"restart": func(a []string) error { return servicesAct(a, s, services.TypeRestart) },
+		"start":   func(a []string) error { return servicesAct(a, s, actions.TypeStart) },
+		"stop":    func(a []string) error { return servicesAct(a, s, actions.TypeStop) },
+		"restart": func(a []string) error { return servicesAct(a, s, actions.TypeRestart) },
 		"logs":    func(a []string) error { return servicesLogs(a, s) },
 		"alerts":  func(a []string) error { return servicesAlerts(a, s) },
 	})
@@ -61,7 +53,8 @@ func twoArgs(fs *flag.FlagSet, args []string) (string, string, error) {
 func servicesList(args []string, s session) error {
 	fs := newFlagSet("services list", "[MACHINE] [--hub URL]",
 		"List every machine's Docker services, or one machine's: the state Docker reports (with the exit code once stopped), "+
-			"the health check, how often Docker restarted it, when it started and whether it sends alerts.")
+			"the health check, its memory (with its limit) and CPU from the latest report, where 100% is one whole CPU, how "+
+			"often Docker restarted it, when it started and whether it sends alerts.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -124,19 +117,29 @@ func servicesList(args []string, s session) error {
 		if !sv.AlertsEnabled {
 			alerts = "off"
 		}
-		rows[i] = []string{sv.Machine, sv.Name, state, health, strconv.FormatInt(sv.RestartCount, 10), started, alerts}
+		mem, cpu := "-", "-"
+		if sv.MemoryBytes != nil {
+			mem = formatBytes(*sv.MemoryBytes)
+			if sv.MemoryLimitBytes != nil {
+				mem += " / " + formatBytes(*sv.MemoryLimitBytes)
+			}
+		}
+		if sv.CPUPercent != nil {
+			cpu = strconv.FormatFloat(*sv.CPUPercent, 'f', 1, 64) + "%"
+		}
+		rows[i] = []string{sv.Machine, sv.Name, state, health, mem, cpu, strconv.FormatInt(sv.RestartCount, 10), started, alerts}
 	}
-	printTable(s.out, []string{"MACHINE", "SERVICE", "STATE", "HEALTH", "RESTARTS", "STARTED", "ALERTS"}, rows)
+	printTable(s.out, []string{"MACHINE", "SERVICE", "STATE", "HEALTH", "MEM", "CPU", "RESTARTS", "STARTED", "ALERTS"}, rows)
 	return nil
 }
 
 var (
 	actionSummary = map[string]string{
-		services.TypeStart:   "Start a service. Starting a running service changes nothing.",
-		services.TypeStop:    "Stop a service, with the container's own stop timeout. A service Tender stopped doesn't alert as down until it runs again.",
-		services.TypeRestart: "Restart a service.",
+		actions.TypeStart:   "Start a service. Starting a running service changes nothing.",
+		actions.TypeStop:    "Stop a service, with the container's own stop timeout. A service Tender stopped doesn't alert as down until it runs again.",
+		actions.TypeRestart: "Restart a service.",
 	}
-	actionDone = map[string]string{services.TypeStart: "Started", services.TypeStop: "Stopped", services.TypeRestart: "Restarted"}
+	actionDone = map[string]string{actions.TypeStart: "Started", actions.TypeStop: "Stopped", actions.TypeRestart: "Restarted"}
 )
 
 func servicesAct(args []string, s session, typ string) error {
@@ -155,7 +158,7 @@ func servicesAct(args []string, s session, typ string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runAction(hub, machine, service, services.ActionInput{Type: typ}); err != nil {
+	if _, err := queueAction(hub, machine, actions.Input{Type: typ, Service: &service}); err != nil {
 		return err
 	}
 	say(s.out, "%s %s on %s.", actionDone[typ], service, machine)
@@ -163,11 +166,13 @@ func servicesAct(args []string, s session, typ string) error {
 }
 
 func servicesLogs(args []string, s session) error {
-	fs := newFlagSet("services logs", "MACHINE SERVICE [--lines N] [--hub URL]",
-		"Print a service's last lines of output, stdout and stderr together, each line starting with Docker's timestamp. "+
-			"The daemon on the machine reads them; this waits up to 60 seconds for it.")
+	fs := newFlagSet("services logs", "MACHINE SERVICE [--lines N] [--since D] [--hub URL]",
+		"Print a service's newest lines of output, stdout and stderr together, each line starting with Docker's timestamp. "+
+			"The daemon on the machine reads them; this waits up to 60 seconds for it. Logs can hold secrets: the hub clears "+
+			"them 1 hour after they were read.")
 	hubURL := hubFlag(fs)
-	lines := fs.Int("lines", services.DefaultLines, "`N` how many of the last lines, up to 2000")
+	lines := fs.Int("lines", actions.DefaultLines, "`N` how many of the newest lines, up to 2000")
+	since := fs.String("since", "", "`D` only lines from this far back, such as 30m, 1h or 7d, at most 7d")
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
 		return err
@@ -176,54 +181,18 @@ func servicesLogs(args []string, s session) error {
 	if err != nil {
 		return err
 	}
-	if *lines < 1 || *lines > services.MaxLines {
-		return usageError(fs, "--lines must be from 1 to %d", services.MaxLines)
+	if err := checkLogFlags(fs, *lines, *since); err != nil {
+		return err
 	}
 	hub, err := newHubAPI(fs, *hubURL)
 	if err != nil {
 		return err
 	}
-	a, err := runAction(hub, machine, service, services.ActionInput{Type: services.TypeLogs, Lines: lines})
+	a, err := queueAction(hub, machine, actions.Input{Type: actions.TypeLogs, Service: &service, Lines: lines, Since: optional(*since)})
 	if err != nil {
 		return err
 	}
-	if a.Output == nil || *a.Output == "" {
-		say(s.out, "%s on %s has no logs.", service, machine)
-		return nil
-	}
-	_, err = io.WriteString(s.out, *a.Output)
-	return err
-}
-
-// runAction queues an action and waits for the daemon to finish it. A failed action is an error
-// with the daemon's reason; one still waiting after actionWait is an error that says how to check.
-func runAction(hub *hubAPI, machine, service string, in services.ActionInput) (services.Action, error) {
-	var a services.Action
-	if err := hub.do(http.MethodPost, servicePath(machine, service, "/actions"), in, &a); err != nil {
-		return a, err
-	}
-	path := machinePath(machine, "/service-actions/"+strconv.FormatInt(a.ID, 10))
-	deadline := time.Now().Add(actionWait)
-	for !a.Finished() && time.Now().Before(deadline) {
-		time.Sleep(min(actionCheck, time.Until(deadline)))
-		if err := hub.do(http.MethodGet, path, nil, &a); err != nil {
-			return a, err
-		}
-	}
-	switch {
-	case a.Status == services.StatusFailed && a.Output != nil:
-		return a, errors.New(*a.Output)
-	case a.Status == services.StatusFailed:
-		return a, fmt.Errorf("the daemon on %s could not do this.", machine)
-	case a.Finished():
-		return a, nil
-	}
-	check := "Check with: tender services list " + machine
-	if in.Type == services.TypeLogs {
-		check = "Its logs will be at GET " + path + " on the hub, or run this again later."
-	}
-	return a, fmt.Errorf("the daemon on %s hasn't finished within %d seconds. The %s of %s stays queued for 15 minutes and runs "+
-		"when the daemon picks it up. %s", machine, int(actionWait.Seconds()), in.Type, service, check)
+	return printLogs(s, a, service+" on "+machine)
 }
 
 func servicesAlerts(args []string, s session) error {
@@ -253,4 +222,14 @@ func servicesAlerts(args []string, s session) error {
 		say(s.out, "Alerts for %s on %s are off. Its open alerts resolve within a minute.", service, machine)
 	}
 	return nil
+}
+
+// formatBytes is a size in binary units, such as 512 MiB or 1.5 GiB.
+func formatBytes(n int64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	v, i := float64(n), 0
+	for v >= 1024 && i < len(units)-1 {
+		v, i = v/1024, i+1
+	}
+	return strings.TrimSuffix(strconv.FormatFloat(v, 'f', 1, 64), ".0") + " " + units[i]
 }

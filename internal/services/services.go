@@ -1,5 +1,6 @@
-// Package services owns each machine's Docker containers: the list its daemon reports, the
-// actions people and AI clients queue for them (start, stop, restart, logs) and the alert switch.
+// Package services owns each machine's Docker containers: the list its daemon reports, their
+// state and usage, and the alert switch. The actions domain queues start, stop, restart and logs;
+// this domain's daemon does them with Docker, and its store hears how they ended.
 package services
 
 import (

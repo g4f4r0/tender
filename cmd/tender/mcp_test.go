@@ -161,8 +161,8 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_backup_status", "get_machine_usage", "get_recipient", "get_service_logs", "list_backup_history", "list_backup_snapshots", "list_destinations",
-		"list_machines", "list_notifications", "list_recipients", "list_services"}
+	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_recipient", "get_service_logs", "list_actions",
+		"list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients", "list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {false, false}, "remove_machine": {true, true},

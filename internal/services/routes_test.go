@@ -133,21 +133,6 @@ func TestRoutes(t *testing.T) {
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{"alerts_enabled": false}, 200, `"alerts_enabled":false`},
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{"state": "running"}, 400, "unknown field"},
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{}, 200, `"alerts_enabled":false`},
-		{"POST", "/v1/machines/a/services/web/actions", "", map[string]any{"type": "explode"}, 422, "type must be start, stop, restart or logs."},
-		{"POST", "/v1/machines/a/services/web/actions", "", map[string]any{"type": "logs", "lines": 5000}, 422, "lines must be"},
-		{"POST", "/v1/machines/a/services/web/actions", "", map[string]any{"type": "restart"}, 202, `"status":"pending"`},
-		{"GET", "/v1/machines/a/service-actions/1", "", nil, 200, `"type":"restart"`},
-		{"GET", "/v1/machines/b/service-actions/1", "", nil, 404, "Action 1 doesn't exist on this machine."},
-		{"GET", "/v1/machines/a/service-actions/x", "", nil, 404, "is not an id"},
-		{"GET", "/v1/machines/a/service-actions", "", nil, 401, "Bearer"},
-		{"GET", "/v1/machines/a/service-actions?wait=31", "token-a", nil, 400, "wait must be a whole number of seconds from 0 to 30."},
-		{"GET", "/v1/machines/b/service-actions", "token-b", nil, 200, `{"data":[]}`},
-		{"GET", "/v1/machines/a/service-actions", "token-a", nil, 200, `"status":"in_progress"`},
-		{"PATCH", "/v1/machines/a/service-actions/1", "", map[string]any{"status": "completed"}, 401, "Bearer"},
-		{"PATCH", "/v1/machines/a/service-actions/1", "token-a", map[string]any{"status": "pending"}, 422, "status must be completed or failed."},
-		{"PATCH", "/v1/machines/a/service-actions/1", "token-a", map[string]any{"status": "completed"}, 204, ""},
-		{"PATCH", "/v1/machines/a/service-actions/1", "token-a", map[string]any{"status": "completed"}, 409, "not in_progress"},
-		{"GET", "/v1/machines/a/service-actions/1", "", nil, 200, `"status":"completed"`},
 		// Docker stops answering: the list stays, with every state unknown.
 		{"PUT", "/v1/machines/a/services", "token-a", Report{Docker: DockerUnreachable}, 204, ""},
 		{"GET", "/v1/machines/a/services", "", nil, 200, `"docker":"unreachable"`},
@@ -183,8 +168,6 @@ func TestServiceCalledActions(t *testing.T) {
 	}{
 		{"GET", "/v1/machines/a/services/actions", nil, 200, `"name":"actions"`},
 		{"PATCH", "/v1/machines/a/services/actions", map[string]any{"alerts_enabled": false}, 200, `"alerts_enabled":false`},
-		{"POST", "/v1/machines/a/services/actions/actions", map[string]any{"type": "logs"}, 202, `"service":"actions"`},
-		{"GET", "/v1/machines/a/service-actions/1", nil, 200, `"service":"actions"`},
 	} {
 		if status, body := h.call(t, c.method, c.path, "", c.body); status != c.status || !strings.Contains(body, c.has) {
 			t.Errorf("%s %s: %d %s, want %d with %q", c.method, c.path, status, body, c.status, c.has)
@@ -192,104 +175,75 @@ func TestServiceCalledActions(t *testing.T) {
 	}
 }
 
-func TestLongPollEndsWhenTheHubStops(t *testing.T) {
-	h := newTestHub(t)
-	done := make(chan int)
-	go func() {
-		status, _ := h.call(t, "GET", "/v1/machines/a/service-actions?wait=30", "token-a", nil)
-		done <- status
-	}()
-	time.Sleep(300 * time.Millisecond)
-	h.srv.StopWaiting()
-	select {
-	case status := <-done:
-		if status != 200 {
-			t.Errorf("status %d", status)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the long poll held on after the hub stopped waiting")
-	}
-}
-
-// TestDaemon runs the daemon against the real routes and a fake Docker: it reports, runs each
-// action and its result reaches the hub, and the logs never reach the hub's log or the daemon's.
+// TestDaemon runs the daemon against the real routes and a fake Docker: it reports the containers
+// with their usage, does what the actions daemon hands it, and its next report shows the change.
 func TestDaemon(t *testing.T) {
 	h := newTestHub(t)
 	f := newFakeDocker(t,
-		&fakeContainer{ID: "aaa", Name: "web", Image: "nginx", State: "running", Logs: []string{"secret-looking log line"}},
+		&fakeContainer{ID: "aaa", Name: "web", Image: "nginx", State: "running", Logs: []string{"a log line"},
+			MemLimit: 1 << 30, Memory: 300 << 20, Cache: 100 << 20, CPU: 1e9, System: 1e11, CPUs: 2},
 		&fakeContainer{ID: "bbb", Name: "worker", Image: "w", State: "exited", ExitCode: 3},
+		&fakeContainer{ID: "ccc", Name: "cron", Image: "c", State: "running", StatsFail: true},
 	)
-	var daemonLogs syncBuffer
-	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(&daemonLogs, nil)))
-	d.Every = time.Hour // reports come at the start and after each action that changes a container
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() { d.Run(ctx); close(stopped) }()
-	t.Cleanup(func() { cancel(); <-stopped })
-
+	var logs syncBuffer
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(&logs, nil)))
+	ctx := context.Background()
 	s := NewStore(h.db)
-	waitFor := func(what string, ok func() bool) {
+	get := func(name string) Service {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for !ok() {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	waitFor("the first report", func() bool { l, _ := s.List(ctx, 1); return len(l) == 2 })
-
-	do := func(in ActionInput, service string) Action {
-		t.Helper()
-		a, err := s.CreateAction(ctx, 1, service, in)
+		sv, err := s.Get(ctx, 1, name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		a, err = s.Await(ctx, 1, a.ID, 5*time.Second)
-		if err != nil || !a.Finished() {
-			t.Fatalf("%s %s = %+v, %v", in.Type, service, a, err)
-		}
-		return a
-	}
-	if a := do(ActionInput{Type: TypeStop}, "web"); a.Status != StatusCompleted || a.Output != nil {
-		t.Errorf("stop = %+v", a)
-	}
-	waitFor("the report after the stop", func() bool {
-		sv, _ := s.Get(ctx, 1, "web")
-		return sv.State == StateExited && sv.StoppedByTender
-	})
-	if a := do(ActionInput{Type: TypeStart}, "web"); a.Status != StatusCompleted {
-		t.Errorf("start = %+v", a)
-	}
-	waitFor("running again", func() bool { sv, _ := s.Get(ctx, 1, "web"); return sv.State == StateRunning && !sv.StoppedByTender })
-	if a := do(ActionInput{Type: TypeRestart}, "worker"); a.Status != StatusCompleted {
-		t.Errorf("restart = %+v", a)
-	}
-	a := do(ActionInput{Type: TypeLogs, Lines: ptr(10)}, "web")
-	if a.Status != StatusCompleted || a.Output == nil || !strings.Contains(*a.Output, "secret-looking log line") {
-		t.Errorf("logs = %+v", a)
+		return sv
 	}
 
-	// The container goes away before the daemon gets to it: the action fails with Docker's reason.
-	f.remove("worker")
-	a = do(ActionInput{Type: TypeRestart}, "worker")
-	if a.Status != StatusFailed || a.Output == nil || *a.Output != "Could not restart worker: Docker answered 404: No such container: worker." {
-		t.Errorf("restart of a gone container = %+v", a)
+	d.reportNow(ctx)
+	web, worker, cron := get("web"), get("worker"), get("cron")
+	if web.MemoryBytes == nil || *web.MemoryBytes != 200<<20 || web.MemoryLimitBytes == nil || *web.MemoryLimitBytes != 1<<30 || web.CPUPercent != nil {
+		t.Errorf("web's first usage = %+v; want memory and limit, no CPU yet", web)
 	}
-	// The report after it removes worker; the failed restart stays readable.
-	waitFor("worker to leave the list", func() bool { l, _ := s.List(ctx, 1); return len(l) == 1 })
-	if got, err := s.Action(ctx, 1, a.ID); err != nil || got.Status != StatusFailed || got.Service != "worker" {
-		t.Errorf("the failed restart after worker went = %+v, %v", got, err)
+	if worker.MemoryBytes != nil || worker.MemoryLimitBytes != nil || worker.CPUPercent != nil {
+		t.Errorf("a stopped container has usage: %+v", worker)
+	}
+	if cron.MemoryBytes != nil || cron.State != StateRunning {
+		t.Errorf("a failed stats read: %+v; want the service with null usage", cron)
+	}
+	f.mu.Lock()
+	c := f.byName["web"]
+	c.CPU, c.System = c.CPU+5e8, c.System+4e9
+	f.mu.Unlock()
+	d.reportNow(ctx)
+	if web = get("web"); web.CPUPercent == nil || *web.CPUPercent != 25 {
+		t.Errorf("web's second usage = %+v; want 25%% CPU", web)
 	}
 
-	for name, logs := range map[string]string{"hub": h.logs.String(), "daemon": daemonLogs.String()} {
-		if strings.Contains(logs, "secret-looking") {
-			t.Errorf("the %s log shows the service's logs:\n%s", name, logs)
-		}
+	if _, err := d.Service(ctx, actStop, "web", 0, 0); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(daemonLogs.String(), "service action finished") {
-		t.Errorf("daemon log:\n%s", daemonLogs.String())
+	if err := s.Finished(ctx, 1, "web", actStop); err != nil {
+		t.Fatal(err)
+	}
+	d.reportNow(ctx)
+	if web = get("web"); web.State != StateExited || !web.StoppedByTender || web.MemoryBytes != nil {
+		t.Errorf("after the stop: %+v", web)
+	}
+	if out, err := d.Service(ctx, actLogs, "web", 10, time.Hour); err != nil || !strings.Contains(out, "a log line") {
+		t.Errorf("logs = %q, %v", out, err)
+	}
+	if _, err := d.Service(ctx, actRestart, "gone", 0, 0); err == nil || err.Error() != "Docker answered 404: No such container: gone" {
+		t.Errorf("restart of a gone container: %v", err)
+	}
+	if _, err := d.Service(ctx, "explode", "web", 0, 0); err == nil {
+		t.Error("an unknown action worked")
+	}
+	if strings.Contains(logs.String()+h.logs.String(), "a log line") {
+		t.Errorf("the logs reached a log:\n%s%s", logs.String(), h.logs.String())
+	}
+	d.Changed()
+	d.Changed() // a second ask while one waits is the same report
+	if len(d.report) != 1 {
+		t.Errorf("%d reports asked for", len(d.report))
 	}
 }
 
@@ -317,16 +271,19 @@ func TestDaemonReportsAndActionsTakeTurns(t *testing.T) {
 	go func() { d.reportNow(ctx); close(reported) }()
 	<-inspected
 
-	stop, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
-	if err != nil {
-		t.Fatal(err)
-	}
-	taken, err := s.Take(ctx, 1)
-	if err != nil || len(taken) != 1 || taken[0].ID != stop.ID {
-		t.Fatalf("take = %+v, %v", taken, err)
-	}
+	// What the actions daemon does with a stop: take the turn, stop, tell the hub, give the turn back.
 	ran := make(chan struct{})
-	go func() { d.run(ctx, taken[0]); close(ran) }()
+	go func() {
+		defer close(ran)
+		d.Lock()
+		defer d.Unlock()
+		if _, err := d.Service(ctx, actStop, "web", 0, 0); err != nil {
+			t.Error(err)
+		}
+		if err := s.Finished(ctx, 1, "web", actStop); err != nil {
+			t.Error(err)
+		}
+	}()
 	time.Sleep(300 * time.Millisecond)
 	if slices.Contains(f.called(), "POST /containers/web/stop") {
 		t.Error("the stop ran while a report was being made")
@@ -461,9 +418,6 @@ func TestDaemonDockerUnreachable(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), `msg="Docker is not answering`); n != 1 {
 		t.Errorf("logged %d times:\n%s", n, logs.String())
-	}
-	if strings.Contains(h.logs.String(), "service-actions") {
-		t.Errorf("polled for actions while Docker is unreachable:\n%s", h.logs.String())
 	}
 
 	// Docker is back.

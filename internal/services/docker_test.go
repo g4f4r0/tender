@@ -25,7 +25,12 @@ type fakeContainer struct {
 	ExitCode, RestartCount                    int64
 	Project, Policy                           string
 	Tty                                       bool
-	Logs                                      []string // lines; even ones go to stdout, odd ones to stderr
+	// Usage: the memory limit (0 for none), what it uses with its page cache, and the CPU times.
+	MemLimit, Memory, Cache int64
+	CPU, System             uint64
+	CPUs                    uint32
+	StatsFail               bool     // the stats call answers 500
+	Logs                    []string // lines; even ones go to stdout, odd ones to stderr
 }
 
 // fakeDocker serves the Engine API routes the daemon uses on a Unix socket in a temporary folder.
@@ -72,12 +77,6 @@ func (f *fakeDocker) add(c *fakeContainer) {
 	defer f.mu.Unlock()
 	f.byName[c.Name] = c
 	f.order = append(f.order, c.Name)
-}
-
-func (f *fakeDocker) remove(name string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.byName, name)
 }
 
 func (f *fakeDocker) get(name string) *fakeContainer {
@@ -170,7 +169,20 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 			state["Health"] = map[string]string{"Status": c.Health}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"Id": c.ID, "Name": "/" + c.Name, "RestartCount": c.RestartCount,
-			"State": state, "Config": map[string]any{"Tty": c.Tty}, "HostConfig": map[string]any{"RestartPolicy": map[string]string{"Name": c.Policy}}})
+			"State": state, "Config": map[string]any{"Tty": c.Tty}, "HostConfig": map[string]any{"RestartPolicy": map[string]string{"Name": c.Policy}, "Memory": c.MemLimit}})
+	case r.Method == http.MethodGet && op == "stats":
+		if r.URL.RawQuery != "stream=false&one-shot=true" {
+			http.Error(w, "want one reading", http.StatusBadRequest)
+			return
+		}
+		if c.StatsFail {
+			http.Error(w, `{"message":"no stats"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"memory_stats": map[string]any{"usage": c.Memory, "stats": map[string]int64{"inactive_file": c.Cache}},
+			"cpu_stats":    map[string]any{"cpu_usage": map[string]any{"total_usage": c.CPU}, "system_cpu_usage": c.System, "online_cpus": c.CPUs},
+		})
 	case r.Method == http.MethodPost && op == "start":
 		if c.State == StateRunning {
 			w.WriteHeader(http.StatusNotModified)
@@ -292,31 +304,35 @@ func TestLogs(t *testing.T) {
 	ctx := context.Background()
 	ts := "2026-11-15T10:00:00.000000000Z "
 
-	got, err := d.Logs(ctx, "web", 200)
+	got, err := d.Logs(ctx, "web", 200, 0)
 	if want := ts + "out one\n" + ts + "err one\n" + ts + "out two\n"; err != nil || got != want {
 		t.Errorf("multiplexed logs = %q, %v; want %q", got, err, want)
 	}
-	if got, err := d.Logs(ctx, "web", 2); err != nil || got != ts+"err one\n"+ts+"out two\n" {
+	if got, err := d.Logs(ctx, "web", 2, 0); err != nil || got != ts+"err one\n"+ts+"out two\n" {
 		t.Errorf("last 2 lines = %q, %v", got, err)
 	}
-	if got, err := d.Logs(ctx, "tty", 200); err != nil || got != ts+"raw one\n"+ts+"raw two\n" {
+	if got, err := d.Logs(ctx, "tty", 200, 0); err != nil || got != ts+"raw one\n"+ts+"raw two\n" {
 		t.Errorf("tty logs = %q, %v", got, err)
 	}
-	got, err = d.Logs(ctx, "many", 5000)
+	got, err = d.Logs(ctx, "many", 5000, 0)
 	if lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n"); err != nil || len(lines) != MaxLines || lines[MaxLines-1] != ts+"line 2999" {
 		t.Errorf("many logs: %d lines, last %q, %v", len(lines), lines[len(lines)-1], err)
 	}
 	if calls := f.called(); !strings.Contains(strings.Join(calls, "\n"), "tail=2000") {
 		t.Errorf("asked Docker for more than 2000 lines: %q", calls)
 	}
-	got, err = d.Logs(ctx, "wide", 200)
+	got, err = d.Logs(ctx, "wide", 200, 0)
 	if err != nil || len(got) > MaxOutputBytes || !strings.HasSuffix(got, ts+"last\n") || strings.Contains(got, "aaaa") || !strings.HasPrefix(got, ts+"bbbb") {
 		t.Errorf("wide logs: %d bytes, starts %q, %v", len(got), got[:min(len(got), 40)], err)
 	}
-	if got, err := d.Logs(ctx, "quiet", 200); err != nil || got != "" {
+	if got, err := d.Logs(ctx, "quiet", 200, 0); err != nil || got != "" {
 		t.Errorf("no logs = %q, %v", got, err)
 	}
-	if _, err := d.Logs(ctx, "gone", 200); err == nil || !strings.Contains(err.Error(), "No such container: gone") {
+	_, _ = d.Logs(ctx, "web", 10, time.Hour) // only the query matters
+	if calls := strings.Join(f.called(), "\n"); !strings.Contains(calls, "tail=10&since=") {
+		t.Errorf("since didn't reach Docker: %q", calls)
+	}
+	if _, err := d.Logs(ctx, "gone", 200, 0); err == nil || !strings.Contains(err.Error(), "No such container: gone") {
 		t.Errorf("unknown container: %v", err)
 	}
 }
@@ -397,6 +413,23 @@ func TestSlowListIsNotAnOutage(t *testing.T) {
 	}
 }
 
+func TestStats(t *testing.T) {
+	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", State: "running", Memory: 300 << 20, Cache: 100 << 20, CPU: 1e9, System: 1e11, CPUs: 2})
+	st, err := NewDocker(f.socket).Stats(context.Background(), "aaa")
+	if err != nil || st.memory != 200<<20 || st.cpu != 1e9 || st.system != 1e11 || st.cpus != 2 {
+		t.Fatalf("stats = %+v, %v", st, err)
+	}
+	// A quarter of one second on two CPUs over two seconds of the machine's: 25% of one CPU.
+	if p, ok := cpuPercent(st, sample{cpu: 1e9 + 5e8, system: 1e11 + 4e9, cpus: 2}); !ok || p != 25 {
+		t.Errorf("cpu = %v, %v", p, ok)
+	}
+	for name, now := range map[string]sample{"same time": st, "counter went back": {cpu: 1, system: 2e11, cpus: 2}, "no CPUs": {cpu: 2e9, system: 2e11}} {
+		if _, ok := cpuPercent(st, now); ok {
+			t.Errorf("%s: a CPU share", name)
+		}
+	}
+}
+
 func TestTail(t *testing.T) {
 	var tl tail
 	chunk := strings.Repeat("x", 1000) + "\n"
@@ -413,19 +446,6 @@ func TestTail(t *testing.T) {
 	invalid := tail{buf: []byte("ok \xff\n")}
 	if got := invalid.text(10); got != "ok �\n" {
 		t.Errorf("invalid UTF-8 = %q", got)
-	}
-}
-
-func TestFitJSON(t *testing.T) {
-	line := strings.Repeat("\x1b", 1000) + "\n" // escapes to six bytes a character
-	big := strings.Repeat(line, 250)
-	got := fitJSON(big)
-	b, _ := json.Marshal(got)
-	if len(b) > maxEncoded || got == "" || !strings.HasSuffix(big, got) {
-		t.Errorf("fitted: %d encoded bytes, %d characters", len(b), len(got))
-	}
-	if fitJSON("short\n") != "short\n" {
-		t.Error("short text changed")
 	}
 }
 

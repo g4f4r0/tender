@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/db"
@@ -17,19 +18,6 @@ type Store struct{ db *db.DB }
 // NewStore returns a store on d.
 func NewStore(d *db.DB) *Store { return &Store{db: d} }
 
-const (
-	// actionLifetime is how long an action may wait for the daemon, or run without an answer.
-	actionLifetime = 15 * time.Minute
-	// keptActions is how many actions each machine keeps; older ones are deleted.
-	keptActions = 100
-	// pollEvery is how often a wait looks at the database again. Actions can be queued by
-	// another process, "tender mcp --stdio", so a wait can't rely on being told.
-	pollEvery = 500 * time.Millisecond
-
-	notPickedUp = "the daemon did not pick this up; is the machine online?"
-	notAnswered = "the daemon started this but did not say how it ended; is the machine online?"
-)
-
 var states = map[string]bool{StateCreated: true, StateRunning: true, StatePaused: true, StateRestarting: true,
 	StateExited: true, StateRemoving: true, StateDead: true}
 
@@ -40,8 +28,8 @@ var policies = map[string]bool{PolicyNo: true, PolicyAlways: true, PolicyUnlessS
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 const selectServices = `
 SELECT s.id, m.name, s.name, s.project, s.container_id, s.image, s.state, s.health, s.exit_code, s.restart_count,
-       s.restart_policy, s.started_at, s.alerts_enabled, s.stopped_by_tender, s.down_reports, s.restarting_reports, s.unhealthy_reports,
-       s.created_at, s.updated_at
+       s.restart_policy, s.started_at, s.memory_bytes, s.memory_limit_bytes, s.cpu_percent, s.alerts_enabled, s.stopped_by_tender,
+       s.down_reports, s.restarting_reports, s.unhealthy_reports, s.memory_high_reports, s.created_at, s.updated_at
 FROM services s JOIN machines m ON m.id = s.machine_id`
 
 type scanner interface{ Scan(dest ...any) error }
@@ -51,8 +39,8 @@ func scanService(row scanner) (Service, error) {
 	var started *int64
 	var created, updated int64
 	err := row.Scan(&s.ID, &s.Machine, &s.Name, &s.Project, &s.ContainerID, &s.Image, &s.State, &s.Health, &s.ExitCode,
-		&s.RestartCount, &s.RestartPolicy, &started, &s.AlertsEnabled, &s.StoppedByTender, &s.DownReports, &s.RestartingReports,
-		&s.UnhealthyReports, &created, &updated)
+		&s.RestartCount, &s.RestartPolicy, &started, &s.MemoryBytes, &s.MemoryLimitBytes, &s.CPUPercent, &s.AlertsEnabled, &s.StoppedByTender,
+		&s.DownReports, &s.RestartingReports, &s.UnhealthyReports, &s.MemoryHighReports, &created, &updated)
 	if started != nil {
 		t := time.Unix(*started, 0).UTC()
 		s.StartedAt = &t
@@ -139,6 +127,9 @@ func (in ServiceInput) validate() error {
 		return server.Invalid("Service %q has a negative restart_count.", in.Name)
 	case !policies[in.RestartPolicy]:
 		return server.Invalid("Service %q has restart_policy %q; it must be no, always, unless-stopped or on-failure.", in.Name, in.RestartPolicy)
+	case in.MemoryBytes != nil && *in.MemoryBytes < 0, in.MemoryLimitBytes != nil && *in.MemoryLimitBytes <= 0,
+		in.CPUPercent != nil && (*in.CPUPercent < 0 || math.IsNaN(*in.CPUPercent) || math.IsInf(*in.CPUPercent, 0)):
+		return server.Invalid("Service %q has a negative memory_bytes or cpu_percent, or a memory_limit_bytes that isn't above 0.", in.Name)
 	}
 	return nil
 }
@@ -177,8 +168,8 @@ func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 		   updated_at = excluded.updated_at`, machineID, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', down_reports = 0, restarting_reports = 0, unhealthy_reports = 0,
-		   updated_at = ? WHERE machine_id = ?`, now, machineID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', down_reports = 0, restarting_reports = 0, unhealthy_reports = 0, memory_high_reports = 0,
+		   memory_bytes = NULL, cpu_percent = NULL, updated_at = ? WHERE machine_id = ?`, now, machineID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -186,10 +177,13 @@ func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 
 // previous is what the last report said about a service.
 type previous struct {
-	containerID                string
-	restartCount               int64
-	down, restarting, unhealth int
+	containerID                            string
+	restartCount                           int64
+	down, restarting, unhealth, memoryHigh int
 }
+
+// memoryHighShare is how much of its memory limit a service may use before it counts as near it.
+const memoryHighShare = 0.9
 
 // streak is n+1 when the condition holds in this report, else 0.
 func streak(holds bool, n int) int {
@@ -200,7 +194,7 @@ func streak(holds bool, n int) int {
 }
 
 // Replace makes in the machine's full service list, from a report that Docker is running, as the daemon reports it: it adds new
-// services, updates the others and deletes the ones that are gone; their actions stay. A service
+// services, updates the others and deletes the ones that are gone. A service
 // keeps its alert switch. stopped_by_tender clears once the service runs again, or its container
 // is made again or started since (a new container_id or started_at).
 func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput) ([]Service, error) {
@@ -234,14 +228,15 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 
 	prev := map[string]previous{}
 	rows, err := tx.QueryContext(ctx,
-		`SELECT name, container_id, restart_count, down_reports, restarting_reports, unhealthy_reports FROM services WHERE machine_id = ?`, machineID)
+		`SELECT name, container_id, restart_count, down_reports, restarting_reports, unhealthy_reports, memory_high_reports
+			 FROM services WHERE machine_id = ?`, machineID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var name string
 		var p previous
-		if err := rows.Scan(&name, &p.containerID, &p.restartCount, &p.down, &p.restarting, &p.unhealth); err != nil {
+		if err := rows.Scan(&name, &p.containerID, &p.restartCount, &p.down, &p.restarting, &p.unhealth, &p.memoryHigh); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		prev[name] = p
@@ -263,6 +258,8 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 		down := streak(sv.State == StateExited || sv.State == StateDead, p.down)
 		restarting := streak(sv.State == StateRestarting || grew, p.restarting)
 		unhealthy := streak(sv.Health != nil && *sv.Health == HealthUnhealthy, p.unhealth)
+		memoryHigh := streak(sv.MemoryBytes != nil && sv.MemoryLimitBytes != nil &&
+			float64(*sv.MemoryBytes) > memoryHighShare*float64(*sv.MemoryLimitBytes), p.memoryHigh)
 		exitCode := sv.ExitCode
 		if sv.State != StateExited && sv.State != StateDead {
 			exitCode = nil
@@ -274,17 +271,19 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO services (machine_id, name, project, container_id, image, state, health, exit_code, restart_count, restart_policy,
-			   started_at, down_reports, restarting_reports, unhealthy_reports, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			   started_at, memory_bytes, memory_limit_bytes, cpu_percent, down_reports, restarting_reports, unhealthy_reports,
+			   memory_high_reports, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (machine_id, name) DO UPDATE SET project = excluded.project, container_id = excluded.container_id,
 			   image = excluded.image, state = excluded.state, health = excluded.health, exit_code = excluded.exit_code,
 			   restart_count = excluded.restart_count, restart_policy = excluded.restart_policy, started_at = excluded.started_at,
+			   memory_bytes = excluded.memory_bytes, memory_limit_bytes = excluded.memory_limit_bytes, cpu_percent = excluded.cpu_percent,
 			   stopped_by_tender = CASE WHEN excluded.state = 'running' OR excluded.container_id != services.container_id
 			     OR excluded.started_at IS NOT services.started_at THEN 0 ELSE services.stopped_by_tender END,
 			   down_reports = excluded.down_reports, restarting_reports = excluded.restarting_reports,
-			   unhealthy_reports = excluded.unhealthy_reports, updated_at = excluded.updated_at`,
+			   unhealthy_reports = excluded.unhealthy_reports, memory_high_reports = excluded.memory_high_reports, updated_at = excluded.updated_at`,
 			machineID, sv.Name, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, sv.RestartPolicy, started,
-			down, restarting, unhealthy, now, now)
+			sv.MemoryBytes, sv.MemoryLimitBytes, sv.CPUPercent, down, restarting, unhealthy, memoryHigh, now, now)
 		if err != nil {
 			return nil, err
 		}
@@ -314,219 +313,21 @@ func (s *Store) SetAlerts(ctx context.Context, machineID int64, name string, on 
 	return s.Get(ctx, machineID, name)
 }
 
-// Actions
-
-const selectActions = `
-SELECT a.id, m.name, a.service, a.type, a.status, a.lines, a.output, a.created_at, a.updated_at
-FROM service_actions a JOIN machines m ON m.id = a.machine_id`
-
-func scanAction(row scanner) (Action, error) {
-	var a Action
-	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Service, &a.Type, &a.Status, &a.Lines, &a.Output, &created, &updated)
-	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
-	return a, err
-}
-
-func (in *ActionInput) validate() error {
-	switch in.Type {
-	case TypeStart, TypeStop, TypeRestart:
-		if in.Lines != nil {
-			return server.Invalid("lines is only for a logs action.")
-		}
-	case TypeLogs:
-		if in.Lines == nil {
-			n := DefaultLines
-			in.Lines = &n
-		}
-		if *in.Lines < 1 || *in.Lines > MaxLines {
-			return server.Invalid("lines must be a whole number from 1 to %d.", MaxLines)
-		}
-	default:
-		return server.Invalid("type must be start, stop, restart or logs.")
-	}
-	return nil
-}
-
-// CreateAction queues an action for the daemon of a machine. It keeps the machine's newest 100.
-func (s *Store) CreateAction(ctx context.Context, machineID int64, service string, in ActionInput) (Action, error) {
-	if err := in.validate(); err != nil {
-		return Action{}, err
-	}
-	var serviceID int64
-	err := s.db.Read.QueryRowContext(ctx, `SELECT id FROM services WHERE machine_id = ? AND name = ?`, machineID, service).Scan(&serviceID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Action{}, server.NotFound("Service %q doesn't exist on this machine.", service)
-	}
-	if err != nil {
-		return Action{}, err
-	}
-	now := time.Now().Unix()
-	var id int64
-	err = s.db.Write.QueryRowContext(ctx,
-		`INSERT INTO service_actions (machine_id, service_id, service, type, status, lines, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		machineID, serviceID, service, in.Type, StatusPending, in.Lines, now, now).Scan(&id)
-	if err != nil {
-		return Action{}, err
-	}
-	if _, err := s.db.Write.ExecContext(ctx,
-		`DELETE FROM service_actions WHERE machine_id = ? AND id NOT IN (
-		   SELECT id FROM service_actions WHERE machine_id = ? ORDER BY id DESC LIMIT ?)`, machineID, machineID, keptActions); err != nil {
-		return Action{}, err
-	}
-	return s.action(ctx, machineID, id)
-}
-
-// expire fails a machine's actions that waited or ran too long without the daemon. It only reads
-// when there are none, so a wait doesn't take the write lock.
-func (s *Store) expire(ctx context.Context, machineID int64, now time.Time) error {
-	cutoff := now.Add(-actionLifetime).Unix()
-	var any bool
-	if err := s.db.Read.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM service_actions WHERE machine_id = ? AND ((status = 'pending' AND created_at < ?) OR (status = 'in_progress' AND updated_at < ?)))`,
-		machineID, cutoff, cutoff).Scan(&any); err != nil || !any {
-		return err
-	}
-	_, err := s.db.Write.ExecContext(ctx,
-		`UPDATE service_actions SET status = 'failed', output = CASE status WHEN 'pending' THEN ? ELSE ? END, updated_at = ?
-		 WHERE machine_id = ? AND ((status = 'pending' AND created_at < ?) OR (status = 'in_progress' AND updated_at < ?))`,
-		notPickedUp, notAnswered, now.Unix(), machineID, cutoff, cutoff)
+// Check returns nil when the machine has the service, else a 404. The actions domain calls it
+// before it queues an action for a service.
+func (s *Store) Check(ctx context.Context, machineID int64, name string) error {
+	_, err := s.Get(ctx, machineID, name)
 	return err
 }
 
-func (s *Store) action(ctx context.Context, machineID, id int64) (Action, error) {
-	a, err := scanAction(s.db.Read.QueryRowContext(ctx, selectActions+` WHERE a.machine_id = ? AND a.id = ?`, machineID, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return a, server.NotFound("Action %d doesn't exist on this machine.", id)
+// Finished hears that a start, stop or restart of a service completed. A stop marks the service
+// stopped_by_tender, so it doesn't alert as down until it runs again; a start or restart clears
+// the mark. A service that is gone meanwhile changes nothing.
+func (s *Store) Finished(ctx context.Context, machineID int64, name, typ string) error {
+	if typ != actStart && typ != actStop && typ != actRestart {
+		return nil
 	}
-	return a, err
-}
-
-// Action returns one of a machine's actions, with its output.
-func (s *Store) Action(ctx context.Context, machineID, id int64) (Action, error) {
-	if err := s.expire(ctx, machineID, time.Now()); err != nil {
-		return Action{}, err
-	}
-	return s.action(ctx, machineID, id)
-}
-
-// Await returns the action once it finished, or as it is after timeout. It expires old actions
-// once, then only reads.
-func (s *Store) Await(ctx context.Context, machineID, id int64, timeout time.Duration) (Action, error) {
-	deadline := time.Now().Add(timeout)
-	if err := s.expire(ctx, machineID, time.Now()); err != nil {
-		return Action{}, err
-	}
-	for {
-		a, err := s.action(ctx, machineID, id)
-		if err != nil || a.Finished() || !time.Now().Before(deadline) {
-			return a, err
-		}
-		select {
-		case <-ctx.Done():
-			return a, ctx.Err()
-		case <-time.After(min(pollEvery, time.Until(deadline))):
-		}
-	}
-}
-
-// Take returns the machine's oldest pending action, marked in_progress, or none. It hands out one
-// at a time because the daemon runs them one at a time: the others stay pending, so none of them
-// expires as unanswered while it waits its turn.
-func (s *Store) Take(ctx context.Context, machineID int64) ([]Action, error) {
-	if err := s.expire(ctx, machineID, time.Now()); err != nil {
-		return nil, err
-	}
-	return s.takeOne(ctx, machineID)
-}
-
-func (s *Store) takeOne(ctx context.Context, machineID int64) ([]Action, error) {
-	var id int64
-	err := s.db.Write.QueryRowContext(ctx,
-		`UPDATE service_actions SET status = 'in_progress', updated_at = ? WHERE id = (
-		   SELECT id FROM service_actions WHERE machine_id = ? AND status = 'pending' ORDER BY id LIMIT 1) RETURNING id`,
-		time.Now().Unix(), machineID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return []Action{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	a, err := s.action(ctx, machineID, id)
-	if err != nil {
-		return nil, err
-	}
-	return []Action{a}, nil
-}
-
-// Wait is Take, but when nothing is pending it waits up to wait for an action, looking again every
-// half second with a read, and writing only to take one. It answers early, with nothing, when ctx
-// ends or stop closes.
-func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, stop <-chan struct{}) ([]Action, error) {
-	deadline := time.Now().Add(wait)
-	if err := s.expire(ctx, machineID, time.Now()); err != nil {
-		return nil, err
-	}
-	for {
-		var pending bool
-		if err := s.db.Read.QueryRowContext(ctx,
-			`SELECT EXISTS (SELECT 1 FROM service_actions WHERE machine_id = ? AND status = 'pending')`, machineID).Scan(&pending); err != nil {
-			return nil, err
-		}
-		if pending {
-			list, err := s.takeOne(ctx, machineID)
-			if err != nil || len(list) > 0 {
-				return list, err
-			}
-		}
-		if !time.Now().Before(deadline) {
-			return []Action{}, nil
-		}
-		select {
-		case <-ctx.Done():
-			return []Action{}, nil
-		case <-stop:
-			return []Action{}, nil
-		case <-time.After(min(pollEvery, time.Until(deadline))):
-		}
-	}
-}
-
-// Finish stores how an in_progress action ended. A completed stop marks the service
-// stopped_by_tender, so it doesn't alert as down until it runs again; a completed start or restart
-// clears it.
-func (s *Store) Finish(ctx context.Context, machineID, id int64, p ActionPatch) error {
-	if p.Status != StatusCompleted && p.Status != StatusFailed {
-		return server.Invalid("status must be completed or failed.")
-	}
-	tx, err := s.db.Write.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	var typ, status string
-	var serviceID *int64 // null once the service is gone
-	err = tx.QueryRowContext(ctx, `SELECT type, status, service_id FROM service_actions WHERE machine_id = ? AND id = ?`, machineID, id).
-		Scan(&typ, &status, &serviceID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return server.NotFound("Action %d doesn't exist on this machine.", id)
-	}
-	if err != nil {
-		return err
-	}
-	if status != StatusInProgress {
-		return server.Conflict("Action %d is %s, not in_progress, so it can't finish now.", id, status)
-	}
-	now := time.Now().Unix()
-	if _, err := tx.ExecContext(ctx, `UPDATE service_actions SET status = ?, output = ?, updated_at = ? WHERE id = ?`,
-		p.Status, p.Output, now, id); err != nil {
-		return err
-	}
-	if typ != TypeLogs && p.Status == StatusCompleted && serviceID != nil {
-		if _, err := tx.ExecContext(ctx, `UPDATE services SET stopped_by_tender = ?, updated_at = ? WHERE id = ?`,
-			typ == TypeStop, now, *serviceID); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE services SET stopped_by_tender = ?, updated_at = ? WHERE machine_id = ? AND name = ?`,
+		typ == actStop, time.Now().Unix(), machineID, name)
+	return err
 }

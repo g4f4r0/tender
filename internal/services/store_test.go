@@ -154,163 +154,6 @@ func TestReportsInARow(t *testing.T) {
 	}
 }
 
-func TestActions(t *testing.T) {
-	d := newDB(t)
-	s := NewStore(d)
-	ctx := context.Background()
-	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
-		t.Fatal(err)
-	}
-
-	for name, in := range map[string]ActionInput{
-		"no type":        {},
-		"unknown type":   {Type: "kill"},
-		"lines on start": {Type: TypeStart, Lines: ptr(5)},
-		"zero lines":     {Type: TypeLogs, Lines: ptr(0)},
-		"too many lines": {Type: TypeLogs, Lines: ptr(2001)},
-	} {
-		if _, err := s.CreateAction(ctx, 1, "web", in); status(err) != http.StatusUnprocessableEntity {
-			t.Errorf("%s: %v, want 422", name, err)
-		}
-	}
-	if _, err := s.CreateAction(ctx, 1, "nope", ActionInput{Type: TypeStart}); status(err) != http.StatusNotFound {
-		t.Errorf("unknown service: %v", err)
-	}
-	logs, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeLogs})
-	if err != nil || logs.Status != StatusPending || *logs.Lines != DefaultLines || logs.Service != "web" || logs.Machine != "a" {
-		t.Fatalf("logs action = %+v, %v", logs, err)
-	}
-	stop, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Another machine's daemon sees none of them.
-	if list, err := s.Take(ctx, 2); err != nil || len(list) != 0 {
-		t.Errorf("machine b took %+v, %v", list, err)
-	}
-	// One at a time, oldest first, as the daemon runs them: the next waits as pending.
-	for _, want := range []int64{logs.ID, stop.ID} {
-		list, err := s.Take(ctx, 1)
-		if err != nil || len(list) != 1 || list[0].ID != want || list[0].Status != StatusInProgress {
-			t.Fatalf("take = %+v, %v; want only action %d", list, err, want)
-		}
-	}
-	if again, _ := s.Take(ctx, 1); len(again) != 0 {
-		t.Errorf("taken twice: %+v", again)
-	}
-
-	if err := s.Finish(ctx, 1, logs.ID, ActionPatch{Status: "done"}); status(err) != http.StatusUnprocessableEntity {
-		t.Errorf("bad status: %v", err)
-	}
-	if err := s.Finish(ctx, 1, logs.ID, ActionPatch{Status: StatusCompleted, Output: ptr("hello\n")}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Finish(ctx, 1, logs.ID, ActionPatch{Status: StatusFailed}); status(err) != http.StatusConflict {
-		t.Errorf("finished twice: %v", err)
-	}
-	if err := s.Finish(ctx, 2, stop.ID, ActionPatch{Status: StatusCompleted}); status(err) != http.StatusNotFound {
-		t.Errorf("another machine's action: %v", err)
-	}
-	if got, err := s.Action(ctx, 1, logs.ID); err != nil || got.Status != StatusCompleted || *got.Output != "hello\n" {
-		t.Errorf("logs = %+v, %v", got, err)
-	}
-
-	// A completed stop marks the service, until it runs again.
-	if err := s.Finish(ctx, 1, stop.ID, ActionPatch{Status: StatusCompleted}); err != nil {
-		t.Fatal(err)
-	}
-	in := running("web", "c1")
-	in.State = StateExited
-	if list, _ := s.Replace(ctx, 1, []ServiceInput{in}); !list[0].StoppedByTender {
-		t.Errorf("after a Tender stop = %+v", list[0])
-	}
-	if list, _ := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); list[0].StoppedByTender {
-		t.Errorf("running again = %+v", list[0])
-	}
-
-	// Await gives up after its timeout, with the action as it is.
-	start, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStart})
-	if got, err := s.Await(ctx, 1, start.ID, 10*time.Millisecond); err != nil || got.Status != StatusPending {
-		t.Errorf("await = %+v, %v", got, err)
-	}
-
-	// Old actions fail: one never picked up, one never answered.
-	if _, err := s.Take(ctx, 1); err != nil {
-		t.Fatal(err)
-	}
-	pending, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeRestart})
-	old := time.Now().Add(-16 * time.Minute).Unix()
-	if _, err := d.Write.Exec(`UPDATE service_actions SET created_at = ?, updated_at = ? WHERE id IN (?, ?)`, old, old, pending.ID, start.ID); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := s.Action(ctx, 1, pending.ID); got.Status != StatusFailed || *got.Output != notPickedUp {
-		t.Errorf("never picked up = %+v", got)
-	}
-	if got, _ := s.Action(ctx, 1, start.ID); got.Status != StatusFailed || *got.Output != notAnswered {
-		t.Errorf("never answered = %+v", got)
-	}
-
-	// Each machine keeps its newest 100.
-	for range 110 {
-		if _, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStart}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var n int
-	if err := d.Read.QueryRow(`SELECT count(*) FROM service_actions WHERE machine_id = 1`).Scan(&n); err != nil || n != 100 {
-		t.Errorf("kept %d actions, %v", n, err)
-	}
-
-	// A removed service leaves its actions, still named, such as the stop of a --rm container.
-	// takeUntil takes actions, oldest first, until it took id.
-	takeUntil := func(id int64) {
-		t.Helper()
-		for {
-			list, err := s.Take(ctx, 1)
-			if err != nil || len(list) == 0 {
-				t.Fatalf("action %d was never taken: %v", id, err)
-			}
-			if list[0].ID == id {
-				return
-			}
-		}
-	}
-	last, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
-	takeUntil(last.ID)
-	if err := s.Finish(ctx, 1, last.ID, ActionPatch{Status: StatusCompleted}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := s.Action(ctx, 1, last.ID); err != nil || got.Status != StatusCompleted || got.Service != "web" {
-		t.Errorf("the stop after its service went = %+v, %v", got, err)
-	}
-	if err := d.Read.QueryRow(`SELECT count(*) FROM service_actions WHERE service_id IS NULL`).Scan(&n); err != nil || n != 100 {
-		t.Errorf("%d actions kept without their service, %v", n, err)
-	}
-	// One still running when its service goes can finish.
-	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
-		t.Fatal(err)
-	}
-	late, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
-	takeUntil(late.ID)
-	if _, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Finish(ctx, 1, late.ID, ActionPatch{Status: StatusCompleted}); err != nil {
-		t.Errorf("finish after the service went: %v", err)
-	}
-	// A new service of the same name doesn't take the old actions.
-	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c2")}); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Read.QueryRow(`SELECT count(*) FROM service_actions WHERE service_id IS NOT NULL`).Scan(&n); err != nil || n != 0 {
-		t.Errorf("%d old actions joined the new service, %v", n, err)
-	}
-}
-
 // stopped_by_tender clears when a Tender start or restart completes, when the service runs again,
 // and when its container is made again or started outside Tender.
 func TestStoppedByTender(t *testing.T) {
@@ -329,14 +172,7 @@ func TestStoppedByTender(t *testing.T) {
 	}
 	act := func(typ string) {
 		t.Helper()
-		a, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: typ})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.Take(ctx, 1); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.Finish(ctx, 1, a.ID, ActionPatch{Status: StatusCompleted}); err != nil {
+		if err := s.Finished(ctx, 1, "web", typ); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -355,13 +191,13 @@ func TestStoppedByTender(t *testing.T) {
 		}
 	}
 
-	act(TypeStop)
+	act(actStop)
 	report(exited("c1", first))
 	if !flag() {
 		t.Fatal("a completed stop didn't mark the service")
 	}
-	for _, typ := range []string{TypeStart, TypeRestart} {
-		act(TypeStop)
+	for _, typ := range []string{actStart, actRestart} {
+		act(actStop)
 		act(typ)
 		if flag() {
 			t.Errorf("still stopped_by_tender after a completed %s", typ)
@@ -369,82 +205,63 @@ func TestStoppedByTender(t *testing.T) {
 		report(exited("c1", first))
 	}
 
-	act(TypeStop)
+	act(actStop)
 	report(exited("c2", first))
 	if flag() {
 		t.Error("still stopped_by_tender after the container was made again")
 	}
 
-	act(TypeStop)
+	act(actStop)
 	report(exited("c2", first.Add(time.Hour)))
 	if flag() {
 		t.Error("still stopped_by_tender after the container was started outside Tender")
 	}
 }
 
-func TestWait(t *testing.T) {
+// Usage is stored as reported; memory_high_reports counts reports above 90% of the limit, and an
+// outage empties the usage and starts the count again.
+func TestUsage(t *testing.T) {
 	s := NewStore(newDB(t))
 	ctx := context.Background()
-	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
+	report := func(mem, limit *int64, cpu *float64) Service {
+		t.Helper()
+		in := running("web", "c1")
+		in.MemoryBytes, in.MemoryLimitBytes, in.CPUPercent = mem, limit, cpu
+		list, err := s.Replace(ctx, 1, []ServiceInput{in})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list[0]
+	}
+	gib := int64(1 << 30)
+	high, low := int64(950<<20), int64(100<<20)
+	if sv := report(&high, &gib, ptr(12.5)); sv.MemoryHighReports != 1 || *sv.MemoryBytes != high || *sv.MemoryLimitBytes != gib || *sv.CPUPercent != 12.5 {
+		t.Errorf("first = %+v", sv)
+	}
+	if sv := report(&high, &gib, nil); sv.MemoryHighReports != 2 || sv.CPUPercent != nil {
+		t.Errorf("second = %+v", sv)
+	}
+	if sv := report(&low, &gib, nil); sv.MemoryHighReports != 0 {
+		t.Errorf("below = %+v", sv)
+	}
+	if sv := report(&high, nil, nil); sv.MemoryHighReports != 0 || sv.MemoryLimitBytes != nil {
+		t.Errorf("no limit = %+v", sv)
+	}
+	report(&high, &gib, nil)
+	if err := s.Unreachable(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-
-	// Nothing pending: it waits the whole time, then answers an empty list.
-	start := time.Now()
-	if list, err := s.Wait(ctx, 1, 700*time.Millisecond, nil); err != nil || len(list) != 0 || time.Since(start) < 700*time.Millisecond {
-		t.Errorf("empty wait = %+v, %v after %s", list, err, time.Since(start))
+	if sv, _ := s.Get(ctx, 1, "web"); sv.MemoryBytes != nil || sv.CPUPercent != nil || sv.MemoryHighReports != 0 {
+		t.Errorf("while unreachable = %+v", sv)
 	}
-
-	// An action queued meanwhile, from any process, answers within a poll.
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = NewStore(s.db).CreateAction(ctx, 1, "web", ActionInput{Type: TypeRestart})
-	}()
-	start = time.Now()
-	list, err := s.Wait(ctx, 1, 10*time.Second, nil)
-	if err != nil || len(list) != 1 || time.Since(start) > 2*time.Second {
-		t.Errorf("wait = %+v, %v after %s", list, err, time.Since(start))
-	}
-
-	// Waiting with nothing to do only reads: it works while something else holds the write lock.
-	queued, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStart})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := s.db.Write.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`UPDATE services SET updated_at = updated_at`); err != nil {
-		t.Fatal(err)
-	}
-	lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	if a, err := s.Await(lctx, 1, queued.ID, 300*time.Millisecond); err != nil || a.Status != StatusPending {
-		t.Errorf("await while the write lock is held = %+v, %v", a, err)
-	}
-	cancel()
-	_ = tx.Rollback()
-	if _, err := s.Take(ctx, 1); err != nil { // nothing pending for the wait below
-		t.Fatal(err)
-	}
-	tx, err = s.db.Write.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lctx, cancel = context.WithTimeout(ctx, 3*time.Second)
-	start = time.Now()
-	if list, err := s.Wait(lctx, 1, 300*time.Millisecond, nil); err != nil || len(list) != 0 || time.Since(start) > 2*time.Second {
-		t.Errorf("empty wait while the write lock is held = %+v, %v after %s", list, err, time.Since(start))
-	}
-	cancel()
-	_ = tx.Rollback()
-
-	// The hub shutting down ends the wait at once.
-	stop := make(chan struct{})
-	close(stop)
-	start = time.Now()
-	if _, err := s.Wait(ctx, 1, 10*time.Second, stop); err != nil || time.Since(start) > time.Second {
-		t.Errorf("wait while stopping: %v after %s", err, time.Since(start))
+	for name, in := range map[string]ServiceInput{
+		"negative memory": {Name: "x", ContainerID: "c", State: StateRunning, MemoryBytes: ptr(int64(-1))},
+		"zero limit":      {Name: "x", ContainerID: "c", State: StateRunning, MemoryLimitBytes: ptr(int64(0))},
+		"negative cpu":    {Name: "x", ContainerID: "c", State: StateRunning, CPUPercent: ptr(-1.0)},
+	} {
+		if _, err := s.Replace(ctx, 1, []ServiceInput{in}); status(err) != http.StatusUnprocessableEntity {
+			t.Errorf("%s: %v, want 422", name, err)
+		}
 	}
 }
 

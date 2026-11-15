@@ -11,8 +11,9 @@ CREATE TABLE service_engines (
 
 -- One row per container, keyed by its name, so settings such as alerts_enabled follow the name
 -- when the container is made again. The *_reports columns count the reports in a row in which
--- the container was down, restarting or unhealthy; the alert rules read them. state is unknown
--- while the machine's Docker is unreachable.
+-- the container was down, restarting, unhealthy or near its memory limit; the alert rules read
+-- them. state is unknown while the machine's Docker is unreachable. memory_bytes,
+-- memory_limit_bytes and cpu_percent are the latest report's usage, null while stopped.
 CREATE TABLE services (
   id                 INTEGER PRIMARY KEY,
   machine_id         INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
@@ -26,29 +27,16 @@ CREATE TABLE services (
   restart_count      INTEGER NOT NULL CHECK (restart_count >= 0),
   restart_policy     TEXT NOT NULL DEFAULT 'no' CHECK (restart_policy IN ('no', 'always', 'unless-stopped', 'on-failure')),
   started_at         INTEGER,
+  memory_bytes       INTEGER CHECK (memory_bytes >= 0),
+  memory_limit_bytes INTEGER CHECK (memory_limit_bytes > 0),
+  cpu_percent        REAL CHECK (cpu_percent >= 0),
   alerts_enabled     INTEGER NOT NULL DEFAULT 1 CHECK (alerts_enabled IN (0, 1)),
   stopped_by_tender  INTEGER NOT NULL DEFAULT 0 CHECK (stopped_by_tender IN (0, 1)),
   down_reports       INTEGER NOT NULL DEFAULT 0,
   restarting_reports INTEGER NOT NULL DEFAULT 0,
   unhealthy_reports  INTEGER NOT NULL DEFAULT 0,
+  memory_high_reports INTEGER NOT NULL DEFAULT 0,
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL,
   UNIQUE (machine_id, name)
 ) STRICT;
-
--- An action outlives its service, such as the stop of a container that removes itself: service
--- keeps the name, and service_id is null once the service is gone.
-CREATE TABLE service_actions (
-  id         INTEGER PRIMARY KEY,
-  machine_id INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
-  service_id INTEGER REFERENCES services(id) ON DELETE SET NULL,
-  service    TEXT NOT NULL,
-  type       TEXT NOT NULL CHECK (type IN ('start', 'stop', 'restart', 'logs')),
-  status     TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
-  lines      INTEGER CHECK (lines BETWEEN 1 AND 2000),
-  output     TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX service_actions_machine ON service_actions (machine_id, status, id);
