@@ -322,7 +322,7 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 	// A container the report lacks is removed: its row stays, with its settings, for a container
 	// back under the name, and its counts start again, so its alerts resolve. 7 days on it goes.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE services SET state = 'removed', removed_at = ?3, health = NULL, exit_code = NULL, memory_bytes = NULL, memory_limit_bytes = NULL,
+		`UPDATE services SET state = 'removed', removed_at = ?3, health = NULL, exit_code = NULL, started_at = NULL, memory_bytes = NULL, memory_limit_bytes = NULL,
 		   cpu_percent = NULL, stopped_by_tender = 0, down_reports = 0, restarting_reports = 0, unhealthy_reports = 0, memory_high_reports = 0,
 		   updated_at = ?3
 		 WHERE machine_id = ?1 AND state != 'removed' AND name NOT IN (SELECT value FROM json_each(?2))`, machineID, string(keep), now); err != nil {

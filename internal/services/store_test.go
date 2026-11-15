@@ -360,7 +360,7 @@ func TestRemovedService(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 	worker := running("worker", "c2")
-	worker.State, worker.ExitCode = StateExited, ptr(int64(1))
+	worker.State, worker.ExitCode, worker.StartedAt = StateExited, ptr(int64(1)), ptr(time.Now().Add(-time.Hour))
 	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1"), worker}); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestRemovedService(t *testing.T) {
 		t.Fatal(err)
 	}
 	gone, err := s.Get(ctx, 1, "worker")
-	if err != nil || gone.State != StateRemoved || gone.AlertsEnabled || gone.ExitCode != nil || gone.DownReports != 0 || gone.RemovedAt == nil {
+	if err != nil || gone.State != StateRemoved || gone.AlertsEnabled || gone.ExitCode != nil || gone.DownReports != 0 || gone.RemovedAt == nil || gone.StartedAt != nil {
 		t.Fatalf("removed = %+v, %v", gone, err)
 	}
 	if err := s.Check(ctx, 1, "worker"); status(err) != http.StatusConflict {
