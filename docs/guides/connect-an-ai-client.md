@@ -6,18 +6,28 @@ Give an AI client such as Claude Code the hub's MCP tools, so it can check on yo
 
 1. A running hub, reachable from the machine where the client runs.
 2. An MCP client that supports streamable HTTP, such as Claude Code.
+3. The `tender` command with your API token in `TENDER_TOKEN`, to make the client its own token.
 
 ## Connect Claude Code over HTTP
 
-The hub serves MCP at `/mcp`.
+The hub serves MCP at `/mcp`, and the client sends an API token of its own.
 
-1. Add the hub to Claude Code for every project:
+1. Make the client a token, and keep it in a variable for the next step:
 
    ```sh
-   claude mcp add --transport http tender https://apps.your-tailnet.ts.net/mcp --scope user
+   CLAUDE_TOKEN=$(tender tokens add claude-code | grep -o 'tender_[A-Za-z0-9_-]*' | head -n 1)
    ```
 
-2. Check that Claude Code connects to it:
+   Its own token lets you see when it was last used, with `tender tokens list`, and cut it off alone, with `tender tokens remove claude-code --yes`.
+
+2. Add the hub to Claude Code for every project, with the token:
+
+   ```sh
+   claude mcp add --transport http tender https://apps.your-tailnet.ts.net/mcp --scope user \
+     --header "Authorization: Bearer $CLAUDE_TOKEN"
+   ```
+
+3. Check that Claude Code connects to it:
 
    ```sh
    claude mcp list
@@ -27,14 +37,17 @@ The hub serves MCP at `/mcp`.
    tender: https://apps.your-tailnet.ts.net/mcp (HTTP) - ✓ Connected
    ```
 
-To connect for one session only, save the server as `tender-mcp.json`:
+A client without a token, or with a deleted one, gets `401` and can't connect.
+
+To connect for one session only, save the server as `tender-mcp.json`, with the token in `TENDER_TOKEN` when Claude Code starts:
 
 ```json
 {
   "mcpServers": {
     "tender": {
       "type": "http",
-      "url": "https://apps.your-tailnet.ts.net/mcp"
+      "url": "https://apps.your-tailnet.ts.net/mcp",
+      "headers": {"Authorization": "Bearer ${TENDER_TOKEN}"}
     }
   }
 }
@@ -48,7 +61,7 @@ claude --mcp-config tender-mcp.json
 
 ## Connect over stdio on the hub machine
 
-A client on the hub machine can run the tools as a local process with `tender mcp --stdio`. It reads and writes the hub's database directly, so the hub must have run once on the same version. Run it as the `tender` user, which owns `/var/lib/tender/hub`; other users can't open the database:
+A client on the hub machine can run the tools as a local process with `tender mcp --stdio`, which needs no API token. It reads and writes the hub's database directly, so the hub must have run once on the same version. Run it as the `tender` user, which owns `/var/lib/tender/hub`; other users can't open the database:
 
 ```json
 {
@@ -83,4 +96,4 @@ Each tool tells the client whether it only reads, changes something or removes s
 ## Next steps
 
 1. [MCP reference](../mcp.md) lists every tool with its inputs, results and limits.
-2. [Security](../security.md) explains what the hub protects.
+2. [Security](../security.md) explains what the hub protects and how API tokens work.

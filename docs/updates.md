@@ -92,6 +92,9 @@ Each release carries the file `tender-release.json`, listed in its signed `SHA25
 
 Each machine takes a minute or two, and longer while a backup runs.
 
+> [!IMPORTANT]
+> From v0.4 the hub refuses every request from people and AI clients until it has an API token. A rollout to v0.4 updates the hub's machine first and then goes on by itself; to follow it, make your token on the hub machine with `sudo tender tokens add NAME`, as [Update to v0.4](install.md#update-to-v04) explains.
+
 ## When an update fails
 
 When the new version fails its health check, the machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. `tender updates show` and the `update.failed` alert give the reason, such as:
