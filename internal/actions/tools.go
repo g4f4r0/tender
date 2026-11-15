@@ -43,13 +43,14 @@ type listInput struct {
 }
 
 const waitText = "It waits up to 60 seconds for the machine's daemon. If the daemon hasn't finished by then, the result has status " +
-	"pending or in_progress: the action stays queued for 15 minutes and runs when the daemon picks it up; check it later with get_action."
+	"pending or in_progress. A pending action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. " +
+	"An in_progress one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with get_action."
 
 const actionFields = "The result is the action: id, machine, type (start, stop, restart or logs), service (null for the machine's logs), " +
 	"unit, priority, since and lines (logs only), status (pending, in_progress, completed or failed), output, output_cleared, " +
 	"created_at and updated_at (RFC 3339 UTC). "
 
-const logsLimits = "At most 2000 lines and 256 KiB, the newest kept, in output. Logs can hold secrets: the hub clears a logs action's " +
+const logsLimits = "At most 2000 lines and 256 KiB, the newest kept, in output. Logs can hold secrets: the hub clears a completed logs action's " +
 	"output 1 hour after it finished (output becomes null and output_cleared true), and logs never go into alerts or emails. "
 
 // RegisterTools adds the actions tools to m. They use the same store methods as the REST routes.
@@ -90,7 +91,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddReadOnly(m, "get_action", "Get an action",
 		"Get one action on a machine by id, with its output: to check one that was still pending or in_progress when a tool stopped "+
-			"waiting. "+actionFields+"A logs action's output is cleared 1 hour after it finished.",
+			"waiting. "+actionFields+"A completed logs action's output is cleared 1 hour after it finished.",
 		func(ctx context.Context, in actionInput) (Action, error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {

@@ -60,8 +60,12 @@ func queueAction(hub *hubAPI, machine string, in actions.Input) (actions.Action,
 	case a.Finished():
 		return a, nil
 	}
-	return a, fmt.Errorf("the daemon on %s hasn't finished within %d seconds. Action %d stays queued for 15 minutes and runs "+
-		"when the daemon picks it up. Check it with: tender actions show %s %d", machine, int(actionWait.Seconds()), a.ID, machine, a.ID)
+	state := "is still pending: the daemon hasn't picked it up. It runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise."
+	if a.Status == actions.StatusInProgress {
+		state = "is in progress: the daemon started it. The hub fails it if the daemon doesn't say how it ended within 15 minutes."
+	}
+	return a, fmt.Errorf("the daemon on %s hasn't finished within %d seconds. Action %d %s Check it with: tender actions show %s %d",
+		machine, int(actionWait.Seconds()), a.ID, state, machine, a.ID)
 }
 
 // printLogs prints a logs action's output, or says there is none.
@@ -200,7 +204,8 @@ func actionsShow(args []string, s session) error {
 		ago(s.now(), a.CreatedAt))
 	switch {
 	case a.OutputCleared:
-		say(s.out, "Its logs were cleared 1 hour after it finished, because logs can hold secrets.")
+		say(s.out, "Its logs were cleared %s: the hub keeps logs only for a while after they are read, because logs can hold secrets.",
+			ago(s.now(), a.UpdatedAt))
 	case a.Output != nil && *a.Output != "":
 		_, err = io.WriteString(s.out, "\n"+*a.Output)
 	}

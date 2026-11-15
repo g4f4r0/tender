@@ -235,8 +235,16 @@ func TestServicesActions(t *testing.T) {
 	t.Cleanup(func() { actionWait = actions.Wait })
 	_, err := runCommand(t, h, a, "services", "restart", "apps", "web-1")
 	if err == nil || !strings.Contains(err.Error(), "hasn't finished within 0 seconds. Action ") ||
-		!strings.Contains(err.Error(), "stays queued for 15 minutes") || !strings.Contains(err.Error(), "Check it with: tender actions show apps ") {
+		!strings.Contains(err.Error(), "is still pending: the daemon hasn't picked it up. It runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise.") ||
+		!strings.Contains(err.Error(), "Check it with: tender actions show apps ") {
 		t.Errorf("timeout error = %v", err)
+	}
+	// The daemon started it but hasn't said how it ended: the error says so, not that it is queued.
+	h.daemon = func(x *actions.Action) { x.Status = actions.StatusInProgress }
+	_, err = runCommand(t, h, a, "services", "restart", "apps", "web-1")
+	if err == nil || strings.Contains(err.Error(), "pending") ||
+		!strings.Contains(err.Error(), "is in progress: the daemon started it. The hub fails it if the daemon doesn't say how it ended within 15 minutes.") {
+		t.Errorf("timeout error in progress = %v", err)
 	}
 
 	// Empty logs say so.
@@ -280,7 +288,9 @@ func TestLogs(t *testing.T) {
 		t.Errorf("actions show =\n%s", got)
 	}
 	h.actions[2].Output, h.actions[2].OutputCleared = nil, true
-	if got := mustRun(t, h, a, "actions", "show", "apps", "2"); !strings.HasSuffix(got, "Its logs were cleared 1 hour after it finished, because logs can hold secrets.\n") {
+	h.actions[2].UpdatedAt = h.now.Add(-2 * time.Hour)
+	if got := mustRun(t, h, a, "actions", "show", "apps", "2"); !strings.HasSuffix(got,
+		"Its logs were cleared 2 hours ago: the hub keeps logs only for a while after they are read, because logs can hold secrets.\n") {
 		t.Errorf("cleared = %q", got)
 	}
 	mustFail(t, h, a, `Action 9 doesn't exist on this machine.`, "actions", "show", "apps", "9")
@@ -296,7 +306,7 @@ func TestServicesAlerts(t *testing.T) {
 	a := &answers{}
 	mustRun(t, h, a, "machines", "add", "apps")
 	h.addServices(t, "apps", services.Service{Name: "web-1", State: "running", AlertsEnabled: true})
-	if out := mustRun(t, h, a, "services", "alerts", "apps", "web-1", "off"); out != "Alerts for web-1 on apps are off. Its open alerts resolve within a minute.\n" {
+	if out := mustRun(t, h, a, "services", "alerts", "apps", "web-1", "off"); out != "Alerts for web-1 on apps are off. Its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried.\n" {
 		t.Errorf("off = %q", out)
 	}
 	if h.services["apps"][0].AlertsEnabled {

@@ -16,7 +16,7 @@ const (
 // Notification is one alert, as GET /v1/notifications lists it.
 type Notification struct {
 	ID        int64     `json:"id"`
-	Machine   *string   `json:"machine"` // the machine's name; null for an alert about the hub itself
+	Machine   *string   `json:"machine"` // the name of the machine the alert is about
 	Service   *string   `json:"service"` // the Docker service's name; null for an alert about something else
 	Type      string    `json:"type"`
 	Severity  string    `json:"severity"` // info, warning or critical

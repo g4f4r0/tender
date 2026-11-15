@@ -272,6 +272,20 @@ func TestOutputCleared(t *testing.T) {
 	if got, _ := s.Get(ctx, 1, ids[2]); got.OutputCleared || got.Output == nil {
 		t.Errorf("a restart's output was cleared: %+v", got)
 	}
+	// A logs action that failed holds why, not logs: that stays, so it still says what happened.
+	never, _ := s.Create(ctx, 1, Input{Type: TypeLogs})
+	if _, err := d.Write.Exec(`UPDATE actions SET created_at = ?, updated_at = ? WHERE id = ?`, old-3600, old-3600, never.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, never.ID); got.Status != StatusFailed {
+		t.Fatalf("a logs action that waited too long = %+v", got)
+	}
+	if _, err := d.Write.Exec(`UPDATE actions SET updated_at = ? WHERE id = ?`, old, never.ID); err != nil { // an hour after it expired
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, never.ID); got.Status != StatusFailed || deref(got.Output) != notPickedUp || got.OutputCleared {
+		t.Errorf("a logs action that expired unread, an hour later = %+v", got)
+	}
 
 	// The sweep clears them when nobody reads them, on every machine.
 	s.Keep = time.Millisecond

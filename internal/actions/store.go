@@ -133,12 +133,13 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Summary, error) {
 }
 
 // tidy fails a machine's actions that waited or ran too long without the daemon, and clears the
-// output of logs actions that finished more than Keep ago. machineID 0 tidies every machine's.
+// output of logs actions that completed more than Keep ago. machineID 0 tidies every machine's.
 // It only reads when there is nothing to do, so a wait doesn't take the write lock.
 func (s *Store) tidy(ctx context.Context, machineID int64, now time.Time) error {
 	stale, old := now.Add(-lifetime).Unix(), now.Add(-s.Keep).Unix()
 	const expired = `(status = 'pending' AND created_at < ?2) OR (status = 'in_progress' AND updated_at < ?2)`
-	const clearable = `type = 'logs' AND status IN ('completed', 'failed') AND output_cleared = 0 AND updated_at < ?3`
+	// A failed logs action holds why it failed, not logs, so only a completed one is cleared.
+	const clearable = `type = 'logs' AND status = 'completed' AND output_cleared = 0 AND updated_at < ?3`
 	var any bool
 	if err := s.db.Read.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM actions WHERE (?1 = 0 OR machine_id = ?1) AND ((`+expired+`) OR (`+clearable+`)))`,

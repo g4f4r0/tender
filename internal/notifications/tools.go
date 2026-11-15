@@ -31,7 +31,7 @@ type noInput struct{}
 // when email is off, and names hub, the hub's host name, in the message.
 func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Sender, hub string) {
 	mcp.AddReadOnly(m, "list_notifications", "List notifications",
-		"List alerts, newest first, optionally of one machine, status or severity. Each has id, machine (null for the hub itself), "+
+		"List alerts, newest first, optionally of one machine, status or severity. Each has id, machine (the machine it is about), "+
 			"service (the Docker service it is about, else null), type, severity (info, warning or critical), status (pending and sent are open, resolved is closed), content and "+
 			"created_at and updated_at (RFC 3339 UTC). Leave status out to get all of them. At most limit a page, 1 to 500, default 50; "+
 			"pass next_cursor as cursor for older ones.",
