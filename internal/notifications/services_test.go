@@ -157,6 +157,50 @@ func TestServiceAlertListsItsService(t *testing.T) {
 	}
 }
 
+// After a Docker outage a service's counts start again, so its open alert stays while the
+// reports still find it down, and resolves only when they don't. Alerts off resolve it at once,
+// outage or not.
+func TestServiceAlertsAcrossAnOutage(t *testing.T) {
+	r := newRig(t)
+	down := func(reports int) Service {
+		return Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: reports}
+	}
+	unreachable := func(after time.Duration, s Service) Machine {
+		m := up(after, s)
+		m.Docker, m.DockerUnreachableReports = "unreachable", 2
+		return m
+	}
+	r.tick(0, up(0, down(2)))
+	unknown := down(0)
+	unknown.State = "unknown"
+	r.tick(time.Minute, unreachable(time.Minute, unknown))
+	for i, reports := range []int{1, 2} {
+		after := time.Duration(2+i) * time.Minute
+		m := up(after, down(reports))
+		m.Docker = "running"
+		r.tick(after, m)
+		if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - resolved"}; !slices.Equal(got, want) {
+			t.Errorf("back, down in %d report(s): rows = %q, want %q", reports, got, want)
+		}
+	}
+	if want := []string{"a: web stopped", "a: Docker unreachable", "a: Docker unreachable, resolved"}; !slices.Equal(r.sender.subjects, want) {
+		t.Errorf("emails = %q, want %q", r.sender.subjects, want)
+	}
+	r.tick(4*time.Minute, up(4*time.Minute, Service{Name: "web", State: "running", AlertsEnabled: true}))
+	if got := r.serviceRows(); got[0] != "service_down web resolved" {
+		t.Errorf("running again: rows = %q", got)
+	}
+
+	// Down again, then Docker stops answering and alerts go off for web: it resolves meanwhile.
+	r.tick(5*time.Minute, up(5*time.Minute, down(2)))
+	off := unknown
+	off.AlertsEnabled = false
+	r.tick(6*time.Minute, unreachable(6*time.Minute, off))
+	if got := r.serviceRows(); got[2] != "service_down web resolved" {
+		t.Errorf("alerts off while Docker is unreachable: rows = %q", got)
+	}
+}
+
 func TestEvaluateDocker(t *testing.T) {
 	down := Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}
 	for _, c := range []struct {

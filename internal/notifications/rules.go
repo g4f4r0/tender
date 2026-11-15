@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -66,13 +67,24 @@ const (
 	deadState   = "dead"
 )
 
-// frozen reports whether an open alert about m stays as it is, neither resolving nor changing:
-// a silent machine's Docker and service alerts, and service alerts while its Docker is
-// unreachable, are about a state nobody can see.
-func (m Machine) frozen(n Notification, silent bool) bool {
+// keeps reports whether an open alert about m stays open though its finding doesn't hold now.
+//
+// A silent machine's Docker and service alerts, and service alerts while its Docker is
+// unreachable, are about a state nobody can see. A service alert also stays while the latest
+// report still finds the service so, because after an outage its count of reports in a row starts
+// again: it resolves once a report doesn't. The alerts of a service whose alerts are off, or
+// that is gone, never stay.
+func (m Machine) keeps(n Notification, silent bool) bool {
 	switch {
 	case n.Service != nil:
-		return silent || m.Docker == dockerUnreachable
+		i := slices.IndexFunc(m.Services, func(s Service) bool { return s.Name == *n.Service })
+		if i < 0 || !m.Services[i].AlertsEnabled {
+			return false
+		}
+		if silent || m.Docker == dockerUnreachable {
+			return true
+		}
+		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.typ == n.Type })
 	case n.Type == TypeDockerUnreachable:
 		return silent
 	}
@@ -176,7 +188,7 @@ func evaluate(m Machine, now time.Time) []finding {
 	}
 	for _, s := range m.Services {
 		if s.AlertsEnabled {
-			out = append(out, evaluateService(m.Name, s)...)
+			out = append(out, evaluateService(m.Name, s, serviceReports)...)
 		}
 	}
 	return out
@@ -189,10 +201,11 @@ func shouldRun(s Service) bool {
 	return failed || s.RestartPolicy == "always" || s.RestartPolicy == "unless-stopped"
 }
 
-// evaluateService returns the conditions that hold for one service of the machine called machine.
-func evaluateService(machine string, s Service) []finding {
+// evaluateService returns the conditions that hold for one service of the machine called machine
+// in at least reports reports in a row.
+func evaluateService(machine string, s Service, reports int) []finding {
 	var out []finding
-	if s.DownReports >= serviceReports && !s.StoppedByTender && (s.State == exitedState || s.State == deadState) && shouldRun(s) {
+	if s.DownReports >= reports && !s.StoppedByTender && (s.State == exitedState || s.State == deadState) && shouldRun(s) {
 		content := fmt.Sprintf("The service %s on %s stopped.", s.Name, machine)
 		if s.State == deadState {
 			content = fmt.Sprintf("The service %s on %s is dead: Docker could not stop or remove it cleanly.", s.Name, machine)
@@ -201,11 +214,11 @@ func evaluateService(machine string, s Service) []finding {
 		}
 		out = append(out, finding{TypeServiceDown, SeverityCritical, content, s.Name})
 	}
-	if s.RestartingReports >= serviceReports {
+	if s.RestartingReports >= reports {
 		content := fmt.Sprintf("The service %s on %s keeps restarting. Docker has restarted it %s.", s.Name, machine, plural(s.RestartCount, "time"))
 		out = append(out, finding{TypeServiceRestarting, SeverityCritical, content, s.Name})
 	}
-	if s.UnhealthyReports >= serviceReports {
+	if s.UnhealthyReports >= reports {
 		content := fmt.Sprintf("The service %s on %s is unhealthy: its health check fails.", s.Name, machine)
 		out = append(out, finding{TypeServiceUnhealthy, SeverityWarning, content, s.Name})
 	}

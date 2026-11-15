@@ -162,8 +162,8 @@ func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
 }
 
 // Unreachable records a report that the machine's Docker doesn't answer: the hub keeps the last
-// list and sets every state to unknown. Nothing else about the services changes, so their alerts
-// neither open nor resolve until Docker answers again.
+// list and sets every state to unknown. The counts of reports in a row start again, so two
+// reports can't span the outage; the alert rules keep open alerts as they are meanwhile.
 func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
@@ -177,7 +177,8 @@ func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 		   updated_at = excluded.updated_at`, machineID, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', updated_at = ? WHERE machine_id = ?`, now, machineID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', down_reports = 0, restarting_reports = 0, unhealthy_reports = 0,
+		   updated_at = ? WHERE machine_id = ?`, now, machineID); err != nil {
 		return err
 	}
 	return tx.Commit()

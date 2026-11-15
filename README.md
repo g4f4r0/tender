@@ -159,7 +159,7 @@ The hub checks every machine once a minute:
 | `service_unhealthy` | The service's health check fails in two reports in a row | warning |
 | `docker_unreachable` | The machine's Docker refuses connections or doesn't answer, in two reports in a row | critical |
 
-A container that exits 0 with restart policy `no` or `on-failure`, such as a migration job, finished on purpose and doesn't alert. Each service has its own alerts, and you can turn them off and on with `tender services alerts`. Turning them off resolves the service's open alerts. While Docker is unreachable, a machine's service alerts neither open nor resolve. A silent machine alerts once, as `machine_silent`, not for its Docker or its services.
+A container that exits 0 with restart policy `no` or `on-failure`, such as a migration job, finished on purpose and doesn't alert. Each service has its own alerts, and you can turn them off and on with `tender services alerts`. Turning them off resolves the service's open alerts, even while Docker is unreachable. While Docker is unreachable, a machine's other service alerts neither open nor resolve, and the count of reports in a row starts again once it is back. A silent machine alerts once, as `machine_silent`, not for its Docker or its services.
 
 You get one email when an alert opens, one if it gets worse, and one when it resolves. If a send fails, the hub keeps retrying until the email goes out.
 

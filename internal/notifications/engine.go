@@ -122,9 +122,9 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 	}
 	for _, n := range sortedByID(rows) {
 		k := keyOf(n)
-		frozen := byName[k.machine].frozen(n, silent[k.machine])
+		kept := byName[k.machine].keeps(n, silent[k.machine])
 		switch {
-		case !holds[k] && !frozen:
+		case !holds[k] && !kept:
 			err = e.resolve(ctx, now, n, to)
 		case n.Status == StatusPending && to != nil:
 			err = e.sendPending(ctx, now, n, to)

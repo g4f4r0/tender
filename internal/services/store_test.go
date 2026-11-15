@@ -426,16 +426,16 @@ func TestUnreachable(t *testing.T) {
 	if err != nil || len(ms) != 1 || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() != 3 {
 		t.Fatalf("unreachable: %+v, %v", ms, err)
 	}
-	// The list stays with its state unknown; the counts the rules read don't move.
-	if sv := ms[0].Data[0]; sv.State != StateUnknown || sv.DownReports != 1 || *sv.ExitCode != 1 {
+	// The list stays with its state unknown, and the counts start again, so two reports in a row
+	// can't span the outage.
+	if sv := ms[0].Data[0]; sv.State != StateUnknown || sv.DownReports != 0 || sv.RestartingReports != 0 || sv.UnhealthyReports != 0 || *sv.ExitCode != 1 {
 		t.Errorf("service while unreachable = %+v", sv)
 	}
-	// Back: the count goes on from where it was.
 	if err := s.Apply(ctx, 1, Report{Docker: DockerRunning, Services: []ServiceInput{down}}); err != nil {
 		t.Fatal(err)
 	}
 	ms, _ = s.Machines(ctx, 1)
-	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].DownReports != 2 {
+	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].DownReports != 1 {
 		t.Errorf("back: %+v", ms[0])
 	}
 }
