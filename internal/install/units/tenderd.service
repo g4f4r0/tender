@@ -18,8 +18,9 @@ RestartSec=30
 # lowest CPU and IO priority, to be gentle with the host while backing it up; the system call filter below
 # lets it lower a priority, and without CAP_SYS_NICE it can't raise one.
 
-# Own directories: /var/lib/tender/daemon, /var/cache/tender (restic cache), /etc/tender (root-owned, read-only).
-StateDirectory=tender/daemon
+# Own directories: /var/lib/tender/daemon, /var/lib/tender/services (a folder per managed service, which the
+# whole-server backup includes), /var/cache/tender (restic cache), /etc/tender (root-owned, read-only).
+StateDirectory=tender/daemon tender/services
 StateDirectoryMode=0700
 CacheDirectory=tender
 CacheDirectoryMode=0700

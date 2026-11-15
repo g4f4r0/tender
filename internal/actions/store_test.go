@@ -3,6 +3,7 @@ package actions
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -50,21 +51,34 @@ type fakeServices struct {
 	fail     error
 }
 
-func (f *fakeServices) Check(_ context.Context, machineID int64, service string) error {
-	if machineID == 1 && (service == "web" || service == "actions" || service == "gone") { // gone: the hub knows it, Docker no longer does
-		return nil
+func (f *fakeServices) Check(_ context.Context, machineID int64, service, container string) error {
+	switch {
+	case machineID != 1 || (service != "web" && service != "actions" && service != "gone"): // gone: the hub knows it, Docker no longer does
+		return server.NotFound("Service %q doesn't exist on this machine.", service)
+	case container != "" && container != "app":
+		return server.NotFound("Container %q isn't in service %s.", container, service)
 	}
-	return server.NotFound("Service %q doesn't exist on this machine.", service)
+	return nil
 }
 
-func (f *fakeServices) Finished(_ context.Context, _ int64, service, typ string) error {
+func (f *fakeServices) Finished(_ context.Context, _ int64, service, container, typ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail != nil {
 		return f.fail
 	}
+	if container != "" {
+		service += "/" + container
+	}
 	f.finished = append(f.finished, typ+" "+service)
 	return nil
+}
+
+func (f *fakeServices) Deployment(_ context.Context, _ int64, service string) (json.RawMessage, error) {
+	if service == "broken" {
+		return nil, server.Invalid("Cloudflare refused the tunnel's routes.")
+	}
+	return json.RawMessage(`{"name":"` + service + `"}`), nil
 }
 
 func status(err error) int {

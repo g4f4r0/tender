@@ -65,6 +65,10 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls 
 		for _, e := range engines {
 			byMachine[e.Machine] = e
 		}
+		failures, err := ss.Failures(ctx)
+		if err != nil {
+			return nil, err
+		}
 		health, err := ls.Health(ctx)
 		if err != nil {
 			return nil, err
@@ -78,7 +82,7 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls 
 		out := make([]notifications.Machine, len(overviews))
 		for i, o := range overviews {
 			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name],
-				Findings: findings[o.Name]}
+				Findings: append(findings[o.Name], deployFindings(o.Name, failures[o.ID])...)}
 			if e, ok := byMachine[o.Name]; ok {
 				if e.Docker != nil {
 					m.Docker = *e.Docker
@@ -87,14 +91,16 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls 
 					m.DockerReason = *e.DockerReason
 				}
 				m.DockerUnreachableReports, m.DockerReportedAt = e.UnreachableReports(), e.ReportedAt()
-				for _, s := range e.Data {
-					m.Services = append(m.Services, notifications.Service{
-						Name: s.Name, State: s.State, ExitCode: s.ExitCode, RestartCount: s.RestartCount, RestartPolicy: s.RestartPolicy,
-						AlertsEnabled: s.AlertsEnabled, StoppedByTender: s.StoppedByTender,
-						MemoryBytes: s.MemoryBytes, MemoryLimitBytes: s.MemoryLimitBytes,
-						DownReports: s.DownReports, RestartingReports: s.RestartingReports, UnhealthyReports: s.UnhealthyReports,
-						MemoryHighReports: s.MemoryHighReports,
-					})
+				for _, sv := range e.Data {
+					for _, c := range sv.Containers {
+						m.Services = append(m.Services, notifications.Service{
+							Name: sv.Name, Container: c.Name, State: c.State, ExitCode: c.ExitCode, RestartCount: c.RestartCount,
+							RestartPolicy: c.RestartPolicy, AlertsEnabled: sv.AlertsEnabled, StoppedByTender: c.StoppedByTender,
+							MemoryBytes: c.MemoryBytes, MemoryLimitBytes: c.MemoryLimitBytes,
+							DownReports: c.DownReports, RestartingReports: c.RestartingReports, UnhealthyReports: c.UnhealthyReports,
+							MemoryHighReports: c.MemoryHighReports,
+						})
+					}
 				}
 			}
 			if o.Usage != nil {

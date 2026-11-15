@@ -161,9 +161,7 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_action", "get_backup_status", "get_cloudflare_settings", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
-		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks",
-		"list_machines", "list_notifications", "list_services", "list_tokens"}
+	reads := []string{"get_action", "get_backup_status", "get_cloudflare_settings", "get_machine_logs", "get_machine_usage", "get_security", "get_service", "get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks", "list_machines", "list_notifications", "list_registries", "list_services", "list_tokens", "service_logs"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
@@ -171,14 +169,17 @@ func TestToolsList(t *testing.T) {
 		"set_backup": {false, true}, "unset_backup": {true, true},
 		"add_channel": {false, false}, "update_channel": {false, true}, "remove_channel": {true, true}, "send_test_notification": {false, false},
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
+		"deploy_service": {true, false}, "redeploy_service": {true, false}, "remove_service": {true, false},
+		"add_registry": {false, false}, "update_registry": {false, true}, "remove_registry": {true, true},
 		"test_destination": {false, true},
 		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
 		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
 		"delete_token":            {true, true},
 		"set_cloudflare_settings": {false, true}, "remove_cloudflare_settings": {true, true},
 	}
-	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, the package mirrors, and Cloudflare.
-	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine", "set_cloudflare_settings"}
+	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, the package mirrors, and
+	// the image registries a deploy pulls from, and Cloudflare.
+	openWorld := []string{"deploy_service", "redeploy_service", "send_test_notification", "test_destination", "start_update", "upgrade_machine", "set_cloudflare_settings"}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations

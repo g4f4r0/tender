@@ -108,7 +108,7 @@ func (h *hub) call(t *testing.T, method, path, token string, body any) (int, str
 
 func TestRoutes(t *testing.T) {
 	h := newTestHub(t)
-	report := RunningReport([]ServiceInput{running("web", "c1"), running("worker", "c2")})
+	report := RunningReport([]ContainerInput{running("web", "c1"), running("worker", "c2")})
 
 	for _, c := range []struct {
 		method, path, token string
@@ -120,16 +120,16 @@ func TestRoutes(t *testing.T) {
 		{"GET", "/v1/services", "", nil, 200, `{"data":[]}`},
 		{"PUT", "/v1/machines/a/services", "", report, 401, "Bearer"},
 		{"PUT", "/v1/machines/a/services", "token-b", report, 403, "another machine"},
-		{"PUT", "/v1/machines/a/services", "token-a", []ServiceInput{}, 422, "The request body must be a JSON object."},
+		{"PUT", "/v1/machines/a/services", "token-a", []ContainerInput{}, 422, "The request body must be a JSON object."},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "sleeping"}, 422, "docker must be running, unreachable or off."},
-		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "off", "services": []any{}}, 422, "Leave services and docker_reason out"},
-		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "off", "docker_reason": "refused"}, 422, "Leave services and docker_reason out"},
-		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running"}, 422, "services is required when docker is running"},
-		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "unreachable", "services": []any{}}, 422, "Leave services out"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "off", "services": []any{}}, 422, "Leave containers and docker_reason out"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "off", "docker_reason": "refused"}, 422, "Leave containers and docker_reason out"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running"}, 422, "containers is required when docker is running"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "unreachable", "services": []any{}}, 422, "Leave containers out"},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []map[string]any{
 			{"name": "x", "container_id": "c", "image": "i", "state": "running", "restart_policy": "sometimes"}}}, 422, "restart_policy"},
 		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
-		{"PUT", "/v1/machines/b/services", "token-b", RunningReport([]ServiceInput{running("db", "c3")}), 204, ""},
+		{"PUT", "/v1/machines/b/services", "token-b", RunningReport([]ContainerInput{running("db", "c3")}), 204, ""},
 		{"GET", "/v1/services", "", nil, 200, `"machine":"b","docker":"running","docker_reason":null,"data":[{"id":3`},
 		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":"running","docker_reason":null,"data":[{"id":1`},
 		{"GET", "/v1/machines/nope/services", "", nil, 404, `Machine \"nope\" doesn't exist.`},
@@ -169,7 +169,7 @@ func TestRoutes(t *testing.T) {
 func TestServiceCalledActions(t *testing.T) {
 	h := newTestHub(t)
 	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a",
-		RunningReport([]ServiceInput{running("actions", "c1")})); status != 204 {
+		RunningReport([]ContainerInput{running("actions", "c1")})); status != 204 {
 		t.Fatalf("report: %d %s", status, body)
 	}
 	for _, c := range []struct {
@@ -201,13 +201,9 @@ func TestDaemon(t *testing.T) {
 	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(&logs, nil)))
 	ctx := context.Background()
 	s := NewStore(h.db)
-	get := func(name string) Service {
+	get := func(name string) Container {
 		t.Helper()
-		sv, err := s.Get(ctx, 1, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sv
+		return lone(t, s, 1, name)
 	}
 
 	d.reportNow(ctx)
@@ -246,23 +242,23 @@ func TestDaemon(t *testing.T) {
 		t.Errorf("web's CPU on the next report = %+v; want 50%%", web.CPUPercent)
 	}
 
-	if _, err := d.Service(ctx, actStop, "web", 0, 0); err != nil {
+	if _, err := d.Service(ctx, actStop, "web", "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Finished(ctx, 1, "web", actStop); err != nil {
+	if err := s.Finished(ctx, 1, "web", "", actStop); err != nil {
 		t.Fatal(err)
 	}
 	d.reportNow(ctx)
 	if web = get("web"); web.State != StateExited || !web.StoppedByTender || web.MemoryBytes != nil {
 		t.Errorf("after the stop: %+v", web)
 	}
-	if out, err := d.Service(ctx, actLogs, "web", 10, time.Hour); err != nil || !strings.Contains(out, "a log line") {
+	if out, err := d.Service(ctx, actLogs, "web", "", 10, time.Hour); err != nil || !strings.Contains(out, "a log line") {
 		t.Errorf("logs = %q, %v", out, err)
 	}
-	if _, err := d.Service(ctx, actRestart, "gone", 0, 0); err == nil || err.Error() != "Docker answered 404: No such container: gone" {
+	if _, err := d.Service(ctx, actRestart, "gone", "", 0, 0); err == nil || err.Error() != "Docker on this machine has no containers of gone" {
 		t.Errorf("restart of a gone container: %v", err)
 	}
-	if _, err := d.Service(ctx, "explode", "web", 0, 0); err == nil {
+	if _, err := d.Service(ctx, "explode", "web", "", 0, 0); err == nil {
 		t.Error("an unknown action worked")
 	}
 	if strings.Contains(logs.String()+h.logs.String(), "a log line") {
@@ -282,7 +278,7 @@ func TestDaemonReportsAndActionsTakeTurns(t *testing.T) {
 	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", Image: "nginx", State: "running", StartedAt: "2026-11-15T09:00:00Z"})
 	s := NewStore(h.db)
 	ctx := context.Background()
-	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "aaa")}); err != nil {
+	if err := s.Replace(ctx, 1, []ContainerInput{running("web", "aaa")}); err != nil {
 		t.Fatal(err)
 	}
 	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -305,10 +301,10 @@ func TestDaemonReportsAndActionsTakeTurns(t *testing.T) {
 		defer close(ran)
 		d.Lock()
 		defer d.Unlock()
-		if _, err := d.Service(ctx, actStop, "web", 0, 0); err != nil {
+		if _, err := d.Service(ctx, actStop, "web", "", 0, 0); err != nil {
 			t.Error(err)
 		}
-		if err := s.Finished(ctx, 1, "web", actStop); err != nil {
+		if err := s.Finished(ctx, 1, "web", "", actStop); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -319,8 +315,8 @@ func TestDaemonReportsAndActionsTakeTurns(t *testing.T) {
 	close(release)
 	<-reported
 	<-ran
-	if sv, err := s.Get(ctx, 1, "web"); err != nil || !sv.StoppedByTender {
-		t.Errorf("after the stop: %+v, %v; want stopped_by_tender", sv, err)
+	if c := lone(t, s, 1, "web"); !c.StoppedByTender {
+		t.Errorf("after the stop: %+v; want stopped_by_tender", c)
 	}
 }
 
@@ -430,7 +426,7 @@ func TestDaemonDockerUnreachable(t *testing.T) {
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	_ = ln.Close()
-	if _, err := NewStore(h.db).Replace(context.Background(), 1, []ServiceInput{running("web", "c1")}); err != nil {
+	if err := NewStore(h.db).Replace(context.Background(), 1, []ContainerInput{running("web", "c1")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -470,7 +466,7 @@ func TestDaemonDockerUnreachable(t *testing.T) {
 	}
 }
 
-// Docker running with no containers is a report too: "services": [], so an earlier outage
+// Docker running with no containers is a report too: "containers": [], so an earlier outage
 // resolves and the hub doesn't refuse it every minute.
 func TestDaemonZeroContainers(t *testing.T) {
 	h := newTestHub(t)
@@ -498,8 +494,8 @@ func TestReportJSON(t *testing.T) {
 		r    Report
 		want string
 	}{
-		{RunningReport(nil), `{"docker":"running","services":[]}`},
-		{RunningReport([]ServiceInput{}), `{"docker":"running","services":[]}`},
+		{RunningReport(nil), `{"docker":"running","containers":[]}`},
+		{RunningReport([]ContainerInput{}), `{"docker":"running","containers":[]}`},
 		{UnreachableReport(ReasonRefused), `{"docker":"unreachable","docker_reason":"refused"}`},
 		{OffReport(), `{"docker":"off"}`},
 	} {
@@ -512,7 +508,7 @@ func TestReportJSON(t *testing.T) {
 // The hub takes a running report with no containers.
 func TestReportOfNoContainers(t *testing.T) {
 	h := newTestHub(t)
-	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []any{}}); status != 204 {
+	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "containers": []any{}}); status != 204 {
 		t.Fatalf("PUT: %d %s", status, body)
 	}
 	if status, body := h.call(t, "GET", "/v1/machines/a/services", "", nil); status != 200 || !strings.Contains(body, `{"machine":"a","docker":"running","docker_reason":null,"data":[]}`) {
@@ -543,9 +539,9 @@ func TestDaemonStatsUnavailable(t *testing.T) {
 	f.byName["web"].StatsFail = true
 	f.mu.Unlock()
 	d.reportNow(ctx)
-	web, err := NewStore(h.db).Get(ctx, 1, "web")
-	if err != nil || web.MemoryBytes == nil || *web.MemoryBytes != 200<<20 || web.MemoryLimitBytes == nil || *web.MemoryLimitBytes != 1<<30 {
-		t.Errorf("after a failed stats read: %+v, %v; want the last memory numbers", web, err)
+	web := lone(t, NewStore(h.db), 1, "web")
+	if web.MemoryBytes == nil || *web.MemoryBytes != 200<<20 || web.MemoryLimitBytes == nil || *web.MemoryLimitBytes != 1<<30 {
+		t.Errorf("after a failed stats read: %+v; want the last memory numbers", web)
 	}
 }
 

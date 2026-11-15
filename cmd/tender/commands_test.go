@@ -305,14 +305,14 @@ func TestStatus(t *testing.T) {
 		{ID: 1, Machine: &web1, Event: "machine.silent", Severity: "critical", Status: "sent", Message: "old news", CreatedAt: h.now.Add(-9 * time.Hour)},
 	}
 	h.pageSize = 1 // one notification per page: status must follow next_cursor
-	h.addServices(t, "web-1", services.Service{Name: "app", State: "running"}, services.Service{Name: "worker", State: "exited"},
-		services.Service{Name: "cron", State: "running"}, services.Service{Name: "gone", State: services.StateRemoved})
+	h.addServices(t, "web-1", lone("app", services.StateRunning), lone("worker", services.StateExited),
+		lone("cron", services.StateRunning), lone("gone", services.StateRemoved))
 	h.addServices(t, "db-1")
 	h.docker["db-1"] = services.DockerUnreachable
 	out := mustRun(t, h, a, "status")
 	for _, want := range []string{
 		"MACHINE   LAST SEEN      LAST BACKUP   STATUS   SERVICES\n",
-		"web-1     1 minute ago   1 day ago     failed   2/3 running\n",
+		"web-1     1 minute ago   1 day ago     failed   2/3 running, 3 containers\n",
 		"db-1      never          never         -        Docker unreachable\n",
 		"Open problems: 2\n",
 		"warning    30 minutes ago   backup.stale    db-1 has never completed a backup.\n",

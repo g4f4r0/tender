@@ -37,11 +37,11 @@ func (s *Store) sending(sender Sender, hub Hub) *Store {
 
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 const selectNotifications = `
-SELECT n.id, m.name, n.service, n.channel, n.event, n.severity, n.message, n.status, n.sent_at, n.created_at, n.updated_at
+SELECT n.id, m.name, n.service, n.container, n.channel, n.event, n.severity, n.message, n.status, n.sent_at, n.created_at, n.updated_at
 FROM notifications n LEFT JOIN machines m ON m.id = n.machine_id`
 
 // latestOpen holds for a notification n that is the latest of an open problem: no newer one has
-// its base event, machine, service and channel, and it is neither a .resolved one nor a test.
+// its base event, machine, service, container and channel, and it is neither a .resolved one nor a test.
 const latestOpen = `n.event NOT LIKE '%.resolved' AND n.event != '` + EventTest + `'
 	AND NOT EXISTS (SELECT 1 FROM notifications o WHERE ` + sameProblem + ` AND o.id > n.id)`
 
@@ -51,7 +51,7 @@ func scan(row scanner) (Notification, error) {
 	var n Notification
 	var created, updated int64
 	var sent *int64
-	err := row.Scan(&n.ID, &n.Machine, &n.Service, &n.Channel, &n.Event, &n.Severity, &n.Message, &n.Status, &sent, &created, &updated)
+	err := row.Scan(&n.ID, &n.Machine, &n.Service, &n.Container, &n.Channel, &n.Event, &n.Severity, &n.Message, &n.Status, &sent, &created, &updated)
 	n.CreatedAt, n.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	if sent != nil {
 		at := time.Unix(*sent, 0).UTC()
@@ -122,15 +122,15 @@ func (s *Store) Get(ctx context.Context, machineID, id int64) (Notification, err
 }
 
 // key names a problem: its base event, the machine's name and, for a service's problem, the
-// service's name, or for a channel's, the channel's name.
-type key struct{ base, machine, service, channel string }
+// service's name and the container's, or for a channel's, the channel's name.
+type key struct{ base, machine, service, container, channel string }
 
 func keyOf(n Notification) key {
 	k := key{base: channels.Base(n.Event)}
 	for _, f := range []struct {
 		from *string
 		to   *string
-	}{{n.Machine, &k.machine}, {n.Service, &k.service}, {n.Channel, &k.channel}} {
+	}{{n.Machine, &k.machine}, {n.Service, &k.service}, {n.Container, &k.container}, {n.Channel, &k.channel}} {
 		if f.from != nil {
 			*f.to = *f.from
 		}
@@ -173,16 +173,16 @@ func sortedByID(m map[key]Notification) []Notification {
 
 // add adds a pending notification of event about a machine (machineID) or a channel (channel,
 // with machineID 0), and returns it.
-func add(ctx context.Context, tx *sql.Tx, machineID int64, service, channel, event, severity, message string, now time.Time) (Notification, error) {
+func add(ctx context.Context, tx *sql.Tx, machineID int64, service, container, channel, event, severity, message string, now time.Time) (Notification, error) {
 	var id any // NULL for a channel's notification or a test
 	if machineID != 0 {
 		id = machineID
 	}
 	var nid int64
 	err := tx.QueryRowContext(ctx,
-		`INSERT INTO notifications (machine_id, service, channel, event, severity, message, status, created_at, updated_at)
-		 VALUES (?, nullif(?, ''), nullif(?, ''), ?, ?, ?, 'pending', ?, ?) RETURNING id`,
-		id, service, channel, event, severity, message, now.Unix(), now.Unix()).Scan(&nid)
+		`INSERT INTO notifications (machine_id, service, container, channel, event, severity, message, status, created_at, updated_at)
+		 VALUES (?, nullif(?, ''), nullif(?, ''), nullif(?, ''), ?, ?, ?, 'pending', ?, ?) RETURNING id`,
+		id, service, container, channel, event, severity, message, now.Unix(), now.Unix()).Scan(&nid)
 	if err != nil {
 		return Notification{}, err
 	}

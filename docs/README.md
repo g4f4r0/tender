@@ -4,7 +4,7 @@ Install Tender, do one task at a time, and look up every command, route and tool
 
 New to Tender? Start with the [quickstart](quickstart.md).
 
-The examples use a machine called `apps`, a Docker service called `web`, a destination called `r2` on Cloudflare R2, and a hub at `https://apps.your-tailnet.ts.net`. Replace them with your own.
+The examples use a machine called `apps`, a service called `notes` with a container called `web`, a destination called `r2` on Cloudflare R2, and a hub at `https://apps.your-tailnet.ts.net`. Replace them with your own.
 
 ## Get started
 
@@ -17,7 +17,7 @@ Each guide does one task.
 
 1. [Add a machine](guides/add-a-machine.md) to back up another server.
 2. [Restore files](guides/restore-files.md) from a snapshot with restic.
-3. [Control a service](guides/control-a-service.md) to restart, stop or start a container and read its logs.
+3. [Control a service](guides/control-a-service.md) to restart, stop or start a service or one of its containers and read its logs.
 4. [Read a machine's logs](guides/read-machine-logs.md) from its systemd journal.
 5. [Set up email alerts](guides/set-up-email-alerts.md) through your SMTP server.
 6. [Connect an AI client](guides/connect-an-ai-client.md) such as Claude Code over MCP.
@@ -25,14 +25,14 @@ Each guide does one task.
 ## Concepts
 
 1. [Backups](backups.md) explains the destination types, what a backup covers, retention, the weekly check and encryption.
-2. [Services](services.md) explains what the daemon reports about each container and how actions reach a machine.
-3. [Log shipping](log-shipping.md) sends each machine's journal and container logs to an OpenTelemetry collector or a webhook, with the webhook contract.
-4. [Notifications](notifications.md) lists every event and when it fires and resolves.
-5. [Adapters](adapters.md) explains channel types, the event they get, and how to write a webhook receiver or an exec adapter.
-6. [Metrics](metrics.md) lists what the hub serves to Prometheus at `/metrics`.
-7. [Security](security.md) explains who can reach the hub, its API tokens, how secrets are stored, what the daemon can do and what it checks on each machine.
-8. [Updates](updates.md) explains how Tender updates itself from the hub, one machine at a time.
-9. [Exposure](exposure.md) explains how a service's routes reach people through Tailscale, a Cloudflare tunnel or Caddy.
+2. [Services](services.md) explains what a service is, how Tender deploys one from a compose file, what the daemon reports about each container and how actions reach a machine.
+3. [Exposure](exposure.md) explains how a route makes a service's port reachable over Tailscale, a Cloudflare tunnel or the machine's own Caddy.
+4. [Log shipping](log-shipping.md) sends each machine's journal and container logs to an OpenTelemetry collector or a webhook, with the webhook contract.
+5. [Notifications](notifications.md) lists every event and when it fires and resolves.
+6. [Adapters](adapters.md) explains channel types, the event they get, and how to write a webhook receiver or an exec adapter.
+7. [Metrics](metrics.md) lists what the hub serves to Prometheus at `/metrics`.
+8. [Security](security.md) explains who can reach the hub, its API tokens, how secrets are stored, what the daemon can do and what it checks on each machine.
+9. [Updates](updates.md) explains how Tender updates itself from the hub, one machine at a time.
 
 ## Reference
 

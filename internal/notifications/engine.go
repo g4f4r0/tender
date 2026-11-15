@@ -150,7 +150,7 @@ func (e *Engine) evaluate(ctx context.Context, now time.Time, ms []Machine) erro
 			changed[k] = true
 			n, err := e.store.raise(ctx, machineID, k, f, usable, now)
 			if err == nil {
-				e.log.Info("notification added", "id", n.ID, "event", n.Event, "about", k.about(), "service", f.service, "severity", f.severity)
+				e.log.Info("notification added", "id", n.ID, "event", n.Event, "about", k.about(), "service", f.service, "container", f.container, "severity", f.severity)
 			}
 			return err
 		case severityRank(f.severity) > severityRank(n.Severity):
@@ -167,7 +167,7 @@ func (e *Engine) evaluate(ctx context.Context, now time.Time, ms []Machine) erro
 		byName[m.Name] = m
 		for _, f := range evaluate(m, now) {
 			silent[m.Name] = silent[m.Name] || f.event == EventMachineSilent
-			if err := found(key{f.event, m.Name, f.service, ""}, m.ID, f); err != nil {
+			if err := found(key{f.event, m.Name, f.service, f.container, ""}, m.ID, f); err != nil {
 				return err
 			}
 		}
@@ -223,7 +223,7 @@ func (s *Store) raise(ctx context.Context, machineID int64, k key, f finding, us
 		return Notification{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	n, err := add(ctx, tx, machineID, k.service, k.channel, f.event, f.severity, f.content, now)
+	n, err := add(ctx, tx, machineID, k.service, k.container, k.channel, f.event, f.severity, f.content, now)
 	if err != nil {
 		return n, err
 	}
@@ -253,8 +253,8 @@ func (s *Store) follow(ctx context.Context, prev Notification, event, severity, 
 // next adds a pending notification of event about what prev is about.
 func next(ctx context.Context, tx *sql.Tx, prev Notification, event, severity, message string, now time.Time) (Notification, error) {
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO notifications (machine_id, service, channel, event, severity, message, status, created_at, updated_at)
-		SELECT machine_id, service, channel, ?, ?, ?, 'pending', ?, ? FROM notifications WHERE id = ? RETURNING id`,
+	err := tx.QueryRowContext(ctx, `INSERT INTO notifications (machine_id, service, container, channel, event, severity, message, status, created_at, updated_at)
+		SELECT machine_id, service, container, channel, ?, ?, ?, 'pending', ?, ? FROM notifications WHERE id = ? RETURNING id`,
 		event, severity, message, now.Unix(), now.Unix(), prev.ID).Scan(&id)
 	if err != nil {
 		return Notification{}, err

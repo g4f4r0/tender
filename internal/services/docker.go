@@ -24,8 +24,6 @@ import (
 // DefaultSocket is where Docker's Engine API listens.
 const DefaultSocket = "/var/run/docker.sock"
 
-const composeProject = "com.docker.compose.project"
-
 // Docker talks to the Docker Engine API over its Unix socket, with unversioned paths, so it uses
 // the version the engine runs.
 type Docker struct {
@@ -224,12 +222,12 @@ type inspected struct {
 // Containers lists every container, running or not, with the health, restart count and start
 // time from inspecting each. A container that is removed meanwhile is left out, and so is one in a
 // state Tender doesn't know.
-func (d *Docker) Containers(ctx context.Context) ([]ServiceInput, error) {
+func (d *Docker) Containers(ctx context.Context) ([]ContainerInput, error) {
 	var list []listed
 	if err := d.getJSON(ctx, "/containers/json?all=1", &list); err != nil {
 		return nil, err
 	}
-	out := []ServiceInput{}
+	out := []ContainerInput{}
 	for _, c := range list {
 		var in inspected
 		if err := d.getJSON(ctx, "/containers/"+url.PathEscape(c.ID)+"/json", &in); err != nil {
@@ -250,13 +248,19 @@ func (d *Docker) Containers(ctx context.Context) ([]ServiceInput, error) {
 		if name == "" && len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
-		sv := ServiceInput{Name: name, ContainerID: c.ID, Image: c.Image, State: state, RestartCount: in.RestartCount,
+		sv := ContainerInput{Name: name, ContainerID: c.ID, Image: c.Image, State: state, RestartCount: in.RestartCount,
 			RestartPolicy: in.HostConfig.RestartPolicy.Name}
 		if !policies[sv.RestartPolicy] {
 			sv.RestartPolicy = PolicyNo
 		}
 		if p := c.Labels[composeProject]; p != "" {
 			sv.Project = &p
+		}
+		if cs := c.Labels[composeService]; cs != "" {
+			sv.ComposeService = &cs
+		}
+		if n, err := strconv.Atoi(c.Labels[composeNumber]); err == nil && n > 0 {
+			sv.ContainerNumber = &n
 		}
 		if h := in.State.Health; h != nil && healths[h.Status] {
 			health := h.Status

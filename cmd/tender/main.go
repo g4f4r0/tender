@@ -26,7 +26,7 @@ import (
 var version = "dev"
 
 var usage = `Tender backs up whole servers on a schedule and reports every run to a hub.
-It also watches and controls each machine's Docker services.
+It also watches and controls each machine's Docker services, and deploys them from compose files.
 AI clients can check on it and manage it over MCP.
 
 Usage: tender COMMAND [options]
@@ -37,7 +37,8 @@ Work with the hub, from any machine that can reach it:
 	{"machines COMMAND", "list, add, remove, rotate-token, set, upgrade"},
 	{"destinations COMMAND", "list, add, update, test, remove"},
 	{"backups COMMAND", "status, set, unset"},
-	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
+	{"services COMMAND", "list, show, deploy, remove, start, stop, restart, logs, and more"},
+	{"registries COMMAND", "list, add, update, remove"},
 	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
 	{"actions COMMAND", "list, show"},
 	{"sinks COMMAND", "list, add, show, update, remove"},
@@ -81,6 +82,7 @@ var hubCommands = map[string]func([]string, session) error{
 	"destinations":  runDestinations,
 	"backups":       runBackups,
 	"services":      runServices,
+	"registries":    runRegistries,
 	"logs":          runLogs,
 	"actions":       runActions,
 	"sinks":         runSinks,

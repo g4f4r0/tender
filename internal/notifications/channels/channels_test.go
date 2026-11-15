@@ -20,10 +20,10 @@ import (
 )
 
 func event() Event {
-	machine, service := "apps", "web"
+	machine, service, container := "apps", "notes", "web"
 	return Event{Version: Version, Event: "service.down", Hub: "https://hub.example.com", Notification: Notification{
-		ID: 12, Event: "service.down", Severity: "critical", Machine: &machine, Service: &service,
-		Message: "The service web on apps stopped with exit code 1.", CreatedAt: time.Date(2026, 11, 15, 3, 31, 0, 0, time.UTC),
+		ID: 12, Event: "service.down", Severity: "critical", Machine: &machine, Service: &service, Container: &container,
+		Message: "web in notes on apps stopped with exit code 1.", CreatedAt: time.Date(2026, 11, 15, 3, 31, 0, 0, time.UTC),
 	}}
 }
 
@@ -72,12 +72,12 @@ func TestWebhookSignsTheEventContract(t *testing.T) {
 	if got["version"] != 1.0 || got["event"] != "service.down" || got["hub"] != "https://hub.example.com" || len(got) != 4 {
 		t.Errorf("event: %s", r.body)
 	}
-	for _, k := range []string{"id", "event", "severity", "machine", "service", "channel", "message", "created_at"} {
+	for _, k := range []string{"id", "event", "severity", "machine", "service", "container", "channel", "message", "created_at"} {
 		if _, ok := n[k]; !ok {
 			t.Errorf("notification has no %s: %s", k, r.body)
 		}
 	}
-	if len(n) != 8 || n["channel"] != nil || n["event"] != "service.down" || n["created_at"] != "2026-11-15T03:31:00Z" {
+	if len(n) != 9 || n["channel"] != nil || n["container"] != "web" || n["event"] != "service.down" || n["created_at"] != "2026-11-15T03:31:00Z" {
 		t.Errorf("notification: %v", n)
 	}
 	// The signature verifies as the docs say: HMAC-SHA256 of "<t>.<body>".

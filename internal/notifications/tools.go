@@ -51,7 +51,8 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Se
 		"List notifications, newest first, optionally of one machine, status or severity. A notification is one message: a problem adds "+
 			"one when it starts, such as service.down, one when it gets worse (service.down.escalated) and one when it clears (service.down.resolved). "+
 			"With open true, the list is the open problems: the latest notification of each problem that hasn't resolved. Each has id, machine "+
-			"(the machine it is about), service (the Docker service it is about, else null), channel (the channel a channel.failing notification "+
+			"(the machine it is about), service (the service it is about, else null), container (the container in that service it is "+
+			"about, else null), channel (the channel a channel.failing notification "+
 			"is about, else null), event, severity (info, warning or critical), message, status (pending; sent, once a channel delivered it; or "+
 			"failed, once every channel failed), sent_at, created_at and updated_at (RFC 3339 UTC), and deliveries: one per channel, with channel, "+
 			"status (pending, delivered or failed), attempts and error. At most limit a page, 1 to 500, default 50; "+
