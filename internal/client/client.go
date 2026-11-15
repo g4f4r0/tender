@@ -1,4 +1,4 @@
-// Package client is the HTTP client for the hub's REST API, used by the agent and the tender command.
+// Package client is the HTTP client for the hub's REST API, used by the daemon and the tender command.
 package client
 
 import (

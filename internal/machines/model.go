@@ -33,7 +33,7 @@ type Usage struct {
 	MemoryUsedPercent float64   `json:"memory_used_percent"`
 	DiskUsedPercent   float64   `json:"disk_used_percent"`
 	UptimeSeconds     int64     `json:"uptime_seconds"`
-	CreatedAt         time.Time `json:"created_at"` // when the agent measured it
+	CreatedAt         time.Time `json:"created_at"` // when the daemon measured it
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 

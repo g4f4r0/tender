@@ -49,7 +49,7 @@ func TestMachines(t *testing.T) {
 
 	out := mustRun(t, h, a, "machines", "add", "web-1")
 	for _, want := range []string{"Added machine web-1.", "shown only now", "  token-web-1-1\n", "install.sh \\\n",
-		"agent --hub HUB_URL --machine web-1"} {
+		"daemon --hub HUB_URL --machine web-1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("add output lacks %q:\n%s", want, out)
 		}
@@ -70,7 +70,7 @@ func TestMachines(t *testing.T) {
 
 	out = mustRun(t, h, a, "machines", "rotate-token", "web-1")
 	if !strings.Contains(out, "  token-web-1-1-rotated\n") || !strings.Contains(out, "The old one no longer works") ||
-		!strings.Contains(out, "sudo tender install agent --token-file PATH") {
+		!strings.Contains(out, "sudo tender install daemon --token-file PATH") {
 		t.Errorf("rotate output:\n%s", out)
 	}
 	mustFail(t, h, a, `this removes db-1 and its history from the hub, with no undo. Run "tender machines remove db-1 --yes" to confirm`, "machines", "remove", "db-1")
@@ -103,8 +103,8 @@ func TestMachinesAddPrintsTheHubAddressWhenOtherMachinesCanReachIt(t *testing.T)
 		"http://[::1]:8080":          "HUB_URL",
 		"https://hub.example.ts.net": "https://hub.example.ts.net",
 	} {
-		if got := agentHubURL(hub); got != want {
-			t.Errorf("agentHubURL(%s) = %s, want %s", hub, got, want)
+		if got := daemonHubURL(hub); got != want {
+			t.Errorf("daemonHubURL(%s) = %s, want %s", hub, got, want)
 		}
 	}
 }
@@ -360,7 +360,7 @@ func TestHubThatDoesNotAnswer(t *testing.T) {
 	t.Setenv("TENDER_HUB", url)
 	var out bytes.Buffer
 	err := runStatus(nil, session{out: &out, now: time.Now})
-	want := "cannot reach the hub at " + url + ". Check that the hub is running (systemctl status tender-hub) and that --hub or TENDER_HUB has its address."
+	want := "cannot reach the hub at " + url + ". Check that the hub is running (systemctl status tenderhub) and that --hub or TENDER_HUB has its address."
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -386,7 +386,7 @@ func TestHubErrorWithoutAProblemBody(t *testing.T) {
 	srv := httptest.NewServer(nil) // the default mux answers 404 text/plain
 	defer srv.Close()
 	err := runMachines([]string{"list", "--hub", srv.URL}, session{out: &bytes.Buffer{}, now: time.Now})
-	if err == nil || !strings.Contains(err.Error(), "answered 404 Not Found. Look at its log: journalctl -u tender-hub.") {
+	if err == nil || !strings.Contains(err.Error(), "answered 404 Not Found. Look at its log: journalctl -u tenderhub.") {
 		t.Errorf("error = %v", err)
 	}
 }

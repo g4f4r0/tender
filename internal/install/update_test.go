@@ -43,11 +43,11 @@ func newRelease(t *testing.T, e *env, sums string) *release {
 	return r
 }
 
-// installBoth installs the agent and the hub, then forgets what ran.
+// installBoth installs the daemon and the hub, then forgets what ran.
 func installBoth(t *testing.T, e *env) {
 	t.Helper()
 	ctx := context.Background()
-	if err := e.in.Agent(ctx, agentOpts); err != nil {
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.in.Hub(ctx, HubOptions{}); err != nil {
@@ -172,8 +172,8 @@ func TestRefreshRestartsInstalledServices(t *testing.T) {
 		t.Error("refresh changed files that were already current")
 	}
 	want := []string{
-		"id -u tender", "systemctl enable --now tender-agent", "systemctl restart tender-agent",
-		"id -u tender", "systemctl enable --now tender-hub", "systemctl restart tender-hub",
+		"id -u tender", "systemctl enable --now tenderd", "systemctl restart tenderd",
+		"id -u tender", "systemctl enable --now tenderhub", "systemctl restart tenderhub",
 		"tailscale serve status --json", "tailscale status --json",
 	}
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
@@ -187,7 +187,7 @@ func TestRefreshRestartsInstalledServices(t *testing.T) {
 func TestRefreshRerendersUnitsAndRepairsRestic(t *testing.T) {
 	e := newEnv(t)
 	installBoth(t, e)
-	for _, p := range []string{"/etc/systemd/system/tender-agent.service", "/usr/local/bin/restic"} {
+	for _, p := range []string{"/etc/systemd/system/tenderd.service", "/usr/local/bin/restic"} {
 		if err := os.WriteFile(e.path(p), []byte("old"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -195,8 +195,8 @@ func TestRefreshRerendersUnitsAndRepairsRestic(t *testing.T) {
 	if err := e.in.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	unit, _ := units.ReadFile("units/tender-agent.service")
-	if e.read(t, "/etc/systemd/system/tender-agent.service") != string(unit) {
+	unit, _ := units.ReadFile("units/tenderd.service")
+	if e.read(t, "/etc/systemd/system/tenderd.service") != string(unit) {
 		t.Error("the unit was not re-rendered")
 	}
 	if !strings.Contains(e.read(t, "/usr/local/bin/restic"), "fake restic") {
@@ -209,7 +209,7 @@ func TestRefreshRerendersUnitsAndRepairsRestic(t *testing.T) {
 
 func TestRefreshOnlyTouchesWhatIsInstalled(t *testing.T) {
 	e := newEnv(t)
-	if err := e.in.Agent(context.Background(), agentOpts); err != nil {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	e.commands()
@@ -217,7 +217,7 @@ func TestRefreshOnlyTouchesWhatIsInstalled(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range e.commands() {
-		if strings.Contains(c, "tender-hub") || strings.HasPrefix(c, "tailscale") {
+		if strings.Contains(c, "tenderhub") || strings.HasPrefix(c, "tailscale") {
 			t.Errorf("touched the hub: %s", c)
 		}
 	}
@@ -226,23 +226,23 @@ func TestRefreshOnlyTouchesWhatIsInstalled(t *testing.T) {
 	}
 }
 
-func TestAgentReusesConfigAndToken(t *testing.T) {
+func TestDaemonReusesConfigAndToken(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if err := e.in.Agent(ctx, agentOpts); err != nil {
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	before := e.tree(t)
 	e.commands()
 	// Nothing is passed: the installed config and token stay.
-	if err := e.in.Agent(ctx, AgentOptions{}); err != nil {
+	if err := e.in.Daemon(ctx, DaemonOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, e.tree(t)) {
 		t.Error("files changed")
 	}
 	// A fresh machine with no options says what is missing.
-	err := newEnv(t).in.Agent(ctx, AgentOptions{Token: testToken})
+	err := newEnv(t).in.Daemon(ctx, DaemonOptions{Token: testToken})
 	if err == nil || !strings.Contains(err.Error(), "--hub URL and --machine NAME") {
 		t.Errorf("err = %v", err)
 	}

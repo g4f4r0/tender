@@ -28,7 +28,7 @@ const (
 	userName      = "tender"
 	binaryPath    = "/usr/local/bin/tender"
 	etcDir        = "/etc/tender"
-	credentialDir = "/etc/tender/credentials" // holds the agent's hub-token only
+	credentialDir = "/etc/tender/credentials" // holds the daemon's hub-token only
 	unitDir       = "/etc/systemd/system"
 	stateParent   = "/var/lib/tender"
 )
@@ -53,6 +53,10 @@ type Installer struct {
 	DownloadURL string // holds the releases: <DownloadURL>/<tag>/<file>
 
 	Refreshing bool // refresh the installed services: restart them whatever changed, skip the next steps
+
+	// CheckHub asks the hub whether it takes token for machine. "install daemon" runs it before it
+	// changes anything, whenever the hub address or the token is new. Nil skips the check.
+	CheckHub func(ctx context.Context, hub, machine, token string) error
 
 	changed bool // some file changed during this run
 }
@@ -243,51 +247,66 @@ func (in *Installer) enable(ctx context.Context, unit string, unitChanged, exist
 }
 
 const (
-	agentUnitPath = unitDir + "/tender-agent.service"
-	hubUnitPath   = unitDir + "/tender-hub.service"
+	daemonUnitPath   = unitDir + "/tenderd.service"
+	hubUnitPath      = unitDir + "/tenderhub.service"
+	daemonConfigPath = etcDir + "/daemon.toml"
 )
 
-// AgentOptions are the settings of "tender install agent".
-type AgentOptions struct {
+// DaemonOptions are the settings of "tender install daemon".
+type DaemonOptions struct {
 	Hub, Machine string
 	Token        string // empty keeps the hub-token already installed
-	Force        bool   // replace an existing agent.toml
+	Force        bool   // replace an existing daemon.toml
 }
 
-// Agent installs and starts the agent. Running it again changes only what differs.
-func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
+// Daemon installs and starts the daemon. Running it again changes only what differs.
+func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 	if err := in.preflight(); err != nil {
 		return err
+	}
+	// A tender-agent unit is an install from v0.2.1 or earlier. It is checked here and moved below,
+	// once every check has passed, right before tenderd takes over.
+	old := in.installed(oldUnitPath(oldDaemonUnit))
+	if old {
+		if err := in.checkOldDaemon(); err != nil {
+			return err
+		}
 	}
 	tokenPath := filepath.Join(credentialDir, "hub-token")
 	if _, err := os.Stat(in.path(tokenPath)); o.Token == "" && err != nil {
 		return errors.New("this machine has no hub token yet. Create one with \"tender machines add NAME\", then pass it with --token-file PATH or pipe it in on stdin")
 	}
-	const configPath = etcDir + "/agent.toml"
+	configPath, installedConfig := daemonConfigPath, daemonConfigPath
+	if old && !in.installed(daemonConfigPath) {
+		installedConfig = oldConfigPath
+	}
 	var cfg []byte
-	if _, err := os.Stat(in.path(configPath)); err != nil || o.Force {
+	if _, err := os.Stat(in.path(installedConfig)); err != nil || o.Force {
 		if o.Hub == "" || o.Machine == "" {
-			return errors.New("this machine has no agent config yet. Pass --hub URL and --machine NAME")
+			return errors.New("this machine has no daemon config yet. Pass --hub URL and --machine NAME")
 		}
 		paths, err := in.mountPaths(ctx)
 		if err != nil {
 			return err
 		}
-		a := config.Agent{Hub: o.Hub, Machine: o.Machine, Backups: config.Backups{Paths: paths, Exclude: config.DefaultExclude}}
+		a := config.Daemon{Hub: o.Hub, Machine: o.Machine, Backups: config.Backups{Paths: paths, Exclude: config.DefaultExclude}}
 		if cfg, err = encode(a); err != nil {
 			return err
 		}
-		if err := checkConfig(cfg, func(p string) error { _, err := config.LoadAgent(p); return err }); err != nil {
+		if err := checkConfig(cfg, func(p string) error { _, err := config.LoadDaemon(p); return err }); err != nil {
 			return err
 		}
 	}
-	unit, err := units.ReadFile("units/tender-agent.service")
+	if err := in.checkHub(ctx, o, cfg != nil, installedConfig); err != nil {
+		return err
+	}
+	unit, err := units.ReadFile("units/tenderd.service")
 	if err != nil {
 		return err
 	}
-	unitPath := agentUnitPath
+	unitPath := daemonUnitPath
 	_, statErr := os.Stat(in.path(unitPath))
-	existed := statErr == nil
+	existed := statErr == nil || old
 
 	in.changed = false
 	if err := in.installRestic(ctx); err != nil {
@@ -295,6 +314,11 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	}
 	if err := in.prepare(ctx); err != nil {
 		return err
+	}
+	if old {
+		if err := in.moveOldDaemon(ctx); err != nil {
+			return err
+		}
 	}
 	if err := in.writeConfig(ctx, configPath, cfg, o.Hub != ""); err != nil {
 		return err
@@ -308,28 +332,57 @@ func (in *Installer) Agent(ctx context.Context, o AgentOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := in.enable(ctx, "tender-agent", unitChanged, existed); err != nil {
+	if err := in.enable(ctx, "tenderd", unitChanged, existed); err != nil {
 		return err
+	}
+	if old {
+		if err := in.removeOldUnit(ctx, oldDaemonUnit, "tenderd"); err != nil {
+			return err
+		}
 	}
 	switch {
 	case !existed:
-		in.say(agentNext(o.Machine))
+		in.say(daemonNext(o.Machine))
 	case !in.changed && !in.Refreshing:
-		in.say("tender-agent is already installed and up to date. Nothing to change.")
+		in.say("tenderd is already installed and up to date. Nothing to change.")
 	}
 	return nil
 }
 
-// agentNext says what to do after a first agent install.
-func agentNext(machine string) string {
+// checkHub runs CheckHub when the config or the token is new: newConfig means o's hub and machine
+// go into a new config; otherwise they come from the installed config at installedConfig.
+func (in *Installer) checkHub(ctx context.Context, o DaemonOptions, newConfig bool, installedConfig string) error {
+	if in.CheckHub == nil || in.Refreshing || (!newConfig && o.Token == "") {
+		return nil
+	}
+	hub, machine, token := o.Hub, o.Machine, o.Token
+	if !newConfig {
+		c, err := config.LoadDaemon(in.path(installedConfig))
+		if err != nil {
+			return err
+		}
+		hub, machine = c.Hub, c.Machine
+	}
+	if token == "" {
+		b, err := os.ReadFile(in.path(filepath.Join(credentialDir, "hub-token")))
+		if err != nil {
+			return err
+		}
+		token = strings.TrimSpace(string(b))
+	}
+	return in.CheckHub(ctx, hub, machine, token)
+}
+
+// daemonNext says what to do after a first daemon install.
+func daemonNext(machine string) string {
 	if machine == "" {
 		machine = "MACHINE"
 	}
 	return `
-The agent is running. It gets its destination, schedule and keys from the hub. Next:
+The daemon is running. It gets its destination, schedule and keys from the hub. Next:
   1. Set when this machine backs up, from any machine that can reach the hub:
        tender backups set ` + machine + ` --destination DESTINATION --schedule "30 3 * * *" --retention-days 30
-  2. Watch the agent: journalctl -u tender-agent -f`
+  2. Watch the daemon: journalctl -u tenderd -f`
 }
 
 // hubNext says what to do after a first hub install. url is empty when the hub is not published,
@@ -358,9 +411,9 @@ Next:
   4. Choose who gets alerts, then check that the email arrives:
        tender recipients add you@example.com
        tender email test
-  5. Install the agent on that machine, with the token when it asks:
+  5. Install the daemon on that machine, with the token when it asks:
        curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh \
-         | sudo sh -s -- agent --hub ` + url + ` --machine NAME`
+         | sudo sh -s -- daemon --hub ` + url + ` --machine NAME`
 	if !email {
 		next += `
 
@@ -393,12 +446,13 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	if err != nil {
 		return err
 	}
-	unit, err := units.ReadFile("units/tender-hub.service")
+	unit, err := units.ReadFile("units/tenderhub.service")
 	if err != nil {
 		return err
 	}
+	oldUnit := in.installed(oldUnitPath(oldHubUnit)) // a tender-hub unit, from v0.2.1 or earlier
 	_, statErr := os.Stat(in.path(hubUnitPath))
-	existed := statErr == nil
+	existed := statErr == nil || oldUnit
 
 	in.changed = false
 	if err := in.prepare(ctx); err != nil {
@@ -415,8 +469,18 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := in.enable(ctx, "tender-hub", unitChanged, existed); err != nil {
+	if oldUnit { // both listen on the same port, so the old hub stops right before the new one starts
+		if err := in.stopOldUnit(ctx, oldHubUnit); err != nil {
+			return err
+		}
+	}
+	if err := in.enable(ctx, "tenderhub", unitChanged, existed); err != nil {
 		return err
+	}
+	if oldUnit {
+		if err := in.removeOldUnit(ctx, oldHubUnit, "tenderhub"); err != nil {
+			return err
+		}
 	}
 	listen := envValue(env, "TENDER_LISTEN")
 	if listen == "" {
@@ -427,7 +491,7 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	case !existed:
 		in.say(hubNext(url, listen, envValue(env, "TENDER_SMTP_HOST") != ""))
 	case !in.changed && !published && !in.Refreshing:
-		in.say("tender-hub is already installed and up to date. Nothing to change.")
+		in.say("tenderhub is already installed and up to date. Nothing to change.")
 	}
 	return nil
 }

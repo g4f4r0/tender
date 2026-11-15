@@ -69,7 +69,7 @@ type DestinationCreated struct {
 	Password string `json:"password,omitempty"`
 }
 
-// Credentials are what an agent needs to open its repository. Only the agent's own
+// Credentials are what a daemon needs to open its repository. Only the daemon's own
 // GET /v1/machines/{machine}/backups/settings, with its token, includes them.
 type Credentials struct {
 	AccessKeyID     string `json:"access_key_id"`
@@ -82,7 +82,7 @@ type Settings struct {
 	Destination   Destination  `json:"destination"`
 	Schedule      string       `json:"schedule"` // standard 5-field cron, UTC
 	RetentionDays int          `json:"retention_days"`
-	Credentials   *Credentials `json:"credentials,omitempty"` // only for the machine's own agent
+	Credentials   *Credentials `json:"credentials,omitempty"` // only for the machine's own daemon
 	CreatedAt     time.Time    `json:"created_at"`
 	UpdatedAt     time.Time    `json:"updated_at"`
 }
@@ -119,13 +119,13 @@ type History struct {
 	Type       string    `json:"type"`
 	Status     string    `json:"status"`
 	Error      *string   `json:"error"`
-	CreatedAt  time.Time `json:"created_at"` // when the run started, by the agent's clock
+	CreatedAt  time.Time `json:"created_at"` // when the run started, by the daemon's clock
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // HistoryInput is the body of POST /v1/machines/{machine}/backups/history.
-// Online, the agent posts status in_progress when a run starts and PATCHes it when it ends.
-// When the hub was unreachable during the run, the agent posts the finished run once, later,
+// Online, the daemon posts status in_progress when a run starts and PATCHes it when it ends.
+// When the hub was unreachable during the run, the daemon posts the finished run once, later,
 // with its final status, error and snapshot. Error and SnapshotID are only accepted then.
 type HistoryInput struct {
 	Type       string    `json:"type"`

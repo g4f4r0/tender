@@ -7,9 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/g4f4r0/tender/internal/client"
 	"github.com/g4f4r0/tender/internal/install"
 )
 
@@ -19,7 +22,7 @@ Set up this machine. Run as root, for example with sudo.
 
 Commands:
 ` + table([]row{
-	{"agent --hub URL --machine NAME", "Install and start the agent on this machine"},
+	{"daemon --hub URL --machine NAME", "Install and start the daemon on this machine"},
 	{"hub", "Install and start the hub on this machine"},
 	{"refresh", "Restart the installed services on this binary"},
 }) + `
@@ -28,14 +31,14 @@ Run "tender install COMMAND --help" for a command's options. The hub token comes
 hidden, or comes from a file.
 `
 
-// runInstall runs "tender install agent|hub|refresh". It needs root.
+// runInstall runs "tender install daemon|hub|refresh". It needs root.
 func runInstall(args []string, stdin io.Reader, s session) error {
 	out := s.out
 	if len(args) == 0 {
 		_, _ = io.WriteString(out, installUsage)
 		return errUsageShown
 	}
-	var agent install.AgentOptions
+	var daemon install.DaemonOptions
 	var hub install.HubOptions
 	var tokenFile, smtpPasswordFile string
 	var fs *flag.FlagSet
@@ -43,16 +46,16 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 	case "help", "-h", "--help":
 		_, err := io.WriteString(out, installUsage)
 		return err
-	case "agent":
-		fs = newFlagSet("install agent", "--hub URL --machine NAME [--token-file PATH] [--force]",
-			"Install and start the agent on this machine. Run as root.\n\n"+
+	case "daemon":
+		fs = newFlagSet("install daemon", "--hub URL --machine NAME [--token-file PATH] [--force]",
+			"Install and start the daemon on this machine. Run as root.\n\n"+
 				"The hub token comes from --token-file or from one line on stdin, never from an argument. "+
-				"On a machine that already has an agent, leave out --hub and --machine: the config and the token stay, "+
+				"On a machine that already has a daemon, leave out --hub and --machine: the config and the token stay, "+
 				"and the command repairs the install.")
-		fs.StringVar(&agent.Hub, "hub", "", "`URL` the hub's address, such as https://hub.example.ts.net")
-		fs.StringVar(&agent.Machine, "machine", "", "`NAME` this machine's name on the hub")
+		fs.StringVar(&daemon.Hub, "hub", "", "`URL` the hub's address, such as https://hub.example.ts.net")
+		fs.StringVar(&daemon.Machine, "machine", "", "`NAME` this machine's name on the hub")
 		fs.StringVar(&tokenFile, "token-file", "", "`PATH` file with the hub token (default: one line on stdin)")
-		fs.BoolVar(&agent.Force, "force", false, "replace an existing /etc/tender/agent.toml")
+		fs.BoolVar(&daemon.Force, "force", false, "replace an existing /etc/tender/daemon.toml")
 	case "hub":
 		fs = newFlagSet("install hub", "[--smtp-host HOST --smtp-from SENDER]\n[--smtp-port PORT --smtp-username USER]\n[--smtp-password-file PATH]",
 			"Install and start the hub on this machine, then publish it with Tailscale Serve. Run as root.\n\n"+
@@ -80,9 +83,9 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 	}
 
 	switch args[0] {
-	case "agent":
-		if (agent.Hub == "") != (agent.Machine == "") {
-			return usageError(fs, "install agent needs both --hub and --machine, or neither on a machine that already has an agent")
+	case "daemon":
+		if (daemon.Hub == "") != (daemon.Machine == "") {
+			return usageError(fs, "install daemon needs both --hub and --machine, or neither on a machine that already has a daemon")
 		}
 	case "hub":
 		if hub.SMTPPort < 0 || hub.SMTPPort > 65535 {
@@ -106,18 +109,18 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 		if hub.SMTPPassword == "" {
 			return errors.New("the SMTP password is empty. Run the command again and type it, or pass --smtp-password-file PATH.")
 		}
-	case args[0] != "agent":
+	case args[0] != "daemon":
 	case tokenFile != "":
 		var err error
-		if agent.Token, err = readFileLine(tokenFile); err != nil {
+		if daemon.Token, err = readFileLine(tokenFile); err != nil {
 			return err
 		}
 	case isTerminal(stdin):
-		// Nobody piped a token in; an installed agent keeps its own, a new one gets a clear error.
+		// Nobody piped a token in; an installed daemon keeps its own, a new one gets a clear error.
 	default:
 		var err error
-		if agent.Token, err = readLine(stdin); err != nil {
-			return fmt.Errorf("cannot read the token from stdin. Pipe it in, for example: tender install agent < FILE: %w", err)
+		if daemon.Token, err = readLine(stdin); err != nil {
+			return fmt.Errorf("cannot read the token from stdin. Pipe it in, for example: tender install daemon < FILE: %w", err)
 		}
 	}
 
@@ -125,10 +128,11 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 	if err != nil {
 		return err
 	}
+	in.CheckHub = checkHub
 	ctx := context.Background()
 	switch args[0] {
-	case "agent":
-		return in.Agent(ctx, agent)
+	case "daemon":
+		return in.Daemon(ctx, daemon)
 	case "hub":
 		return in.Hub(ctx, hub)
 	default:
@@ -162,4 +166,25 @@ func readFileLine(path string) (string, error) {
 	}
 	defer func() { _ = f.Close() }()
 	return readLine(f)
+}
+
+// checkHub sends the hub one usage report with the token, as the daemon does every minute, so an
+// install with a wrong address, machine name or token stops before it changes anything.
+func checkHub(ctx context.Context, hub, machine, token string) error {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	err := sendUsage(ctx, client.New(hub, token), machine)
+	var he *client.Error
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &he) && he.Status == http.StatusUnauthorized:
+		return fmt.Errorf("the hub at %s does not accept this token, so nothing was changed. Make a new one with \"tender machines rotate-token %s\" and pass it with --token-file PATH.", hub, machine)
+	case errors.As(err, &he) && (he.Status == http.StatusForbidden || he.Status == http.StatusNotFound):
+		return fmt.Errorf("the hub at %s has no machine %q for this token, so nothing was changed. Check --machine against \"tender machines list\": %w", hub, machine, err)
+	case errors.As(err, &he):
+		return fmt.Errorf("the hub at %s refused the check, so nothing was changed. Check --hub: %w", hub, err)
+	default:
+		return fmt.Errorf("cannot reach the hub at %s, so nothing was changed. Check --hub and that this machine can reach the hub: %w", hub, err)
+	}
 }

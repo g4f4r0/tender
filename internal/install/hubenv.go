@@ -18,7 +18,7 @@ const (
 
 const hubEnvHeader = `# Settings of the Tender hub, read by systemd when the service starts.
 # Keep this file private: the encryption key opens every secret the hub stores.
-# After a change, run: sudo systemctl restart tender-hub
+# After a change, run: sudo systemctl restart tenderhub
 `
 
 // hubEnv returns the content of hub.env: old with the encryption key (made when old has none) and

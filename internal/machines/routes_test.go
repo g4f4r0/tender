@@ -50,7 +50,7 @@ func newHub(t *testing.T) *hub {
 	return &hub{t: t, db: d, store: store, srv: srv}
 }
 
-// do sends a request as the reader, or as the agent when token is set, and decodes the response into out.
+// do sends a request as the reader, or as the daemon when token is set, and decodes the response into out.
 func (h *hub) do(method, path, token string, body any, out any, headers ...string) *http.Response {
 	h.t.Helper()
 	var buf bytes.Buffer
@@ -157,14 +157,14 @@ func TestAddUsageRoute(t *testing.T) {
 	var u machines.Usage
 	res := h.do("POST", "/v1/machines/a/usage", tokenA, reading(at, 0.5), &u)
 	if res.StatusCode != 201 || u.ID == 0 || !u.CreatedAt.Equal(at) || u.CPULoad != 0.5 || u.UpdatedAt.Before(time.Now().Add(-time.Minute)) {
-		t.Errorf("POST usage: %d %+v; want 201, the agent's created_at and a fresh updated_at", res.StatusCode, u)
+		t.Errorf("POST usage: %d %+v; want 201, the daemon's created_at and a fresh updated_at", res.StatusCode, u)
 	}
 
 	if res := h.do("POST", "/v1/machines/b/usage", tokenA, reading(at, 1), nil); res.StatusCode != 403 {
 		t.Errorf("a's token on b: %d, want 403", res.StatusCode)
 	}
 	if res := h.do("POST", "/v1/machines/a/usage", "", reading(at, 1), nil); res.StatusCode != 401 {
-		t.Errorf("reader header on an agent route: %d, want 401", res.StatusCode)
+		t.Errorf("reader header on a daemon route: %d, want 401", res.StatusCode)
 	}
 	if res := h.do("POST", "/v1/machines/nope/usage", tokenA, reading(at, 1), nil); res.StatusCode != 404 {
 		t.Errorf("unknown machine: %d, want 404", res.StatusCode)

@@ -17,15 +17,15 @@ func write(t *testing.T, name, content string) string {
 	return p
 }
 
-func TestLoadAgent(t *testing.T) {
-	p := write(t, "agent.toml", `
+func TestLoadDaemon(t *testing.T) {
+	p := write(t, "daemon.toml", `
 hub = "https://hub.example.net"
 machine = "g4f4r0-code"
 [backups]
 paths = ["/", "/boot"]
 exclude = ["/tmp"]
 `)
-	a, err := LoadAgent(p)
+	a, err := LoadDaemon(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,9 +37,9 @@ exclude = ["/tmp"]
 	}
 }
 
-func TestLoadAgentDefaults(t *testing.T) {
-	p := write(t, "agent.toml", "hub = \"http://127.0.0.1:8080\"\nmachine = \"m\"\n")
-	a, err := LoadAgent(p)
+func TestLoadDaemonDefaults(t *testing.T) {
+	p := write(t, "daemon.toml", "hub = \"http://127.0.0.1:8080\"\nmachine = \"m\"\n")
+	a, err := LoadDaemon(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +51,9 @@ func TestLoadAgentDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadAgentEmptyExcludeStaysEmpty(t *testing.T) {
-	p := write(t, "agent.toml", "hub = \"http://h\"\nmachine = \"m\"\n[backups]\nexclude = []\n")
-	a, err := LoadAgent(p)
+func TestLoadDaemonEmptyExcludeStaysEmpty(t *testing.T) {
+	p := write(t, "daemon.toml", "hub = \"http://h\"\nmachine = \"m\"\n[backups]\nexclude = []\n")
+	a, err := LoadDaemon(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestLoadAgentEmptyExcludeStaysEmpty(t *testing.T) {
 	}
 }
 
-func TestLoadAgentRejects(t *testing.T) {
+func TestLoadDaemonRejects(t *testing.T) {
 	cases := map[string]struct{ content, want string }{
 		"unknown top key":    {"hub = \"http://h\"\nmachine = \"m\"\nhubb = 1\n", "unknown keys: hubb"},
 		"unknown backup key": {"hub = \"http://h\"\nmachine = \"m\"\n[backups]\npath = [\"/\"]\n", "backups.path"},
@@ -72,13 +72,13 @@ func TestLoadAgentRejects(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadAgent(write(t, "agent.toml", c.content))
+			_, err := LoadDaemon(write(t, "daemon.toml", c.content))
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %v, want it to contain %q", err, c.want)
 			}
 		})
 	}
-	if _, err := LoadAgent(filepath.Join(t.TempDir(), "missing.toml")); err == nil {
+	if _, err := LoadDaemon(filepath.Join(t.TempDir(), "missing.toml")); err == nil {
 		t.Error("missing file: want an error")
 	}
 }

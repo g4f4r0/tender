@@ -111,7 +111,7 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	fails(t, cs, "add_destination", dest("bad", map[string]any{"type": "gcs"}), "type must be s3")
 	fails(t, cs, "add_destination", map[string]any{"name": "bad", "endpoint": "https://x.example.com", "bucket": "b"})
 
-	// The agent's side shows the tool stored what it was given, sealed.
+	// The daemon's side shows the tool stored what it was given, sealed.
 	structured(t, callTool(t, cs, "set_backup", map[string]any{"machine": "a", "destination": "r2-two", "schedule": "30 3 * * *", "retention_days": 30}), &backups.Settings{})
 	id, err := machines.NewStore(d).Lookup(context.Background(), "a")
 	if err != nil {

@@ -87,7 +87,7 @@ func newHub(t *testing.T) *hub {
 	return &hub{t: t, db: d, store: store, srv: srv}
 }
 
-// do sends a request as the reader, or as the agent when token is set, and decodes the response into out.
+// do sends a request as the reader, or as the daemon when token is set, and decodes the response into out.
 func (h *hub) do(method, path, token string, body any, out any, headers ...string) *http.Response {
 	h.t.Helper()
 	var buf bytes.Buffer
@@ -234,7 +234,7 @@ func TestSettings(t *testing.T) {
 	ctx := context.Background()
 	var e *server.Error
 
-	// Nothing set yet: 404 for the agent and for a reader.
+	// Nothing set yet: 404 for the daemon and for a reader.
 	h.status(404, "GET", "/v1/machines/a/backups/settings", "tok-a", nil)
 	h.status(404, "GET", "/v1/machines/a/backups/settings", "", nil)
 	h.setup()
@@ -242,7 +242,7 @@ func TestSettings(t *testing.T) {
 	var st backups.Settings
 	if res := h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st); res.StatusCode != 200 ||
 		st.Destination.Name != "r2-code" || st.Schedule != "30 3 * * *" || st.RetentionDays != 30 {
-		t.Errorf("agent settings: %d %+v", res.StatusCode, st)
+		t.Errorf("daemon settings: %d %+v", res.StatusCode, st)
 	}
 	h.do("GET", "/v1/machines/a/backups/settings", "", nil, &st)
 	if st.RetentionDays != 30 {
@@ -428,7 +428,7 @@ func TestHistoryCreate(t *testing.T) {
 	}
 }
 
-// A run the agent never finished is closed as failed when a later run of the same type starts.
+// A run the daemon never finished is closed as failed when a later run of the same type starts.
 func TestHistoryAbandoned(t *testing.T) {
 	h := newHub(t)
 	lost := h.run("tok-a", "a", backups.HistoryInput{Type: "backup", Status: "in_progress", CreatedAt: base})
@@ -450,7 +450,7 @@ func TestHistoryAbandoned(t *testing.T) {
 	if got := get("b", other.ID); got.Status != "in_progress" {
 		t.Errorf("other machine's run = %+v, want untouched", got)
 	}
-	// The late report for the closed run is a conflict, which the agent drops.
+	// The late report for the closed run is a conflict, which the daemon drops.
 	h.status(409, "PATCH", "/v1/machines/a/backups/history/"+strconv.FormatInt(lost.ID, 10), "tok-a", backups.HistoryPatch{Status: ptr("completed")})
 }
 
@@ -496,7 +496,7 @@ func TestHistoryPatch(t *testing.T) {
 		t.Errorf("run after rejected patches = %+v", out)
 	}
 
-	// Another machine's run is invisible: 404 for its own agent, 403 for a's token on b's path.
+	// Another machine's run is invisible: 404 for its own daemon, 403 for a's token on b's path.
 	h.status(404, "PATCH", path("b", id), "tok-b", backups.HistoryPatch{Status: ptr("completed")})
 	h.status(403, "PATCH", path("b", id), "tok-a", backups.HistoryPatch{Status: ptr("completed")})
 	h.status(404, "GET", path("b", id), "", nil)

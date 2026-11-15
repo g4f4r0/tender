@@ -24,7 +24,7 @@ func parseSchedule(spec string) (cron.Schedule, error) {
 }
 
 // isDue reports whether a run is owed: the first scheduled time after last has passed. This
-// covers a time that passed while the agent was down (it runs once, not once per missed time).
+// covers a time that passed while the daemon was down (it runs once, not once per missed time).
 // With no last run, a backup is due at once.
 func isDue(s cron.Schedule, last, now time.Time) bool {
 	if last.IsZero() {
@@ -33,14 +33,14 @@ func isDue(s cron.Schedule, last, now time.Time) bool {
 	return !s.Next(last.UTC()).After(now.UTC())
 }
 
-// agentState is what the agent remembers between starts, in <state>/agent-state.json.
-type agentState struct {
+// daemonState is what the daemon remembers between starts, in <state>/state.json.
+type daemonState struct {
 	LastBackup time.Time `json:"last_backup"` // when the latest backup run ended, any status
 	LastCheck  time.Time `json:"last_check"`  // when the latest successful check ended
 }
 
-func loadState(path string) (agentState, error) {
-	var st agentState
+func loadState(path string) (daemonState, error) {
+	var st daemonState
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
@@ -49,12 +49,12 @@ func loadState(path string) (agentState, error) {
 		return st, err
 	}
 	if err := json.Unmarshal(b, &st); err != nil {
-		return agentState{}, fmt.Errorf("parse %s: %w", path, err)
+		return daemonState{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return st, nil
 }
 
-func saveState(path string, st agentState) error {
+func saveState(path string, st daemonState) error {
 	b, err := json.Marshal(st)
 	if err != nil {
 		return err

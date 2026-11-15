@@ -22,7 +22,7 @@ type pendingQueue struct {
 	dir string
 }
 
-func (q pendingQueue) add(r *agentRun, now time.Time) error {
+func (q pendingQueue) add(r *daemonRun, now time.Time) error {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -50,12 +50,12 @@ func (q pendingQueue) names() ([]string, error) {
 	return names, nil
 }
 
-func (q pendingQueue) read(name string) (*agentRun, error) {
+func (q pendingQueue) read(name string) (*daemonRun, error) {
 	b, err := os.ReadFile(filepath.Join(q.dir, name))
 	if err != nil {
 		return nil, err
 	}
-	var r agentRun
+	var r daemonRun
 	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (q pendingQueue) remove(name string) error {
 
 // replay reports queued runs oldest first through the same path as a live run. It stops at the
 // first retryable failure (the hub is still down) and drops items the hub rejects for good.
-func (a *Agent) replay(ctx context.Context) {
+func (a *Daemon) replay(ctx context.Context) {
 	names, err := a.queue.names()
 	if err != nil {
 		a.Log.Error("read the report queue", "error", err)

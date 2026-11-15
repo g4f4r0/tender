@@ -35,7 +35,7 @@ Work with the hub, from any machine that can reach it:
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
-	{"install agent --hub URL --machine NAME", "Install and start the agent"},
+	{"install daemon --hub URL --machine NAME", "Install and start the daemon"},
 	{"install hub [--smtp-host HOST ...]", "Install and start the hub"},
 	{"install refresh", "Restart the installed services on this binary"},
 	{"update [--version vX.Y.Z]", "Update Tender to the latest release"},
@@ -43,7 +43,7 @@ Set up this machine (run as root):
 Run as services:
 ` + table([]row{
 	{"hub [--listen ADDR] [--database PATH]", "Run the hub (its service does this)"},
-	{"agent [--config PATH]", "Run the agent (its service does this)"},
+	{"daemon [--config PATH]", "Run the daemon (its service does this)"},
 	{"mcp --stdio [--database PATH]", "Serve the MCP tools over stdio, on the hub machine"},
 }) + `
 Other:
@@ -83,8 +83,8 @@ func main() {
 	switch os.Args[1] {
 	case "hub":
 		err = runHub(os.Args[2:], log)
-	case "agent":
-		err = runAgent(os.Args[2:], log)
+	case "daemon", "agent": // "agent" is what tender-agent.service, from v0.2.1 and earlier, runs until it is moved
+		err = runDaemon(os.Args[2:], log)
 	case "mcp":
 		err = runMCP(os.Args[2:], log)
 	case "install":

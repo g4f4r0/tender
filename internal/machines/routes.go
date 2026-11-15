@@ -15,7 +15,7 @@ func (s *Store) Routes(srv *server.Server) {
 	srv.Handle("DELETE /v1/machines/{machine}", srv.People(s.remove))
 	srv.Handle("POST /v1/machines/{machine}/token", srv.People(s.rotateToken))
 	srv.Handle("GET /v1/machines/{machine}/usage", srv.People(s.listUsage))
-	srv.Handle("POST /v1/machines/{machine}/usage", srv.Agent(s.addUsage))
+	srv.Handle("POST /v1/machines/{machine}/usage", srv.Daemon(s.addUsage))
 }
 
 func (s *Store) list(w http.ResponseWriter, r *http.Request) error {

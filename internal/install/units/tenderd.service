@@ -1,5 +1,5 @@
 [Unit]
-Description=Tender agent (whole-server backups and usage, reports to the hub)
+Description=Tender daemon (whole-server backups and usage, reports to the hub)
 Documentation=https://github.com/g4f4r0/tender
 After=network-online.target
 Wants=network-online.target
@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=tender
 Group=tender
-ExecStart=/usr/local/bin/tender agent --config /etc/tender/agent.toml
+ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml
 Restart=always
 RestartSec=30
 # Be gentle with the host while backing it up.
@@ -16,8 +16,8 @@ Nice=10
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
 
-# Own directories: /var/lib/tender/agent, /var/cache/tender (restic cache), /etc/tender (root-owned, read-only).
-StateDirectory=tender/agent
+# Own directories: /var/lib/tender/daemon, /var/cache/tender (restic cache), /etc/tender (root-owned, read-only).
+StateDirectory=tender/daemon
 StateDirectoryMode=0700
 CacheDirectory=tender
 CacheDirectoryMode=0700
@@ -25,7 +25,7 @@ ConfigurationDirectory=tender
 Environment=RESTIC_CACHE_DIR=%C/tender
 Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
 
-# The hub token is the one file in /etc/tender/credentials (0750 root:tender, file 0640). The agent gets
+# The hub token is the one file in /etc/tender/credentials (0750 root:tender, file 0640). The daemon gets
 # its destination and keys from the hub and keeps them in its state folder.
 
 # Read every file, write nothing outside the directories above.

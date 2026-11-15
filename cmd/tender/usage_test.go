@@ -30,7 +30,7 @@ func TestEveryUsageFitsAndHasNoGoDefaults(t *testing.T) {
 	var out bytes.Buffer
 	_ = runUpdate([]string{"-h"}, "dev", &out)
 	all := []string{out.String()}
-	for _, command := range []string{"agent", "hub", "refresh"} {
+	for _, command := range []string{"daemon", "hub", "refresh"} {
 		out.Reset()
 		if err := runInstall([]string{command, "-h"}, strings.NewReader(""), session{out: &out}); !errors.Is(err, flag.ErrHelp) {
 			t.Errorf("install %s -h returned %v", command, err)

@@ -74,7 +74,7 @@ func backupsStatus(args []string, s session) error {
 
 func backupsSet(args []string, s session) error {
 	fs := newFlagSet("backups set", "MACHINE --destination NAME --schedule CRON --retention-days N\n[--hub URL]",
-		"Choose where, when and for how long a machine's backups are kept. The agent picks the change up within ten minutes.")
+		"Choose where, when and for how long a machine's backups are kept. The daemon picks the change up within ten minutes.")
 	hubURL := hubFlag(fs)
 	destination := fs.String("destination", "", "`NAME` the destination to back up to")
 	schedule := fs.String("schedule", "", "`CRON` when to back up, five fields in UTC, such as \"30 3 * * *\"")

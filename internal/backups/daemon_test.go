@@ -164,7 +164,7 @@ const (
 	resticID01 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-func testAgent(t *testing.T, h *hub) (*Agent, *stubRunner) {
+func testDaemon(t *testing.T, h *hub) (*Daemon, *stubRunner) {
 	t.Helper()
 	size := int64(42)
 	stub := &stubRunner{
@@ -174,7 +174,7 @@ func testAgent(t *testing.T, h *hub) (*Agent, *stubRunner) {
 			{ResticID: resticID, SizeBytes: &size, Paths: []string{"/"}, CreatedAt: time.Unix(2000, 0).UTC()},
 		},
 	}
-	a := NewAgent(h.client(), "m1", t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a := NewDaemon(h.client(), "m1", t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	a.Paths = []string{"/"}
 	a.newRunner = func(Settings) (Runner, error) { return stub, nil }
 	now := time.Date(2026, 11, 14, 4, 0, 0, 0, time.UTC)
@@ -182,12 +182,12 @@ func testAgent(t *testing.T, h *hub) (*Agent, *stubRunner) {
 	return a, stub
 }
 
-// Settings without credentials mean the machine isn't ready, not that a backup failed. The agent
+// Settings without credentials mean the machine isn't ready, not that a backup failed. The daemon
 // waits and logs once, records nothing, and backs up as soon as the hub sends the credentials.
 func TestWaitsForCredentials(t *testing.T) {
 	h := newHub(t)
 	h.settings.Credentials = nil
-	a, stub := testAgent(t, h)
+	a, stub := testDaemon(t, h)
 	var logs strings.Builder
 	a.Log = slog.New(slog.NewTextHandler(&logs, nil))
 	ctx := context.Background()
@@ -206,7 +206,7 @@ func TestWaitsForCredentials(t *testing.T) {
 	if n := strings.Count(logs.String(), "waiting for the hub"); n != 1 {
 		t.Errorf("logged the wait %d times, want once:\n%s", n, logs.String())
 	}
-	st, err := loadState(filepath.Join(a.StateDir, "agent-state.json"))
+	st, err := loadState(filepath.Join(a.StateDir, "state.json"))
 	if err != nil || !st.LastBackup.IsZero() {
 		t.Fatalf("last backup = %v, %v; want still due", st.LastBackup, err)
 	}
@@ -224,13 +224,13 @@ func TestWaitsForCredentials(t *testing.T) {
 // only the owner can read them.
 func TestSavedSettingsKeepCredentialsAt0600(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	a.refreshSettings(context.Background())
 	fi, err := os.Stat(a.settingsFile())
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("settings file = %v, %v; want mode 0600", fi, err)
 	}
-	b := NewAgent(h.client(), "m1", a.StateDir, a.Log)
+	b := NewDaemon(h.client(), "m1", a.StateDir, a.Log)
 	b.loadSavedSettings()
 	if b.settings == nil || b.settings.Credentials == nil || b.settings.Credentials.Password != "test-only-password" {
 		t.Errorf("settings after a restart = %+v", b.settings)
@@ -240,7 +240,7 @@ func TestSavedSettingsKeepCredentialsAt0600(t *testing.T) {
 // The password reaches restic through a 0600 file and the keys through the child's environment.
 func TestNewResticUsesHubCredentials(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	r, err := a.newRestic(*h.settings)
 	if err != nil {
 		t.Fatal(err)
@@ -261,13 +261,13 @@ func TestNewResticUsesHubCredentials(t *testing.T) {
 	}
 }
 
-// TestAgentWithRealResticUsesSettingsPassword runs a due backup end to end against the fake hub
+// TestDaemonWithRealResticUsesSettingsPassword runs a due backup end to end against the fake hub
 // with the real restic and a local repository. The repository is created with the password the
 // hub sent in the settings, and nothing else holds it.
-func TestAgentWithRealResticUsesSettingsPassword(t *testing.T) {
+func TestDaemonWithRealResticUsesSettingsPassword(t *testing.T) {
 	bin := lookRestic(t)
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	a.ResticBin = bin
 	src := filepath.Join(t.TempDir(), "src")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -306,7 +306,7 @@ func TestAgentWithRealResticUsesSettingsPassword(t *testing.T) {
 
 func TestOnlineFlow(t *testing.T) {
 	h := newHub(t)
-	a, stub := testAgent(t, h)
+	a, stub := testDaemon(t, h)
 	ctx := context.Background()
 
 	a.refreshSettings(ctx)
@@ -366,7 +366,7 @@ func TestOnlineFlow(t *testing.T) {
 
 func TestOfflineFlowQueuesThenReplays(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	ctx := context.Background()
 	a.refreshSettings(ctx)
 	h.seen()
@@ -444,7 +444,7 @@ func TestOfflineFlowQueuesThenReplays(t *testing.T) {
 
 func TestFinishedOnlineRunWithLostPatchIsQueuedAndPatchedLater(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	ctx := context.Background()
 	a.refreshSettings(ctx)
 	h.seen()
@@ -478,9 +478,9 @@ func TestFinishedOnlineRunWithLostPatchIsQueuedAndPatchedLater(t *testing.T) {
 
 func TestPermanentRejectionIsDropped(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	ctx := context.Background()
-	run := &agentRun{Type: TypeBackup, Status: StatusFailed, Error: "boom", CreatedAt: a.now(), PostKey: "k1", PatchKey: "k2"}
+	run := &daemonRun{Type: TypeBackup, Status: StatusFailed, Error: "boom", CreatedAt: a.now(), PostKey: "k1", PatchKey: "k2"}
 	if err := a.queue.add(run, a.now()); err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +499,7 @@ func TestPermanentRejectionIsDropped(t *testing.T) {
 
 func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	ctx := context.Background()
 
 	h.mu.Lock()
@@ -507,7 +507,7 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	h.mu.Unlock()
 	a.refreshSettings(ctx)
 	if a.settings != nil {
-		t.Fatal("a 404 must leave the agent without settings")
+		t.Fatal("a 404 must leave the daemon without settings")
 	}
 
 	h.mu.Lock()
@@ -518,9 +518,9 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 		t.Fatalf("settings = %+v", a.settings)
 	}
 
-	// A new agent starts while the hub is down and loads the saved copy.
+	// A new daemon starts while the hub is down and loads the saved copy.
 	h.setDown(true)
-	b := NewAgent(h.client(), "m1", a.StateDir, a.Log)
+	b := NewDaemon(h.client(), "m1", a.StateDir, a.Log)
 	b.loadSavedSettings()
 	b.refreshSettings(ctx)
 	if b.settings == nil || b.settings.RetentionDays != 14 || b.settings.Schedule != "0 1 * * *" {
@@ -543,16 +543,16 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 // which may hold the only copy of the password. Any other 404 or error changes nothing.
 func TestSettingsRemovedOnHubStopBackups(t *testing.T) {
 	ctx := context.Background()
-	setup := func(t *testing.T) (*hub, *Agent) {
+	setup := func(t *testing.T) (*hub, *Daemon) {
 		h := newHub(t)
-		a, _ := testAgent(t, h)
+		a, _ := testDaemon(t, h)
 		a.refreshSettings(ctx)
 		if _, err := a.newRestic(*a.settings); err != nil { // writes the password file, as a backup does
 			t.Fatal(err)
 		}
 		return h, a
 	}
-	saved := func(a *Agent) (n int) {
+	saved := func(a *Daemon) (n int) {
 		for _, p := range []string{a.settingsFile(), a.passwordFile()} {
 			if _, err := os.Stat(p); err == nil {
 				n++
@@ -581,7 +581,7 @@ func TestSettingsRemovedOnHubStopBackups(t *testing.T) {
 			t.Errorf("settings %v, saved files %d; want none", a.settings != nil, saved(a))
 		}
 		h.setDown(true)
-		b := NewAgent(h.client(), "m1", a.StateDir, a.Log)
+		b := NewDaemon(h.client(), "m1", a.StateDir, a.Log)
 		b.loadSavedSettings()
 		if b.settings != nil {
 			t.Error("a restart brought the settings back")
@@ -599,7 +599,7 @@ func TestSettingsRemovedOnHubStopBackups(t *testing.T) {
 
 func TestFailedBackupIsReportedAndSkipsCleanup(t *testing.T) {
 	h := newHub(t)
-	a, stub := testAgent(t, h)
+	a, stub := testDaemon(t, h)
 	ctx := context.Background()
 	a.refreshSettings(ctx)
 	h.seen()
@@ -620,7 +620,7 @@ func TestFailedBackupIsReportedAndSkipsCleanup(t *testing.T) {
 	}
 }
 
-// stopDuringBackup stops the agent while restic is backing up, like a SIGTERM would.
+// stopDuringBackup stops the daemon while restic is backing up, like a SIGTERM would.
 type stopDuringBackup struct {
 	*stubRunner
 	stop func()
@@ -633,7 +633,7 @@ func (s stopDuringBackup) Backup(ctx context.Context, paths, exclude []string) O
 
 func TestStoppedRunIsReportedAndRunsAgainOnNextStart(t *testing.T) {
 	h := newHub(t)
-	a, stub := testAgent(t, h)
+	a, stub := testDaemon(t, h)
 	ctx, cancel := context.WithCancel(context.Background())
 	a.refreshSettings(ctx)
 	h.seen()
@@ -649,7 +649,75 @@ func TestStoppedRunIsReportedAndRunsAgainOnNextStart(t *testing.T) {
 	if !patched {
 		t.Error("a stopped run must still be reported")
 	}
-	if st, _ := loadState(a.StateDir + "/agent-state.json"); !st.LastBackup.IsZero() {
+	if st, _ := loadState(a.StateDir + "/state.json"); !st.LastBackup.IsZero() {
 		t.Errorf("a stopped run must not count as the last backup: %+v", st)
+	}
+}
+
+// Without settings the daemon asks the hub on every tick, so a new machine backs up within a tick
+// of getting them; with settings it asks every settingsEvery.
+func TestAsksForSettingsEveryTickWhileItHasNone(t *testing.T) {
+	h := newHub(t)
+	h.settings = nil
+	a, stub := testDaemon(t, h)
+	now := a.now()
+	a.now = func() time.Time { return now }
+	ctx := context.Background()
+	asked := func() (n int) {
+		for _, r := range routes(h.seen()) {
+			if r == "GET "+m1+"settings" {
+				n++
+			}
+		}
+		return n
+	}
+
+	a.tick(ctx)
+	now = now.Add(tickEvery)
+	a.tick(ctx)
+	if n := asked(); n != 2 {
+		t.Fatalf("asked for settings %d times in two ticks without settings, want 2", n)
+	}
+
+	h.mu.Lock()
+	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "30 3 * * *", RetentionDays: 30,
+		Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}
+	h.mu.Unlock()
+	now = now.Add(tickEvery)
+	a.tick(ctx)
+	if n := asked(); n != 1 || a.settings == nil {
+		t.Fatalf("on the next tick: asked %d times, settings %v; want them fetched", n, a.settings != nil)
+	}
+	if !strings.HasPrefix(strings.Join(stub.calls, ","), "backup") {
+		t.Errorf("restic calls = %v, want the first backup on the same tick", stub.calls)
+	}
+
+	now = now.Add(tickEvery)
+	a.tick(ctx)
+	if n := asked(); n != 0 {
+		t.Errorf("with settings: asked again after one tick (%d times), want only every %v", n, settingsEvery)
+	}
+	now = now.Add(settingsEvery)
+	a.tick(ctx)
+	if n := asked(); n != 1 {
+		t.Errorf("after %v: asked %d times, want 1", settingsEvery, n)
+	}
+}
+
+// Unusable settings from the hub are logged once, though the daemon asks again every tick.
+func TestUnusableSettingsAreLoggedOnce(t *testing.T) {
+	h := newHub(t)
+	h.settings.Schedule = "nonsense"
+	a, _ := testDaemon(t, h)
+	var logs strings.Builder
+	a.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	now := a.now()
+	a.now = func() time.Time { return now }
+	for range 3 {
+		a.tick(context.Background())
+		now = now.Add(tickEvery)
+	}
+	if n := strings.Count(logs.String(), "unusable backup settings"); n != 1 {
+		t.Errorf("logged %d times in three ticks, want once:\n%s", n, logs.String())
 	}
 }

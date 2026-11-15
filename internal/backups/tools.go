@@ -164,7 +164,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddWrite(m, "set_backup", "Set a machine's backups",
 		"Set where, when and for how long a machine's backups are kept: a destination, a cron schedule in UTC and the days to keep "+
-			"snapshots. It replaces any earlier settings, and the machine's agent picks them up on its next check.",
+			"snapshots. It replaces any earlier settings, and the machine's daemon picks them up on its next check.",
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in setBackupInput) (Settings, error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
