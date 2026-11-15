@@ -161,7 +161,7 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
+	reads := []string{"get_action", "get_backup_status", "get_cloudflare_settings", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
 		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks",
 		"list_machines", "list_notifications", "list_services"}
 	// Per write tool: destructive, idempotent.
@@ -174,9 +174,10 @@ func TestToolsList(t *testing.T) {
 		"test_destination": {false, true},
 		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
 		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
+		"set_cloudflare_settings": {false, true}, "remove_cloudflare_settings": {true, true},
 	}
-	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, and the package mirrors.
-	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine"}
+	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, the package mirrors, and Cloudflare.
+	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine", "set_cloudflare_settings"}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations

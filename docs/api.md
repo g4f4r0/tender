@@ -3146,6 +3146,133 @@ HTTP/1.1 204 No Content
 | --- | --- |
 | `remove_log_sink` | `tender sinks remove otel` |
 
+## Exposures
+
+The settings an app's routes need to reach people. Only `cloudflare` routes need any: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains how the hub uses them.
+
+### `GET /v1/exposures/cloudflare`
+
+Returns the hub's Cloudflare settings. The API token is always `"***"`, with `api_token_set`.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/exposures/cloudflare
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "account_id": "0123456789abcdef0123456789abcdef",
+  "api_token": "***",
+  "api_token_set": true,
+  "created_at": "2026-11-15T10:00:00Z",
+  "updated_at": "2026-11-15T10:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | Cloudflare isn't set up on this hub. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_cloudflare_settings` | `tender exposures cloudflare show` |
+
+### `PUT /v1/exposures/cloudflare`
+
+Replaces the hub's Cloudflare settings. The hub first lists the account's tunnels and zones with the token, and stores nothing if Cloudflare refuses.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account_id` | string | Yes | Body. The Cloudflare account ID, 32 lowercase hex digits, from the dashboard's Account home. |
+| `api_token` | string | No | Body. Secret. A Cloudflare API token with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. Required the first time; leave it out to keep the stored one. |
+
+#### Example request
+
+```sh
+curl -s -X PUT https://apps.your-tailnet.ts.net/v1/exposures/cloudflare \
+  -H 'Content-Type: application/json' \
+  -d "{\"account_id\": \"0123456789abcdef0123456789abcdef\", \"api_token\": \"$(cat cloudflare-token)\"}"
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "account_id": "0123456789abcdef0123456789abcdef",
+  "api_token": "***",
+  "api_token_set": true,
+  "created_at": "2026-11-15T10:00:00Z",
+  "updated_at": "2026-11-15T10:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `422` | `account_id` isn't 32 lowercase hex digits, `api_token` isn't a token or is `"***"`, there is no stored token to keep, or Cloudflare refused the account or the token. The detail gives Cloudflare's reason. |
+| `502` | Cloudflare didn't answer, or answered with a `5xx` or `429`, after 3 tries. Try again later. |
+| `503` | The hub has no `TENDER_ENCRYPTION_KEY` to seal the token with. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_cloudflare_settings` | `tender exposures cloudflare set --account-id ID --api-token-file PATH` |
+
+### `DELETE /v1/exposures/cloudflare`
+
+Removes the hub's Cloudflare settings. The tunnels and DNS records already in Cloudflare stay.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/exposures/cloudflare
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | Cloudflare isn't set up on this hub. |
+| `409` | An app still has a `cloudflare` route. Take the routes off first. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_cloudflare_settings` | `tender exposures cloudflare remove` |
+
 ## Metrics
 
 ### `GET /metrics`

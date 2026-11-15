@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/g4f4r0/tender/internal/actions"
+	"github.com/g4f4r0/tender/internal/apps"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/logs"
@@ -45,6 +46,7 @@ Work with the hub, from any machine that can reach it:
 	{"security [MACHINE]", "Show the machines' security checks"},
 	{"update MACHINE ...|--all", "Update Tender on machines, through the hub"},
 	{"updates COMMAND", "show, set"},
+	{"exposures cloudflare COMMAND", "show, set, remove"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
@@ -83,12 +85,13 @@ var hubCommands = map[string]func([]string, session) error{
 	"notifications": runNotifications,
 	"updates":       runUpdates,
 	"security":      runSecurity,
+	"exposures":     runExposures,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
 	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations,
-		logs.Migrations, security.Migrations, updates.Migrations, server.Migrations}
+		logs.Migrations, security.Migrations, updates.Migrations, apps.Migrations, server.Migrations}
 }
 
 func main() {

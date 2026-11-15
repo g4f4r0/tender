@@ -68,6 +68,9 @@ var mcpCoverage = map[string]string{
 	"GET /v1/updates/rollouts":                          "get_updates",
 	"POST /v1/updates/rollouts":                         "start_update",
 	"GET /v1/updates/rollouts/{id}":                     "get_updates",
+	"GET /v1/exposures/cloudflare":                      "get_cloudflare_settings",
+	"PUT /v1/exposures/cloudflare":                      "set_cloudflare_settings",
+	"DELETE /v1/exposures/cloudflare":                   "remove_cloudflare_settings",
 	"POST /mcp":                                         "none: it is the MCP endpoint itself",
 	"GET /metrics":                                      "none: it is for Prometheus scrapers, and the typed tools already return the same data",
 }

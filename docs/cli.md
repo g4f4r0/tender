@@ -1993,6 +1993,125 @@ Updates are auto, window: 02:00-05:00 UTC.
 | --- | --- |
 | `PUT /v1/updates/settings` | `set_update_settings` |
 
+## `tender exposures`
+
+Sets up how apps' routes reach people. Only `cloudflare` routes need settings: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains them.
+
+### `tender exposures cloudflare show`
+
+Shows the Cloudflare account that apps' `cloudflare` routes use. The API token is never shown.
+
+#### Usage
+
+```sh
+tender exposures cloudflare show [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender exposures cloudflare show
+```
+
+```text
+Cloudflare account: 0123456789abcdef0123456789abcdef
+API token: set, hidden
+Updated 2 hours ago.
+```
+
+#### Errors
+
+1. `Cloudflare isn't set up on this hub. Set it up with: tender exposures cloudflare set --account-id ID --api-token-file PATH`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/exposures/cloudflare` | `get_cloudflare_settings` |
+
+### `tender exposures cloudflare set`
+
+Sets the Cloudflare account and API token. It asks for the token with typing hidden, or reads it from `--api-token-file`. The hub checks the token with Cloudflare before it stores it, and replaces the stored settings.
+
+#### Usage
+
+```sh
+tender exposures cloudflare set --account-id ID [--api-token-file PATH] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--account-id` | string | Yes | The Cloudflare account ID, 32 lowercase hex digits, from the dashboard's Account home. |
+| `--api-token-file` | path | No | A file whose first line is the API token. Without it, the command asks for the token. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender exposures cloudflare set --account-id 0123456789abcdef0123456789abcdef --api-token-file cloudflare-token
+```
+
+```text
+Saved the Cloudflare settings. Cloudflare accepted the API token for account 0123456789abcdef0123456789abcdef.
+```
+
+#### Errors
+
+1. `exposures cloudflare set needs --account-id. Run "tender exposures cloudflare set --help" for usage.`
+2. `there is no terminal to ask for the Cloudflare API token. Save it in a file and add --api-token-file PATH.`
+3. `Cloudflare refused GET /accounts/.../cfd_tunnel: 403 Forbidden, Authentication error (10000). Check the account ID, and that the API token has Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PUT /v1/exposures/cloudflare` | `set_cloudflare_settings` |
+
+### `tender exposures cloudflare remove`
+
+Removes the hub's Cloudflare settings. It refuses while an app has a `cloudflare` route. The tunnels and DNS records already in Cloudflare stay.
+
+#### Usage
+
+```sh
+tender exposures cloudflare remove [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender exposures cloudflare remove
+```
+
+```text
+Removed the Cloudflare settings. The tunnels and DNS records in Cloudflare stay.
+```
+
+#### Errors
+
+1. `Cloudflare isn't set up on this hub. There is nothing to remove.`
+2. `2 cloudflare routes need these settings. Take the routes off their apps first, or redeploy them with another expose.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/exposures/cloudflare` | `remove_cloudflare_settings` |
+
 ## `tender security`
 
 ### `tender security`
