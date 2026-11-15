@@ -24,7 +24,7 @@ func (s *Store) get(w http.ResponseWriter, r *http.Request) error {
 // put takes the daemon's report. It answers 204, since the daemon has nothing to read back.
 func (s *Store) put(w http.ResponseWriter, r *http.Request) error {
 	var in Report
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	if err := s.Put(r.Context(), server.MachineID(r.Context()), in); err != nil {

@@ -87,7 +87,7 @@ func (s *Store) daemonSinks(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) setStatus(w http.ResponseWriter, r *http.Request) error {
 	var in StatusReport
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	if err := s.SetStatus(r.Context(), server.MachineID(r.Context()), in); err != nil {
