@@ -158,7 +158,8 @@ func securityReport(r security.Report) *notifications.SecurityReport {
 		if s.PermitRootLogin != nil {
 			root = *s.PermitRootLogin
 		}
-		out.SSHPasswords = passwords || root == "yes"
+		// Root login with PermitRootLogin yes needs a password only while password login is on.
+		out.SSHPasswords = passwords
 		out.SSH = notifications.SSHText(passwords, root)
 	}
 	if u := r.Updates; u.Check == security.CheckOK {

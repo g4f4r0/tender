@@ -150,17 +150,14 @@ func sshText(s security.SSH) string {
 	case !s.Installed:
 		return "no SSH server"
 	}
-	var weak []string
-	if s.PasswordAuthentication != nil && *s.PasswordAuthentication {
-		weak = append(weak, "passwords")
+	root := s.PermitRootLogin != nil && *s.PermitRootLogin == "yes"
+	switch passwords := s.PasswordAuthentication != nil && *s.PasswordAuthentication; {
+	case passwords && root:
+		return "passwords, root with a password"
+	case passwords:
+		return "passwords"
 	}
-	if s.PermitRootLogin != nil && *s.PermitRootLogin == "yes" {
-		weak = append(weak, "root with a password")
-	}
-	if len(weak) == 0 {
-		return "keys only"
-	}
-	return strings.Join(weak, ", ")
+	return "keys only"
 }
 
 func updatesText(u security.Updates) string {

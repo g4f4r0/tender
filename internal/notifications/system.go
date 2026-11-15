@@ -3,7 +3,6 @@ package notifications
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -150,14 +149,15 @@ func portText(machine string, l Listener) string {
 // isSystem reports whether typ is a security or update alert.
 func isSystem(typ string) bool { return slices.Contains(systemTypes, typ) }
 
-// SSHText words what makes an SSH server weak, for the hub's wiring: "allows password login".
+// SSHText words what makes an SSH server weak, for the hub's wiring: "allows password login", and
+// root too when PermitRootLogin is yes. It is "" when nobody can log in with a password.
 func SSHText(passwordAuthentication bool, permitRootLogin string) string {
-	var parts []string
-	if passwordAuthentication {
-		parts = append(parts, "allows password login (PasswordAuthentication yes)")
+	if !passwordAuthentication {
+		return ""
 	}
+	text := "allows password login (PasswordAuthentication yes)"
 	if permitRootLogin == "yes" {
-		parts = append(parts, "lets root log in with a password (PermitRootLogin yes)")
+		text += " and lets root log in with a password (PermitRootLogin yes)"
 	}
-	return strings.Join(parts, " and ")
+	return text
 }

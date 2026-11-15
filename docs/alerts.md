@@ -71,7 +71,7 @@ The daemon runs its [security checks](security.md#security-checks) every 15 minu
 | --- | --- | --- |
 | `security.firewall_off` | No active firewall denies incoming traffic by default: ufw is inactive or allows by default, or without ufw no nftables or iptables input policy drops. | `critical` |
 | `security.port_exposed` | A TCP or UDP port listens on an address other than loopback, link-local or the tailnet, and isn't on the machine's allowlist. One alert per port, such as `8080/tcp exposed`. A port Docker publishes says so, because it goes around ufw. | `warning` |
-| `security.ssh_weak` | `sshd -T` says `PasswordAuthentication yes` or `PermitRootLogin yes`. | `warning` |
+| `security.ssh_weak` | `sshd -T` says `PasswordAuthentication yes`, so anyone can try a password, and with `PermitRootLogin yes` root too. Root login with a key only is not weak. | `warning` |
 | `security.updates_pending` | Security updates have been pending for more than 3 days, so unattended-upgrades isn't installing them. | `warning` |
 | `security.auto_updates_off` | unattended-upgrades isn't installed, or `APT::Periodic::Unattended-Upgrade` is off. | `warning` |
 | `security.reboot_required` | `/var/run/reboot-required` is more than 7 days old. Tender never reboots a machine. | `warning` |
