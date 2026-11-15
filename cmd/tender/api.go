@@ -68,6 +68,20 @@ func (h *hubAPI) do(method, path string, in, out any) error {
 	return h.explain(h.c.Do(context.Background(), method, path, "", in, out))
 }
 
+// hubAnswer is the hub's answer to a failed request, worded for the command line.
+type hubAnswer struct {
+	status int
+	msg    string
+}
+
+func (e *hubAnswer) Error() string { return e.msg }
+
+// answered reports whether err is the hub answering status.
+func answered(err error, status int) bool {
+	var a *hubAnswer
+	return errors.As(err, &a) && a.status == status
+}
+
 // explain words a failed request for the command line: the hub's own sentence, or what to check.
 func (h *hubAPI) explain(err error) error {
 	var answer *client.Error
@@ -77,9 +91,9 @@ func (h *hubAPI) explain(err error) error {
 		return nil
 	case errors.As(err, &answer):
 		if answer.Detail != "" {
-			return errors.New(answer.Detail)
+			return &hubAnswer{answer.Status, answer.Detail}
 		}
-		return fmt.Errorf("the hub at %s answered %d %s. Look at its log: journalctl -u tenderhub.", h.url, answer.Status, answer.Title)
+		return &hubAnswer{answer.Status, fmt.Sprintf("the hub at %s answered %d %s. Look at its log: journalctl -u tenderhub.", h.url, answer.Status, answer.Title)}
 	case errors.As(err, &network):
 		return fmt.Errorf("cannot reach the hub at %s. Check that the hub is running (systemctl status tenderhub) "+
 			"and that --hub or TENDER_HUB has its address.", h.url)

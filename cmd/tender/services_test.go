@@ -33,6 +33,10 @@ func (h *fakeHub) machineServices(name string) services.MachineServices {
 }
 
 func (h *fakeHub) listServices(w http.ResponseWriter, r *http.Request) {
+	if h.olderHub {
+		problem(w, http.StatusNotFound, "No route %s %s.", r.Method, r.URL.Path)
+		return
+	}
 	if name := r.PathValue("machine"); name != "" {
 		if h.machine(w, r) != nil {
 			server.WriteJSON(w, http.StatusOK, h.machineServices(name))

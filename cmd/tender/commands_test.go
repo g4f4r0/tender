@@ -356,6 +356,14 @@ func TestStatus(t *testing.T) {
 	if strings.Contains(out, "old news") {
 		t.Error("a resolved alert is shown as open")
 	}
+
+	// A hub from before services has no /v1/services: the status leaves that column out.
+	h.olderHub = true
+	out = mustRun(t, h, a, "status")
+	if !strings.Contains(out, "MACHINE   LAST SEEN      LAST BACKUP   STATUS\n") || !strings.Contains(out, "web-1     1 minute ago   1 day ago     failed\n") ||
+		strings.Contains(out, "SERVICES") {
+		t.Errorf("status from an older hub:\n%s", out)
+	}
 }
 
 func TestHubThatDoesNotAnswer(t *testing.T) {

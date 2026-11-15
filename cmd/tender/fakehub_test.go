@@ -50,6 +50,7 @@ type fakeHub struct {
 	docker       map[string]string             // what each machine's daemon said about Docker
 	actions      map[int64]*actions.Action
 	daemon       func(*actions.Action) // finishes an action when it is first read; nil leaves it pending
+	olderHub     bool                  // a v0.2 hub, which has no /v1/services
 }
 
 type fakeMachine struct {

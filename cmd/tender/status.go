@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -39,7 +40,8 @@ func runStatus(args []string, s session) error {
 		return err
 	}
 	engines, err := listAll[services.MachineServices](hub, "/v1/services")
-	if err != nil {
+	withServices := !answered(err, http.StatusNotFound) // a hub from before services has no such route
+	if err != nil && withServices {
 		return err
 	}
 	var alerts []notifications.Notification
@@ -87,7 +89,14 @@ func runStatus(args []string, s session) error {
 				rows[i][2], rows[i][3] = ago(s.now(), b.CreatedAt), b.Status
 			}
 		}
-		printTable(s.out, []string{"MACHINE", "LAST SEEN", "LAST BACKUP", "STATUS", "SERVICES"}, rows)
+		header := []string{"MACHINE", "LAST SEEN", "LAST BACKUP", "STATUS", "SERVICES"}
+		if !withServices {
+			header = header[:4]
+			for i := range rows {
+				rows[i] = rows[i][:4]
+			}
+		}
+		printTable(s.out, header, rows)
 	}
 
 	say(s.out, "")
