@@ -49,12 +49,14 @@ var errUnreachable = errors.New("Docker is not answering on this machine")
 // errDenied means the socket is there but the daemon may not use it.
 var errDenied = errors.New("Tender may not use Docker on this machine")
 
-// classify turns a failure to reach the socket into errNoDocker or errDenied, keeping the cause.
+// classify turns a failure to reach the socket into errNoDocker, errUnreachable or errDenied,
+// keeping the cause. A timeout isn't classified here: only Ping judges that Docker doesn't answer,
+// so a slow request isn't taken for an outage.
 func classify(err error) error {
 	switch {
 	case errors.Is(err, syscall.ENOENT):
 		return fmt.Errorf("%w: %w", errNoDocker, err)
-	case errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, context.DeadlineExceeded), isTimeout(err):
+	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Errorf("%w: %w", errUnreachable, err)
 	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
 		return fmt.Errorf("%w: %w", errDenied, err)
@@ -99,6 +101,28 @@ func (d *Docker) do(ctx context.Context, method, path string, ok ...int) (io.Rea
 		body.Message = http.StatusText(resp.StatusCode)
 	}
 	return nil, &apiError{status: resp.StatusCode, message: "Docker answered " + strconv.Itoa(resp.StatusCode) + ": " + body.Message}
+}
+
+// pingTimeout is how long Docker has to answer GET /_ping before it counts as not answering.
+var pingTimeout = 5 * time.Second
+
+// Ping asks whether Docker answers, with its own short timeout. Any HTTP answer counts. It returns
+// errNoDocker without a socket, errDenied when the daemon may not use it, and errUnreachable when
+// it refuses connections or doesn't answer within pingTimeout; ctx ending first is none of them.
+func (d *Docker) Ping(ctx context.Context) error {
+	pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+	body, err := d.do(pctx, http.MethodGet, "/_ping")
+	var api *apiError
+	switch {
+	case err == nil:
+		return body.Close()
+	case errors.As(err, &api):
+		return nil
+	case ctx.Err() == nil && (errors.Is(err, context.DeadlineExceeded) || isTimeout(err)):
+		return fmt.Errorf("%w: %w", errUnreachable, err)
+	}
+	return err
 }
 
 func (d *Docker) getJSON(ctx context.Context, path string, v any) error {

@@ -339,6 +339,60 @@ func TestDaemonReportsAndActionsTakeTurns(t *testing.T) {
 	}
 }
 
+// Once this daemon has seen Docker, losing its socket, or the right to use it, is an outage the
+// hub hears about; a machine that never had Docker stays silent.
+func TestDaemonLosesDocker(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		lose func(f *fakeDocker) error
+	}{
+		{"socket gone", func(f *fakeDocker) error { return os.Remove(f.socket) }},
+		{"permission denied", func(f *fakeDocker) error { return chmod0(f.socket) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newTestHub(t)
+			f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", State: "running"})
+			d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			ctx := context.Background()
+			d.reportNow(ctx)
+			if err := c.lose(f); err != nil {
+				t.Skip(err)
+			}
+			d.Docker.http.CloseIdleConnections() // a kept connection would still work; the next one doesn't
+			d.reportNow(ctx)
+			ms, err := NewStore(h.db).Machines(ctx, 1)
+			if err != nil || ms[0].Docker == nil || *ms[0].Docker != DockerUnreachable || ms[0].Data[0].State != StateUnknown {
+				t.Errorf("after losing Docker: %+v, %v", ms, err)
+			}
+		})
+	}
+}
+
+// A slow list is logged, and the hub keeps its list: Docker answered its ping, so it isn't down.
+func TestDaemonSlowList(t *testing.T) {
+	h := newTestHub(t)
+	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", State: "running"})
+	var logs syncBuffer
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(&logs, nil)))
+	ctx := context.Background()
+	d.reportNow(ctx)
+	defer func(was time.Duration) { listTimeout = was }(listTimeout)
+	listTimeout = 100 * time.Millisecond
+	f.setHold(func(r *http.Request) {
+		if r.URL.Path == "/containers/json" {
+			time.Sleep(300 * time.Millisecond)
+		}
+	})
+	d.reportNow(ctx)
+	ms, err := NewStore(h.db).Machines(ctx, 1)
+	if err != nil || *ms[0].Docker != DockerRunning || ms[0].Data[0].State != StateRunning {
+		t.Errorf("after a slow list: %+v, %v", ms, err)
+	}
+	if !strings.Contains(logs.String(), `msg="could not list the Docker containers"`) {
+		t.Errorf("log:\n%s", logs.String())
+	}
+}
+
 func TestDaemonWithoutDocker(t *testing.T) {
 	h := newTestHub(t)
 	var logs syncBuffer

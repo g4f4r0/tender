@@ -30,6 +30,9 @@ const (
 	maxEncoded = 900 << 10
 )
 
+// listTimeout bounds listing and inspecting every container for one report.
+var listTimeout = 30 * time.Second
+
 // Daemon reports this machine's Docker containers to the hub and runs the actions the hub
 // queues for them. Set the exported fields after NewDaemon. Run drives it; nothing else does.
 type Daemon struct {
@@ -46,6 +49,7 @@ type Daemon struct {
 	report  chan struct{} // asks for a report now, after an action changed a container
 	found   chan struct{} // Docker became reachable, so the action loop can start polling
 	reached atomic.Bool   // the last report reached Docker
+	seen    bool          // Docker answered since the daemon started, so losing it is an outage
 	problem string        // the last Docker problem logged, so it is logged once
 	hubErr  string        // the last hub error logged, so it is logged once
 	pollErr string
@@ -69,7 +73,8 @@ func (d *Daemon) actionsPath(rest string) string {
 }
 
 // Run reports the containers now and every minute, and runs queued actions, until ctx ends. A
-// machine without Docker reports nothing and polls for nothing; it checks for Docker each minute.
+// machine that never had Docker reports nothing and polls for nothing; it checks for Docker each
+// minute.
 func (d *Daemon) Run(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
@@ -91,37 +96,53 @@ func (d *Daemon) Run(ctx context.Context) {
 	}
 }
 
-// reportNow sends the hub the full container list. When Docker's socket is there but doesn't
-// answer, it tells the hub Docker is unreachable. Otherwise it logs once why it can't list them
-// and sends nothing: a machine without Docker has no services.
+// reportNow sends the hub the full container list. It first pings Docker: when its socket is
+// there but doesn't answer, or this daemon has seen Docker before and can't reach it now, it tells
+// the hub Docker is unreachable. A machine that never had Docker sends nothing. A list that fails
+// after Docker answered is logged, and the hub keeps the last one.
 func (d *Daemon) reportNow(ctx context.Context) {
 	d.turn.Lock()
 	defer d.turn.Unlock()
-	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	list, err := d.Docker.Containers(lctx)
-	cancel()
-	if ctx.Err() != nil {
+	if err := d.Docker.Ping(ctx); err != nil {
+		if ctx.Err() == nil {
+			d.unreachable(ctx, err, errors.Is(err, errUnreachable) || d.seen)
+		}
 		return
 	}
-	if err != nil {
-		d.reached.Store(false)
-		d.dockerProblem(err)
-		if errors.Is(err, errUnreachable) {
-			d.send(ctx, Report{Docker: DockerUnreachable})
-		}
+	d.seen = true
+	lctx, cancel := context.WithTimeout(ctx, listTimeout)
+	list, err := d.Docker.Containers(lctx)
+	cancel()
+	switch {
+	case ctx.Err() != nil:
+		return
+	case errors.Is(err, errUnreachable), errors.Is(err, errNoDocker), errors.Is(err, errDenied): // lost meanwhile
+		d.unreachable(ctx, err, true)
+		return
+	case err != nil: // Docker answers, so it isn't down; the hub keeps the last list
+		d.dockerProblem(err, false)
 		return
 	}
 	if !d.reached.Swap(true) {
 		if d.problem != "" {
 			d.Log.Info("Docker is reachable", "containers", len(list))
 		}
-		d.problem = ""
 		select {
 		case d.found <- struct{}{}:
 		default:
 		}
 	}
+	d.problem = ""
 	d.send(ctx, Report{Docker: DockerRunning, Services: list})
+}
+
+// unreachable logs once why Docker can't be reached and, when tell, tells the hub.
+func (d *Daemon) unreachable(ctx context.Context, err error, tell bool) {
+	d.reached.Store(false)
+	d.dockerProblem(err, tell)
+	if tell {
+		d.send(ctx, Report{Docker: DockerUnreachable})
+	}
 }
 
 // send puts one report on the hub.
@@ -137,16 +158,26 @@ func (d *Daemon) send(ctx context.Context, r Report) {
 	}
 }
 
-// dockerProblem logs why Docker can't be listed, once until it changes.
-func (d *Daemon) dockerProblem(err error) {
+// dockerProblem logs why Docker can't be listed, once until it changes. told says the hub
+// heard that Docker is unreachable.
+func (d *Daemon) dockerProblem(err error, told bool) {
 	problem, log, msg := "other", d.Log.Warn, "could not list the Docker containers"
 	switch {
+	case errors.Is(err, errNoDocker) && told:
+		problem, msg = "gone", "Docker's socket is gone from this machine"
 	case errors.Is(err, errNoDocker):
 		problem, log, msg = "none", d.Log.Info, "this machine has no Docker"
 	case errors.Is(err, errUnreachable):
-		problem, msg = "unreachable", "Docker is not answering on this machine; told the hub, which alerts after two minutes"
+		problem, msg = "unreachable", "Docker is not answering on this machine"
 	case errors.Is(err, errDenied):
 		problem, msg = "denied", "Tender may not use Docker on this machine. If Docker was installed after Tender, run: sudo tender install refresh"
+	}
+	if told {
+		problem += " told"
+		if problem == "other told" {
+			msg = "Docker can't be reached on this machine"
+		}
+		msg = strings.TrimSuffix(msg, ".") + "; told the hub, which alerts after two minutes"
 	}
 	if problem == d.problem {
 		return

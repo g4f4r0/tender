@@ -121,6 +121,10 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, r.Method+" "+r.URL.RequestURI())
+	if r.Method == http.MethodGet && r.URL.Path == "/_ping" {
+		_, _ = w.Write([]byte("OK"))
+		return
+	}
 	notFound := func(ref string) {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "No such container: " + ref})
@@ -326,8 +330,7 @@ func TestNoDocker(t *testing.T) {
 	ctx := context.Background()
 
 	// No socket at all.
-	_, err = NewDocker(filepath.Join(dir, "missing.sock")).Containers(ctx)
-	if !errors.Is(err, errNoDocker) {
+	if err = NewDocker(filepath.Join(dir, "missing.sock")).Ping(ctx); !errors.Is(err, errNoDocker) {
 		t.Errorf("missing socket: %v, want errNoDocker", err)
 	}
 
@@ -339,21 +342,27 @@ func TestNoDocker(t *testing.T) {
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	_ = ln.Close()
-	if _, err = NewDocker(stale).Containers(ctx); !errors.Is(err, errUnreachable) {
+	if err = NewDocker(stale).Ping(ctx); !errors.Is(err, errUnreachable) {
 		t.Errorf("refused: %v, want errUnreachable", err)
 	}
 
-	// A socket that takes connections but never answers: Docker is stuck.
+	// A socket that takes connections but never answers its ping in time: Docker is stuck.
 	stuck := filepath.Join(dir, "stuck.sock")
 	hang, err := net.Listen("unix", stuck)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = hang.Close() }()
-	tctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
-	if _, err = NewDocker(stuck).Containers(tctx); !errors.Is(err, errUnreachable) {
+	defer func(was time.Duration) { pingTimeout = was }(pingTimeout)
+	pingTimeout = 200 * time.Millisecond
+	if err = NewDocker(stuck).Ping(ctx); !errors.Is(err, errUnreachable) {
 		t.Errorf("no answer: %v, want errUnreachable", err)
+	}
+	// The caller giving up first is not an outage.
+	tctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err = NewDocker(stuck).Ping(tctx); err == nil || errors.Is(err, errUnreachable) {
+		t.Errorf("caller's deadline: %v, want an error that isn't errUnreachable", err)
 	}
 
 	// A socket the daemon may not use.
@@ -364,8 +373,27 @@ func TestNoDocker(t *testing.T) {
 	if err := os.Chmod(f.socket, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = NewDocker(f.socket).Containers(ctx); !errors.Is(err, errDenied) {
+	if err = NewDocker(f.socket).Ping(ctx); !errors.Is(err, errDenied) {
 		t.Errorf("permission denied: %v, want errDenied", err)
+	}
+}
+
+// Docker that answers its ping but lists slowly is not an outage: the list fails as an error.
+func TestSlowListIsNotAnOutage(t *testing.T) {
+	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", State: "running"})
+	f.setHold(func(r *http.Request) {
+		if r.URL.Path == "/containers/json" {
+			time.Sleep(500 * time.Millisecond)
+		}
+	})
+	d := NewDocker(f.socket)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := d.Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if _, err := d.Containers(ctx); err == nil || errors.Is(err, errUnreachable) {
+		t.Errorf("slow list: %v, want an error that isn't errUnreachable", err)
 	}
 }
 

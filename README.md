@@ -157,7 +157,7 @@ The hub checks every machine once a minute:
 | `service_down` | The service is exited or dead in two reports in a row and should be running: it exited with an error, or its restart policy is `always` or `unless-stopped`. A Tender stop doesn't count | critical |
 | `service_restarting` | The service is restarting, or Docker restarted it again, in two reports in a row | critical |
 | `service_unhealthy` | The service's health check fails in two reports in a row | warning |
-| `docker_unreachable` | The machine's Docker refuses connections or doesn't answer, in two reports in a row | critical |
+| `docker_unreachable` | The machine's Docker refuses connections or doesn't answer its ping within 5 seconds, or its socket went away after Tender saw it, in two reports in a row | critical |
 
 A container that exits 0 with restart policy `no` or `on-failure`, such as a migration job, finished on purpose and doesn't alert. Each service has its own alerts, and you can turn them off and on with `tender services alerts`. Turning them off resolves the service's open alerts, even while Docker is unreachable. While Docker is unreachable, a machine's other service alerts neither open nor resolve, and the count of reports in a row starts again once it is back. A silent machine alerts once, as `machine_silent`, not for its Docker or its services.
 
