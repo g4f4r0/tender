@@ -2,6 +2,7 @@ package expose
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -296,5 +297,72 @@ func TestAllowedPorts(t *testing.T) {
 	}
 	if own[1] != "443/tcp" || len(own) != 2 {
 		t.Error("AllowedPorts changed its argument")
+	}
+}
+
+// routeErrors returns err's *RouteErrors as "service/container", and fails on any other error in it.
+func routeErrors(t *testing.T, err error) []string {
+	t.Helper()
+	var out []string
+	j, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("not a joined error: %v", err)
+	}
+	for _, e := range j.Unwrap() {
+		var re *RouteError
+		if !errors.As(e, &re) {
+			t.Errorf("a plain error among the route errors: %v", e)
+			continue
+		}
+		out = append(out, re.Service+"/"+re.Container)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// A bad route, or two routes with the same host, fail on their own: each gets a RouteError that
+// names it, and Caddy serves the others.
+func TestPublicSetsTheGoodRoutesBesideBadOnes(t *testing.T) {
+	bin := fakes(t)
+	dir := filepath.Join(t.TempDir(), "caddy")
+	p := &Public{Dir: dir}
+	routes := []Route{web,
+		{Service: "a", Container: "one", LocalPort: 20003, Host: "same.example.com"},
+		{Service: "b", Container: "two", LocalPort: 20004, Host: "same.example.com"},
+		{Service: "c", Container: "bad", LocalPort: 20005, Host: "not a host"},
+		{Service: "d", Container: "port", LocalPort: 70000, Host: "port.example.com"},
+	}
+	err := p.Apply(context.Background(), routes)
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"a/one", "b/two", "c/bad", "d/port"}) {
+		t.Errorf("route errors %q: %v", got, err)
+	}
+	for _, want := range []string{"same.example.com is the host of 2 public routes, and a host takes one route, so the route to one in a can't have it. Give each route its own host",
+		`"not a host" is not a full hostname in lowercase, such as app.example.com, so the route to bad in c can't have it`,
+		"local port 70000 is not a TCP port, so the route to port in d can't have it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q:\n%v", want, err)
+		}
+	}
+	caddy, _ := os.ReadFile(filepath.Join(dir, "Caddyfile"))
+	if !strings.Contains(string(caddy), "blog.example.com {") || strings.Contains(string(caddy), "same.example.com") || strings.Contains(string(caddy), "port.example.com") {
+		t.Errorf("Caddyfile:\n%s", caddy)
+	}
+	if calls := dockerCalls(t, bin); len(calls) != 2 || !strings.HasSuffix(calls[1], "up --detach caddy") {
+		t.Errorf("docker calls %q", calls)
+	}
+	if mine, others := For(err, "blog", true); mine != nil || others == nil {
+		t.Errorf("blog's share: %v; the others': %v", mine, others)
+	}
+
+	// A failure of Caddy itself is a plain error beside the route errors.
+	touch(t, filepath.Join(bin, "fail-up"))
+	_ = os.Remove(filepath.Join(bin, "running-caddy"))
+	err = p.Apply(context.Background(), routes[:2])
+	var re *RouteError
+	if err == nil || !strings.Contains(err.Error(), "start Caddy") {
+		t.Fatalf("failing up: %v", err)
+	}
+	if mine, _ := For(err, "blog", true); mine == nil || errors.As(mine, &re) {
+		t.Errorf("Caddy's failure isn't blog's: %v", mine)
 	}
 }

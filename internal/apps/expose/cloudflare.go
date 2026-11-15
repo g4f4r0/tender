@@ -300,106 +300,128 @@ type ingressRule struct {
 }
 
 // Apply makes machine's tunnel serve exactly routes, each at https://<host>, and returns the
-// tunnel with its token. It creates the tunnel on the first route, replaces its ingress with the
-// routes and a 404 for any other host, creates or updates a proxied CNAME for each host in the
-// zone that is the host's longest suffix, and deletes the records of its own, with DNSComment
-// and this tunnel as their target, whose host is no longer a route. It refuses a host that has a
-// record it didn't make. With no routes and no tunnel it changes nothing and returns no tunnel.
+// tunnel with its token. It creates the tunnel on the first route, creates or updates a proxied
+// CNAME for each host in the zone that is the host's longest suffix, replaces the tunnel's ingress
+// with the routes whose record is in place and a 404 for any other host, and deletes the records of
+// its own, with DNSComment and this tunnel as their target, whose host no route wants.
+//
+// A route that can't be set, because its host is bad or taken by another route, is in no zone of
+// the account, has a record Tender didn't make, or Cloudflare refuses its record, gets a
+// *RouteError and is left out of the ingress; every other route is set, and its record stays. The
+// error is those, joined, with the tunnel. Cloudflare failing as a whole, such as a 5xx after its
+// tries, a refused ingress or no token, is a plain error with no tunnel. With no route to set and
+// no tunnel it changes nothing and returns no tunnel; with no route set it returns no token.
 func (c *Cloudflare) Apply(ctx context.Context, machine string, routes []Route) (Tunnel, error) {
-	routes, err := hostRoutes("cloudflare", routes)
-	if err != nil {
-		return Tunnel{}, err
+	good, errs := hostRoutes("cloudflare", routes)
+	fail := func(err error) (Tunnel, error) { return Tunnel{}, errors.Join(append(errs, err)...) }
+	// Every host a route wants keeps its record of Tender's, even when its route fails this time.
+	want := map[string]bool{}
+	for _, r := range routes {
+		want[strings.ToLower(r.Host)] = true
 	}
 	zones, err := list[zone](ctx, c, "/zones", url.Values{"account.id": {c.AccountID}})
 	if err != nil {
-		return Tunnel{}, err
+		return fail(err)
 	}
-	zoneOfRoute := make([]*zone, len(routes))
-	for i, r := range routes {
-		if zoneOfRoute[i] = zoneOf(zones, r.Host); zoneOfRoute[i] == nil {
-			return Tunnel{}, fmt.Errorf("no zone of the Cloudflare account holds %s. Add its domain to the account, or pick a host in one of its zones", r.Host)
+	type placed struct {
+		Route
+		zone *zone
+	}
+	var todo []placed
+	for _, r := range good {
+		z := zoneOf(zones, r.Host)
+		if z == nil {
+			errs = append(errs, routeError(r, "no zone of the Cloudflare account holds "+r.Host,
+				"Add its domain to the account, or pick a host in one of its zones"))
+			continue
 		}
+		todo = append(todo, placed{r, z})
 	}
 	name := TunnelName(machine)
 	t, err := c.findTunnel(ctx, name)
 	if err != nil {
-		return Tunnel{}, err
+		return fail(err)
 	}
-	if t == nil && len(routes) == 0 {
-		return Tunnel{}, nil
+	if t == nil && len(todo) == 0 {
+		return Tunnel{}, errors.Join(errs...)
 	}
 	if t == nil {
 		var made Tunnel
 		if _, err := c.call(ctx, http.MethodPost, c.account()+"/cfd_tunnel", nil,
 			map[string]string{"name": name, "config_src": "cloudflare"}, &made); err != nil {
-			return Tunnel{}, err
+			return fail(err)
 		}
 		t = &made
 	}
-	ingress := make([]ingressRule, 0, len(routes)+1)
-	for _, r := range routes {
-		ingress = append(ingress, ingressRule{Hostname: r.Host, Service: "http://127.0.0.1:" + strconv.Itoa(r.LocalPort)})
+
+	target := t.ID + ".cfargotunnel.com"
+	ingress := make([]ingressRule, 0, len(todo)+1)
+	for _, p := range todo {
+		if err := c.keepRecord(ctx, p.zone, p.Route, target); err != nil {
+			var re *RouteError
+			if !errors.As(err, &re) {
+				return fail(err)
+			}
+			errs = append(errs, err)
+			continue
+		}
+		ingress = append(ingress, ingressRule{Hostname: p.Host, Service: "http://127.0.0.1:" + strconv.Itoa(p.LocalPort)})
 	}
 	ingress = append(ingress, ingressRule{Service: "http_status:404"})
 	tunnelPath := c.account() + "/cfd_tunnel/" + url.PathEscape(t.ID)
 	if _, err := c.call(ctx, http.MethodPut, tunnelPath+"/configurations", nil,
 		map[string]any{"config": map[string]any{"ingress": ingress}}, nil); err != nil {
-		return Tunnel{}, err
+		return fail(err)
 	}
 
-	target := t.ID + ".cfargotunnel.com"
-	want := map[string]bool{}
-	for i, r := range routes {
-		want[r.Host] = true
-		if err := c.keepRecord(ctx, zoneOfRoute[i], r.Host, target); err != nil {
-			return Tunnel{}, err
-		}
-	}
 	for _, z := range zones {
 		recs, err := list[dnsRecord](ctx, c, "/zones/"+url.PathEscape(z.ID)+"/dns_records",
 			url.Values{"type": {"CNAME"}, "comment.exact": {DNSComment}})
 		if err != nil {
-			return Tunnel{}, err
+			return fail(err)
 		}
 		for _, rec := range recs {
-			if rec.ours() && rec.Type == "CNAME" && strings.EqualFold(rec.Content, target) && !want[strings.ToLower(rec.Name)] {
+			if rec.ours() && rec.Type == "CNAME" && strings.EqualFold(rec.Content, target) && !want[strings.ToLower(strings.TrimSuffix(rec.Name, "."))] {
 				if _, err := c.call(ctx, http.MethodDelete, "/zones/"+url.PathEscape(z.ID)+"/dns_records/"+url.PathEscape(rec.ID), nil, nil, nil); err != nil {
-					return Tunnel{}, err
+					return fail(err)
 				}
 			}
 		}
 	}
-	if len(routes) == 0 {
-		return Tunnel{ID: t.ID, Name: t.Name}, nil
+	if len(ingress) == 1 {
+		return Tunnel{ID: t.ID, Name: t.Name}, errors.Join(errs...)
 	}
 	var token string
 	if _, err := c.call(ctx, http.MethodGet, tunnelPath+"/token", nil, nil, &token); err != nil {
-		return Tunnel{}, err
+		return fail(err)
 	}
 	if token == "" {
-		return Tunnel{}, &CloudflareError{Retryable: true, msg: "Cloudflare gave an empty token for tunnel " + name}
+		return fail(&CloudflareError{Retryable: true, msg: "Cloudflare gave an empty token for tunnel " + name})
 	}
-	return Tunnel{ID: t.ID, Name: t.Name, Token: token}, nil
+	return Tunnel{ID: t.ID, Name: t.Name, Token: token}, errors.Join(errs...)
 }
 
-// keepRecord makes host a proxied CNAME to target in z, commented DNSComment. A record of
-// Tender's for host, even one pointing at another machine's tunnel, is updated; any other record
-// for host is left alone, and the route fails.
-func (c *Cloudflare) keepRecord(ctx context.Context, z *zone, host, target string) error {
+// keepRecord makes r's host a proxied CNAME to target in z, commented DNSComment. A record of
+// Tender's for the host, even one pointing at another machine's tunnel, is updated. Any other
+// record for the host is left alone, and the route fails with a *RouteError, as it does when
+// Cloudflare refuses the record with a 4xx; any other failure is a plain error.
+func (c *Cloudflare) keepRecord(ctx context.Context, z *zone, r Route, target string) error {
+	host := r.Host
 	path := "/zones/" + url.PathEscape(z.ID) + "/dns_records"
 	recs, err := list[dnsRecord](ctx, c, path, url.Values{"name.exact": {host}})
 	if err != nil {
-		return err
+		return refusedRoute(r, err)
 	}
 	comment := DNSComment
 	rec := dnsRecord{Type: "CNAME", Name: host, Content: target, Proxied: true, TTL: 1, Comment: &comment}
 	var mine *dnsRecord
-	for i, r := range recs {
-		if !strings.EqualFold(strings.TrimSuffix(r.Name, "."), host) {
+	for i, x := range recs {
+		if !strings.EqualFold(strings.TrimSuffix(x.Name, "."), host) {
 			continue
 		}
-		if !r.ours() || r.Type != "CNAME" || mine != nil {
-			return fmt.Errorf("%s already has a %s record in Cloudflare that Tender didn't make. Delete it in the Cloudflare dashboard, or pick another host", host, r.Type)
+		if !x.ours() || x.Type != "CNAME" || mine != nil {
+			return routeError(r, fmt.Sprintf("%s already has a %s record in Cloudflare that Tender didn't make", host, x.Type),
+				"Delete that record in the Cloudflare dashboard, or pick another host")
 		}
 		mine = &recs[i]
 	}
@@ -408,6 +430,16 @@ func (c *Cloudflare) keepRecord(ctx context.Context, z *zone, host, target strin
 		_, err = c.call(ctx, http.MethodPost, path, nil, rec, nil)
 	case !strings.EqualFold(mine.Content, target) || !mine.Proxied:
 		_, err = c.call(ctx, http.MethodPut, path+"/"+url.PathEscape(mine.ID), nil, rec, nil)
+	}
+	return refusedRoute(r, err)
+}
+
+// refusedRoute is err as r's *RouteError when Cloudflare refused r's record with a 4xx, which
+// another try won't change, and err itself otherwise.
+func refusedRoute(r Route, err error) error {
+	var ce *CloudflareError
+	if errors.As(err, &ce) && !ce.Retryable {
+		return routeError(r, strings.TrimRight(ce.Error(), ". "), "")
 	}
 	return err
 }

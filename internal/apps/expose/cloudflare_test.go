@@ -493,3 +493,90 @@ func TestCloudflareBase(t *testing.T) {
 		}
 	}
 }
+
+// One route in no zone, one whose host has a record Tender didn't make, two that share a host,
+// and one whose record Cloudflare refuses each fail on their own, with a RouteError that names it; the good route is
+// in the ingress, has its record and gets the token, and the owner's record stays as it was.
+func TestCloudflareSetsTheGoodRoutesBesideBadOnes(t *testing.T) {
+	f, c := newFakeCloudflare(t)
+	example := f.addZone("example.com")
+	f.addRecord(example, dnsRecord{Type: "A", Name: "www.example.com", Content: "192.0.2.1", TTL: 1})
+	routes := []Route{web,
+		{Service: "org", Container: "web", LocalPort: 20003, Host: "app.example.org"},
+		{Service: "www", Container: "web", LocalPort: 20004, Host: "www.example.com"},
+		{Service: "a", Container: "one", LocalPort: 20005, Host: "same.example.com"},
+		{Service: "b", Container: "two", LocalPort: 20006, Host: "same.example.com"},
+		{Service: "refused", Container: "web", LocalPort: 20007, Host: "refused.example.com"},
+	}
+	tun, err := c.Apply(t.Context(), "apps", routes[:5])
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"a/one", "b/two", "org/web", "www/web"}) {
+		t.Errorf("route errors %q: %v", got, err)
+	}
+	for _, want := range []string{"no zone of the Cloudflare account holds app.example.org, so the route to web in org can't have it. Add its domain",
+		"www.example.com already has a A record in Cloudflare that Tender didn't make, so the route to web in www can't have it. Delete that record"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q:\n%v", want, err)
+		}
+	}
+	if tun.Token != "token-of-"+tun.ID {
+		t.Errorf("the good route got no token: %+v", tun)
+	}
+	if got := f.ingress[tun.ID]; !slices.Equal(got, []ingressRule{{Hostname: "blog.example.com", Service: "http://127.0.0.1:20001"}, {Service: "http_status:404"}}) {
+		t.Errorf("ingress %+v", got)
+	}
+	names := map[string]dnsRecord{}
+	for _, r := range f.zoneRecords(example) {
+		names[r.Name] = r
+	}
+	if names["blog.example.com"].Content != tun.ID+".cfargotunnel.com" || names["www.example.com"].Type != "A" || names["www.example.com"].Content != "192.0.2.1" || len(names) != 2 {
+		t.Errorf("records %+v", names)
+	}
+
+	// A record Cloudflare refuses with a 4xx fails that route only.
+	f.fail["POST /zones/"+example+"/dns_records"] = []int{400}
+	tun, err = c.Apply(t.Context(), "apps", []Route{web, routes[5]})
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"refused/web"}) || !strings.Contains(err.Error(), "so the route to web in refused can't have it") {
+		t.Errorf("a refused record: %q %v", got, err)
+	}
+	if got := f.ingress[tun.ID]; len(got) != 2 || got[0].Hostname != "blog.example.com" || tun.Token == "" {
+		t.Errorf("ingress %+v, tunnel %+v", got, tun)
+	}
+
+	// A 5xx that lasts is Cloudflare failing as a whole: a plain error, and no tunnel.
+	f.fail["GET /zones"] = []int{503, 503, 503}
+	tun, err = c.Apply(t.Context(), "apps", []Route{web})
+	var re *RouteError
+	if err == nil || errors.As(err, &re) || tun.ID != "" {
+		t.Errorf("Cloudflare down: %v %+v", err, tun)
+	}
+}
+
+// A host whose route fails keeps its record of Tender's: the delete pass takes only the records of
+// hosts no route wants.
+func TestCloudflareKeepsTheRecordOfAFailingRoute(t *testing.T) {
+	f, c := newFakeCloudflare(t)
+	example := f.addZone("example.com")
+	tun, err := c.Apply(t.Context(), "apps", []Route{web, api2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// blog.example.com is now the host of two routes, so both fail, and its record stays.
+	clash := Route{Service: "other", Container: "web", LocalPort: 20008, Host: web.Host}
+	_, err = c.Apply(t.Context(), "apps", []Route{web, clash, api2})
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"blog/web", "other/web"}) {
+		t.Errorf("route errors %q", got)
+	}
+	var hosts []string
+	for _, r := range f.zoneRecords(example) {
+		hosts = append(hosts, r.Name)
+	}
+	slices.Sort(hosts)
+	if !slices.Equal(hosts, []string{"api.example.com", "blog.example.com"}) {
+		t.Errorf("records %q", hosts)
+	}
+	if got := f.ingress[tun.ID]; len(got) != 2 || got[0].Hostname != "api.example.com" {
+		t.Errorf("ingress %+v", got)
+	}
+}
+
+var api2 = Route{Service: "shop", Container: "api", LocalPort: 20002, Host: "api.example.com"}

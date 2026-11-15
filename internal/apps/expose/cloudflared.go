@@ -43,12 +43,19 @@ services:
       - TUNNEL_TOKEN
 `, CloudflaredImage)
 
-// Apply runs cloudflared while routes has a route, and removes it otherwise. Compose recreates the
-// container when the token changes.
+// Apply runs cloudflared while routes has a good route, and removes it otherwise. Compose recreates
+// the container when the token changes. A bad route gets a *RouteError; the hub's ingress says
+// which hosts the tunnel serves.
 func (c *Cloudflared) Apply(ctx context.Context, routes []Route) error {
-	if _, err := hostRoutes("cloudflare", routes); err != nil {
-		return err
+	good, errs := hostRoutes("cloudflare", routes)
+	if err := c.apply(ctx, good); err != nil {
+		errs = append(errs, err)
 	}
+	return errors.Join(errs...)
+}
+
+// apply runs cloudflared while routes, which hostRoutes passed, has a route.
+func (c *Cloudflared) apply(ctx context.Context, routes []Route) error {
 	svc := c.service()
 	if len(routes) == 0 {
 		if err := svc.remove(ctx); err != nil {

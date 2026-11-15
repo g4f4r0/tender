@@ -90,3 +90,24 @@ func TestCloudflaredStopsAfterTheLastRoute(t *testing.T) {
 		t.Errorf("without a token: %v %q", err, dockerCalls(t, bin))
 	}
 }
+
+// cloudflared runs while one route is good, beside bad ones, and stops when none is.
+func TestCloudflaredRunsBesideABadRoute(t *testing.T) {
+	bin := fakes(t)
+	c := &Cloudflared{Dir: filepath.Join(t.TempDir(), "cloudflared"), Token: tunnelToken}
+	bad := Route{Service: "x", Container: "y", LocalPort: 20009, Host: "Bad.Example.com"}
+	err := c.Apply(context.Background(), []Route{web, bad})
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"x/y"}) {
+		t.Errorf("route errors %q", got)
+	}
+	if calls := dockerCalls(t, bin); len(calls) != 1 || !strings.HasSuffix(calls[0], "up --detach cloudflared") {
+		t.Errorf("docker calls %q", calls)
+	}
+	reset(t, bin)
+	if err := c.Apply(context.Background(), []Route{bad}); err == nil {
+		t.Error("a bad route passed")
+	}
+	if calls := dockerCalls(t, bin); len(calls) != 1 || !strings.HasSuffix(calls[0], "rm --stop --force cloudflared") {
+		t.Errorf("docker calls %q", calls)
+	}
+}

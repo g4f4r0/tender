@@ -51,12 +51,19 @@ func (p *Public) service() service {
 	return service{docker: orDefault(p.Docker, "docker"), file: filepath.Join(p.Dir, "compose.yaml"), name: "caddy"}
 }
 
-// Apply makes Caddy serve exactly routes, each on https://<host>.
+// Apply makes Caddy serve exactly routes, each on https://<host>. A bad route gets a *RouteError
+// and is left out of the Caddyfile, and the others are served; a failure of Docker, Caddy or ufw is
+// a plain error.
 func (p *Public) Apply(ctx context.Context, routes []Route) error {
-	routes, err := hostRoutes("public", routes)
-	if err != nil {
-		return err
+	good, errs := hostRoutes("public", routes)
+	if err := p.apply(ctx, good); err != nil {
+		errs = append(errs, err)
 	}
+	return errors.Join(errs...)
+}
+
+// apply makes Caddy serve exactly routes, which hostRoutes passed.
+func (p *Public) apply(ctx context.Context, routes []Route) error {
 	svc := p.service()
 	if len(routes) == 0 {
 		if err := svc.remove(ctx); err != nil {
