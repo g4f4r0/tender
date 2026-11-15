@@ -49,9 +49,12 @@ const (
 )
 
 // The machine's name comes from the machines table, which the schema already ties this domain to.
-const selectActions = `
-SELECT a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.status, a.output_cleared, a.created_at, a.updated_at, a.output
-FROM actions a JOIN machines m ON m.id = a.machine_id`
+// selectSummaries leaves out the output, which can be 256 KiB an action, for the list.
+const (
+	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.status, a.output_cleared, a.created_at, a.updated_at`
+	selectSummaries = `SELECT ` + summaryColumns + ` FROM actions a JOIN machines m ON m.id = a.machine_id`
+	selectActions   = `SELECT ` + summaryColumns + `, a.output FROM actions a JOIN machines m ON m.id = a.machine_id`
+)
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -64,7 +67,17 @@ func scan(row scanner) (Action, error) {
 	return a, err
 }
 
-// Create queues an action for the daemon of a machine. It keeps the machine's newest 100.
+func scanSummary(row scanner) (Summary, error) {
+	var a Summary
+	var created, updated int64
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Status, &a.OutputCleared,
+		&created, &updated)
+	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
+	return a, err
+}
+
+// Create queues an action for the daemon of a machine. It keeps the machine's newest 100 finished
+// ones; an action that hasn't finished is never deleted.
 func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, error) {
 	if err := in.validate(); err != nil {
 		return Action{}, err
@@ -84,8 +97,9 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, 
 		return Action{}, err
 	}
 	if _, err := s.db.Write.ExecContext(ctx,
-		`DELETE FROM actions WHERE machine_id = ? AND id NOT IN (SELECT id FROM actions WHERE machine_id = ? ORDER BY id DESC LIMIT ?)`,
-		machineID, machineID, kept); err != nil {
+		`DELETE FROM actions WHERE machine_id = ?1 AND status IN ('completed', 'failed') AND id NOT IN (
+		   SELECT id FROM actions WHERE machine_id = ?1 AND status IN ('completed', 'failed') ORDER BY id DESC LIMIT ?2)`,
+		machineID, kept); err != nil {
 		return Action{}, err
 	}
 	return s.get(ctx, machineID, id)
@@ -96,18 +110,18 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Summary, error) {
 	if err := s.tidy(ctx, machineID, time.Now()); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Read.QueryContext(ctx, selectActions+` WHERE a.machine_id = ? ORDER BY a.id DESC`, machineID)
+	rows, err := s.db.Read.QueryContext(ctx, selectSummaries+` WHERE a.machine_id = ? ORDER BY a.id DESC`, machineID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := []Summary{}
 	for rows.Next() {
-		a, err := scan(rows)
+		a, err := scanSummary(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, a.Summary)
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

@@ -221,15 +221,15 @@ func TestStore(t *testing.T) {
 		t.Errorf("never answered = %+v", got)
 	}
 
-	// Each machine keeps its newest 100.
+	// The trim never deletes an action that is still waiting; TestTrimKeepsUnfinished trims finished ones.
 	for range 110 {
 		if _, err := s.Create(ctx, 1, Input{Type: TypeStart, Service: ptr("web")}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var n int
-	if err := d.Read.QueryRow(`SELECT count(*) FROM actions WHERE machine_id = 1`).Scan(&n); err != nil || n != 100 {
-		t.Errorf("kept %d actions, %v", n, err)
+	if err := d.Read.QueryRow(`SELECT count(*) FROM actions WHERE machine_id = 1 AND status = 'pending'`).Scan(&n); err != nil || n != 110 {
+		t.Errorf("kept %d waiting actions, %v; want all 110", n, err)
 	}
 }
 
@@ -349,5 +349,44 @@ func TestWait(t *testing.T) {
 	start = time.Now()
 	if _, err := s.Wait(ctx, 1, 10*time.Second, stop); err != nil || time.Since(start) > time.Second {
 		t.Errorf("wait while stopping: %v after %s", err, time.Since(start))
+	}
+}
+
+// The keep-100 trim deletes only finished actions: one still waiting for the daemon, or running,
+// stays however many finished ones come after it.
+func TestTrimKeepsUnfinished(t *testing.T) {
+	d := newDB(t)
+	s := NewStore(d, &fakeServices{})
+	ctx := context.Background()
+	waiting, err := s.Create(ctx, 1, Input{Type: TypeRestart, Service: ptr("web")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	for range 120 {
+		if _, err := d.Write.Exec(`INSERT INTO actions (machine_id, type, service, status, created_at, updated_at) VALUES (1, 'start', 'web', 'completed', ?, ?)`,
+			now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Create(ctx, 1, Input{Type: TypeStart, Service: ptr("web")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(ctx, 1, waiting.ID); err != nil || got.Status != StatusPending {
+		t.Errorf("the waiting action after the trim = %+v, %v", got, err)
+	}
+	var finished int
+	if err := d.Read.QueryRow(`SELECT count(*) FROM actions WHERE machine_id = 1 AND status = 'completed'`).Scan(&finished); err != nil || finished != kept {
+		t.Errorf("kept %d finished actions, %v; want %d", finished, err, kept)
+	}
+}
+
+// The list reads no output: it is the summary of each action, and the output can be 256 KiB each.
+func TestListReadsNoOutput(t *testing.T) {
+	sel := strings.SplitN(selectSummaries, "FROM", 2)[0]
+	for _, col := range strings.Split(sel, ",") {
+		if strings.TrimSpace(col) == "a.output" {
+			t.Errorf("the list selects a.output: %s", sel)
+		}
 	}
 }
