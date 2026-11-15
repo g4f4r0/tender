@@ -15,7 +15,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(git describe 
 
 ## Rules
 
-1. Code is organized by domain: `internal/machines`, `internal/backups`, `internal/notifications`. A domain never imports another domain. Shared packages (`db`, `config`, `server`, `mcp`, `client`) never import a domain. Only `cmd/tender` wires them together. `golangci-lint` enforces this.
+1. Code is organized by domain: `internal/machines`, `internal/backups`, `internal/notifications`, `internal/services`. A domain never imports another domain. Shared packages (`db`, `config`, `server`, `mcp`, `client`) never import a domain. Only `cmd/tender` wires them together. `golangci-lint` enforces this.
 2. Each domain owns its migrations in `internal/<domain>/migrations/NNN_name.sql`. Never edit an applied migration; add a new one.
 3. Schema conventions: every table has `id`, its own columns, then `created_at` and `updated_at` (integer Unix seconds, UTC). Table names carry their domain. Use `type`, never `kind`. Columns with a unit carry it (`size_bytes`, `uptime_seconds`, `*_percent`, `retention_days`). Status words are `pending`, `in_progress`, `completed`, `failed`. Alerts use `severity` (`info`, `warning`, `critical`). Secrets (bucket keys, backup passwords) are stored encrypted with `TENDER_ENCRYPTION_KEY` (see `internal/secret`), and only a machine's own daemon ever gets them back; people routes, MCP and logs never show them. Machine tokens are stored as hashes.
 4. REST lives under `/v1` as nested resources (`/v1/machines/{machine}/backups/snapshots`). JSON fields match column names. Errors are RFC 9457 problem details.

@@ -32,6 +32,11 @@ func New(base, token string) *Client {
 	}
 }
 
+// WithTimeout returns a client like c whose requests may take up to d, for a long poll.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	return &Client{base: c.base, token: c.token, http: &http.Client{Timeout: d}}
+}
+
 // Error is an RFC 9457 problem answer from the hub.
 type Error struct {
 	Status int

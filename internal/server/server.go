@@ -33,14 +33,23 @@ type Server struct {
 	log      *slog.Logger
 	machines Machines
 	keys     sync.Mutex // serializes requests that carry an Idempotency-Key
+	stopping chan struct{}
+	stopOnce sync.Once
 }
 
 // New returns a server with GET /v1/health registered. Machines resolves tokens and names.
 func New(d *db.DB, log *slog.Logger, machines Machines) *Server {
-	s := &Server{mux: http.NewServeMux(), db: d, log: log, machines: machines}
+	s := &Server{mux: http.NewServeMux(), db: d, log: log, machines: machines, stopping: make(chan struct{})}
 	s.mux.HandleFunc("GET /v1/health", s.health)
 	return s
 }
+
+// Stopping is closed once the hub starts to shut down, so a route that waits for something,
+// such as a daemon's long poll, can answer at once instead of holding the shutdown up.
+func (s *Server) Stopping() <-chan struct{} { return s.stopping }
+
+// StopWaiting closes Stopping. The hub calls it when it shuts down.
+func (s *Server) StopWaiting() { s.stopOnce.Do(func() { close(s.stopping) }) }
 
 // Handle registers a route, such as "GET /v1/machines/{machine}".
 func (s *Server) Handle(pattern string, h http.Handler) { s.mux.Handle(pattern, h) }
