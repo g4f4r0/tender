@@ -175,10 +175,10 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	rest("GET", "/v1/backups/destinations", nil)                                                                              // after the patch
 	rest("GET", "/v1/machines/g4f4r0-code/backups/settings", nil)
 	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": newSlackURL}})
-	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": "***"}})          // 422
+	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": "***"}}) // 422
 	rest("PATCH", "/v1/notifications/channels/hook", map[string]any{"config": map[string]any{"secret": hookSecret}})
 	rest("PATCH", "/v1/notifications/channels/hook", map[string]any{"config": map[string]any{"secret": "short"}, "nope": 1}) // 400
-	rest("POST", "/v1/notifications/test", map[string]any{"channel": "chat"})                                            // fails, port 1
+	rest("POST", "/v1/notifications/test", map[string]any{"channel": "chat"})                                                // fails, port 1
 	rest("POST", "/v1/notifications/test", map[string]any{"channel": "hook"})
 	rest("GET", "/v1/notifications/channels", nil)
 

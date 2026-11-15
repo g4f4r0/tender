@@ -23,7 +23,9 @@ type Store struct {
 
 // NewStore returns a store on d. key is TENDER_ENCRYPTION_KEY, decoded: it seals the secrets in
 // channel configs. Without it, channels without secrets still work.
-func NewStore(d *db.DB, key []byte) *Store { return &Store{db: d, key: key, adapters: adapters(nil, Hub{})} }
+func NewStore(d *db.DB, key []byte) *Store {
+	return &Store{db: d, key: key, adapters: adapters(nil, Hub{})}
+}
 
 // sending returns a copy of the store whose channels send email through sender, nil when email
 // is off, and name hub in what they send.
