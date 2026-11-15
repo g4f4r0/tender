@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -11,8 +12,11 @@ import (
 
 const keyLifetime = 24 * time.Hour
 
-// once runs h unless this machine already used the key: then it replays the stored status and
-// body. A key repeated on another method or path is a 422. The first response is stored unless
+// replayed are the headers a replay repeats.
+var replayed = []string{"Content-Type", "Location"}
+
+// once runs h unless this machine already used the key: then it replays the stored status,
+// headers and body. A key repeated on another method or path is a 422. The first response is stored unless
 // it is a 5xx. The lock makes two identical requests at once run h only once.
 func (s *Server) once(w http.ResponseWriter, r *http.Request, machineID int64, key string, h HandlerFunc) {
 	s.keys.Lock()
@@ -21,20 +25,29 @@ func (s *Server) once(w http.ResponseWriter, r *http.Request, machineID int64, k
 	var method, path string
 	var status int
 	var body []byte
+	var headers string
 	err := s.db.Read.QueryRowContext(r.Context(),
-		`SELECT method, path, status_code, response_body FROM idempotency_keys WHERE machine_id = ? AND key = ?`,
-		machineID, key).Scan(&method, &path, &status, &body)
+		`SELECT method, path, status_code, response_body, response_headers FROM idempotency_keys WHERE machine_id = ? AND key = ?`,
+		machineID, key).Scan(&method, &path, &status, &body, &headers)
 	switch {
 	case err == nil:
 		if method != r.Method || path != r.URL.Path {
 			s.fail(w, r, Invalid("Idempotency-Key was first used for %s %s.", method, path))
 			return
 		}
-		contentType := "application/json"
-		if status >= 400 {
-			contentType = "application/problem+json"
+		stored := map[string]string{}
+		_ = json.Unmarshal([]byte(headers), &stored)
+		if _, ok := stored["Content-Type"]; !ok && len(body) > 0 { // stored before the headers were
+			stored["Content-Type"] = "application/json"
+			if status >= 400 {
+				stored["Content-Type"] = "application/problem+json"
+			}
 		}
-		w.Header().Set("Content-Type", contentType)
+		for _, k := range replayed {
+			if v, ok := stored[k]; ok {
+				w.Header().Set(k, v)
+			}
+		}
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 		return
@@ -50,10 +63,17 @@ func (s *Server) once(w http.ResponseWriter, r *http.Request, machineID int64, k
 	}
 	if rec.status < 500 {
 		now := time.Now().Unix()
+		stored := map[string]string{}
+		for _, k := range replayed {
+			if v := rec.header.Get(k); v != "" {
+				stored[k] = v
+			}
+		}
+		headers, _ := json.Marshal(stored)
 		_, err := s.db.Write.ExecContext(r.Context(),
-			`INSERT INTO idempotency_keys (machine_id, key, method, path, status_code, response_body, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			machineID, key, r.Method, r.URL.Path, rec.status, rec.body.Bytes(), now, now)
+			`INSERT INTO idempotency_keys (machine_id, key, method, path, status_code, response_body, response_headers, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			machineID, key, r.Method, r.URL.Path, rec.status, append([]byte{}, rec.body.Bytes()...), string(headers), now, now)
 		if err != nil {
 			s.log.Error("store idempotency key", "error", err)
 		}

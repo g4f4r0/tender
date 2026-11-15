@@ -118,7 +118,7 @@ func TestRoutes(t *testing.T) {
 		{"GET", "/v1/services", "", nil, 200, `{"data":[]}`},
 		{"PUT", "/v1/machines/a/services", "", report, 401, "Bearer"},
 		{"PUT", "/v1/machines/a/services", "token-b", report, 403, "another machine"},
-		{"PUT", "/v1/machines/a/services", "token-a", []ServiceInput{}, 422, "must be services.Report"},
+		{"PUT", "/v1/machines/a/services", "token-a", []ServiceInput{}, 422, "The request body must be a JSON object."},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "sleeping"}, 422, "docker must be running or unreachable."},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running"}, 422, "services is required when docker is running"},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "unreachable", "services": []any{}}, 422, "Leave services out"},
