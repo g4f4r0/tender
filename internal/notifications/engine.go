@@ -13,8 +13,8 @@ type Sender interface {
 
 // Engine runs the rules and delivers their notifications.
 //
-// A notification is emailed once when it opens and once when it resolves, and again when its
-// severity goes up. The status column is the only delivery state:
+// A notification is emailed once when it opens and once when it resolves, and once more the first
+// time its severity goes up. The status column is the only delivery state:
 //  1. pending: the next email (opened or escalated) isn't sent yet.
 //  2. sent: the last email went out.
 //  3. resolved: the condition cleared, and the resolved email went out if one was owed.
@@ -144,6 +144,9 @@ func (e *Engine) sendPending(ctx context.Context, now time.Time, n Notification,
 	}
 	if !e.send(ctx, now, n, kind, to) {
 		return nil
+	}
+	if kind == kindEscalated {
+		return e.store.escalated(ctx, n.ID, now)
 	}
 	return e.store.setStatus(ctx, n.ID, StatusSent, now)
 }

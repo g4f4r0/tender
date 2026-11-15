@@ -231,9 +231,15 @@ func TestEscalationAndDrop(t *testing.T) {
 	r.tick(25*time.Hour, staleAfter(25*time.Hour, 30))
 	r.want([]string{"backup_stale warning sent"}, "a: no recent backup", "a: no recent backup, now critical")
 
+	// It rises again, and falls and rises once more: one escalation email per alert, so none.
+	r.tick(25*time.Hour+time.Minute, staleAfter(25*time.Hour+time.Minute, 50))
+	r.tick(25*time.Hour+2*time.Minute, staleAfter(25*time.Hour+2*time.Minute, 30))
+	r.tick(25*time.Hour+3*time.Minute, staleAfter(25*time.Hour+3*time.Minute, 50))
+	r.want([]string{"backup_stale critical sent"}, "a: no recent backup", "a: no recent backup, now critical")
+
 	// Resolves.
 	r.tick(26*time.Hour, staleAfter(26*time.Hour, 1))
-	r.want([]string{"backup_stale warning resolved"}, "a: no recent backup", "a: no recent backup, now critical", "a: no recent backup, resolved")
+	r.want([]string{"backup_stale critical resolved"}, "a: no recent backup", "a: no recent backup, now critical", "a: no recent backup, resolved")
 }
 
 func TestEscalationBeforeEmailStaysOpened(t *testing.T) {

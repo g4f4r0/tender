@@ -128,8 +128,9 @@ func (s *Store) insert(ctx context.Context, machineID int64, f finding, now time
 }
 
 // changeSeverity stores a new severity and content for an open notification. A rise sets a sent
-// notification back to pending, which owes an "escalated" email. A drop owes nothing: it also
-// settles a pending escalation, since the email that went out was at the lower severity.
+// notification back to pending, which owes an "escalated" email, unless its one escalated email
+// already went out. A drop owes nothing: it also settles a pending escalation, since the email
+// that went out was at the lower severity.
 func (s *Store) changeSeverity(ctx context.Context, n Notification, f finding, now time.Time) error {
 	status, updated := n.Status, now
 	switch {
@@ -140,8 +141,16 @@ func (s *Store) changeSeverity(ctx context.Context, n Notification, f finding, n
 	case n.Status == StatusPending:
 		status = StatusSent
 	}
-	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET severity = ?, status = ?, content = ?, updated_at = ? WHERE id = ?`,
-		f.severity, status, f.content, updated.Unix(), n.ID)
+	_, err := s.db.Write.ExecContext(ctx,
+		`UPDATE notifications SET severity = ?, status = CASE WHEN ? = 'pending' AND status = 'sent' AND escalated = 1 THEN status ELSE ? END,
+		 content = ?, updated_at = ? WHERE id = ?`,
+		f.severity, status, status, f.content, updated.Unix(), n.ID)
+	return err
+}
+
+// escalated marks that a notification's escalated email went out.
+func (s *Store) escalated(ctx context.Context, id int64, now time.Time) error {
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET status = 'sent', escalated = 1, updated_at = ? WHERE id = ?`, now.Unix(), id)
 	return err
 }
 
