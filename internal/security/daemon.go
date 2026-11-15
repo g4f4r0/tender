@@ -97,16 +97,18 @@ func (d *Daemon) send(ctx context.Context) {
 const maxUpgradeOutput = 256 << 10
 
 // Upgrade upgrades the machine's packages in the transient unit tenderupgrade, outside the daemon's
-// sandbox: the security updates with unattended-upgrade, or every pending update with apt-get upgrade,
-// keeping the current config files. It returns what the upgrade printed, its end when it is long.
+// sandbox: after apt-get update, the security updates with unattended-upgrade, or every pending update
+// with apt-get upgrade --with-new-pkgs, keeping the current config files. It returns what the upgrade printed, its end when it is long.
 func Upgrade(ctx context.Context, packages string) (string, error) {
 	args := []string{"--wait", "--collect", "--quiet", "--pipe", "--unit", "tenderupgrade",
 		"--setenv", "DEBIAN_FRONTEND=noninteractive", "--setenv", "LC_ALL=C"}
+	// Both read the package lists fresh first. upgrade --with-new-pkgs installs new packages, such as
+	// a new kernel, but never removes one.
 	switch packages {
 	case "security":
-		args = append(args, "unattended-upgrade", "-v")
+		args = append(args, "/bin/sh", "-c", "apt-get update -q && exec unattended-upgrade -v")
 	case "all":
-		args = append(args, "apt-get", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", "upgrade")
+		args = append(args, "/bin/sh", "-c", "apt-get update -q && exec apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade --with-new-pkgs")
 	default:
 		return "", fmt.Errorf("packages must be security or all, not %q", packages)
 	}

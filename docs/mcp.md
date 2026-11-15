@@ -1972,7 +1972,7 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
 
 ### `upgrade_machine`
 
-Upgrades a Debian or Ubuntu machine's system packages through its daemon, in the `tenderupgrade` unit: the security updates with `unattended-upgrade`, or every package with `apt-get upgrade`, keeping the config files that were changed.
+Upgrades a Debian or Ubuntu machine's system packages through its daemon, in the `tenderupgrade` unit: after `apt-get update`, the security updates with `unattended-upgrade`, or every package with `apt-get upgrade --with-new-pkgs`, keeping the config files that were changed.
 
 > [!WARNING]
 > A service may restart when its package upgrades. Tender never reboots the machine; `get_security` says when it needs one.

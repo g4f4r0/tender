@@ -215,6 +215,18 @@ func TestUnattendedOff(t *testing.T) {
 	}
 }
 
+// The check counts what the upgrade installs: apt-get upgrade --with-new-pkgs, which takes new
+// packages such as a kernel but never removes one.
+func TestUpdatesCountLikeTheUpgrade(t *testing.T) {
+	args := filepath.Join(t.TempDir(), "args")
+	fakes(t, map[string]string{"apt-get": `echo "$@" >` + args, "apt-config": `echo "UU='1'"`})
+	updates(context.Background())
+	b, _ := os.ReadFile(args)
+	if got := strings.TrimSpace(string(b)); !strings.HasSuffix(got, " upgrade --with-new-pkgs") || !strings.HasPrefix(got, "-s ") {
+		t.Errorf("apt-get %s", got)
+	}
+}
+
 func TestSSHWeak(t *testing.T) {
 	fakes(t, map[string]string{"sshd": `printf 'passwordauthentication yes\npermitrootlogin yes\n'`})
 	s := (&Collector{Root: t.TempDir()}).sshd(context.Background())
@@ -233,9 +245,10 @@ func TestUpgradeRunsInATransientUnit(t *testing.T) {
 	}
 	t.Setenv("TENDER_TEST_SYSTEMD_RUN", stand)
 	for packages, want := range map[string]string{
-		"security": "--wait --collect --quiet --pipe --unit tenderupgrade --setenv DEBIAN_FRONTEND=noninteractive --setenv LC_ALL=C unattended-upgrade -v",
-		"all": "--wait --collect --quiet --pipe --unit tenderupgrade --setenv DEBIAN_FRONTEND=noninteractive --setenv LC_ALL=C apt-get -y " +
-			"-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade",
+		"security": "--wait --collect --quiet --pipe --unit tenderupgrade --setenv DEBIAN_FRONTEND=noninteractive --setenv LC_ALL=C " +
+			"/bin/sh -c apt-get update -q && exec unattended-upgrade -v",
+		"all": "--wait --collect --quiet --pipe --unit tenderupgrade --setenv DEBIAN_FRONTEND=noninteractive --setenv LC_ALL=C " +
+			"/bin/sh -c apt-get update -q && exec apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade --with-new-pkgs",
 	} {
 		out, err := Upgrade(context.Background(), packages)
 		if err != nil || !strings.Contains(out, "All upgrades installed") {

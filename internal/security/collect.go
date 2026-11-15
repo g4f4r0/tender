@@ -357,10 +357,12 @@ func (c *Collector) sshd(ctx context.Context) SSH {
 	return s
 }
 
-// The apt-get options of a simulation that changes nothing: no lock, no package cache on disk.
-var simulate = []string{"-s", "-o", "Debug::NoLocking=1", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "dist-upgrade"}
+// The apt-get options of a simulation that changes nothing: no lock, no package cache on disk. It
+// simulates what tender machines upgrade --all-packages runs, apt-get upgrade --with-new-pkgs, so it
+// counts what that would install. It reads the package lists as apt's daily update left them.
+var simulate = []string{"-s", "-o", "Debug::NoLocking=1", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "upgrade", "--with-new-pkgs"}
 
-// updates counts the pending updates and the security ones, from a simulated dist-upgrade, and
+// updates counts the pending updates and the security ones, from a simulated upgrade, and
 // says whether unattended-upgrades is installed and turned on.
 func updates(ctx context.Context) Updates {
 	out, err := run(ctx, "apt-get", simulate...)

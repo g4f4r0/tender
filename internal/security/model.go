@@ -51,7 +51,7 @@ type SSH struct {
 	PermitRootLogin        *string `json:"permit_root_login"`       // yes, no, prohibit-password, forced-commands-only
 }
 
-// Updates is what the updates check found, from a simulated apt-get dist-upgrade.
+// Updates is what the updates check found, from a simulated apt-get upgrade --with-new-pkgs.
 type Updates struct {
 	Check              string  `json:"check"`
 	Error              *string `json:"error"`

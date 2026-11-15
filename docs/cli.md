@@ -316,7 +316,7 @@ apps: updates inherit, allowed ports 41641/udp, security alerts on.
 
 ### `tender machines upgrade`
 
-Upgrades a Debian or Ubuntu machine's system packages through its daemon: the security updates, with `unattended-upgrade`, or every package with `--all-packages`, with `apt-get upgrade`, keeping the config files you changed. It runs in the `tenderupgrade` unit, waits up to 45 minutes and prints the end of the upgrade's output. Tender never reboots the machine.
+Upgrades a Debian or Ubuntu machine's system packages through its daemon: after `apt-get update`, the security updates, with `unattended-upgrade`, or every package with `--all-packages`, with `apt-get upgrade --with-new-pkgs`, which installs new packages such as a kernel but never removes one, keeping the config files you changed. It runs in the `tenderupgrade` unit, waits up to 45 minutes and prints the end of the upgrade's output. Tender never reboots the machine.
 
 #### Usage
 
