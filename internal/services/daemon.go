@@ -19,7 +19,7 @@ const reportEvery = time.Minute
 var listTimeout = 30 * time.Second
 
 // The usage of a report: statsAtOnce reads at a time, each within statsTimeout, all within
-// statsBudget. A read that fails or runs out of time leaves that container's usage null.
+// statsBudget. A read that fails or runs out of time marks that container's stats unavailable.
 var (
 	statsAtOnce  = 4
 	statsTimeout = 5 * time.Second
@@ -167,8 +167,11 @@ func (d *Daemon) usage(ctx context.Context, list []ServiceInput) {
 		st := now[i]
 		if st == nil {
 			list[i].MemoryLimitBytes = nil // no usage without a reading
-			if prev, ok := d.samples[sampleKey(list[i])]; ok && list[i].State == StateRunning {
-				next[sampleKey(list[i])] = prev // the next reading measures CPU from the last good one
+			if list[i].State == StateRunning {
+				list[i].StatsUnavailable = true // unknown this time, so the hub keeps the last numbers
+				if prev, ok := d.samples[sampleKey(list[i])]; ok {
+					next[sampleKey(list[i])] = prev // the next reading measures CPU from the last good one
+				}
 			}
 			continue
 		}

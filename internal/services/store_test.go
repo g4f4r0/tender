@@ -301,3 +301,46 @@ func TestUnreachable(t *testing.T) {
 		t.Errorf("back: %+v", ms[0])
 	}
 }
+
+// A running container whose stats couldn't be read keeps its last memory numbers and its count of
+// reports above the limit, so a memory alert neither resolves nor restarts its count.
+func TestStatsUnavailable(t *testing.T) {
+	s := NewStore(newDB(t))
+	ctx := context.Background()
+	gib, high := int64(1<<30), int64(950<<20)
+	send := func(in ServiceInput) Service {
+		t.Helper()
+		list, err := s.Replace(ctx, 1, []ServiceInput{in})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list[0]
+	}
+	in := running("web", "c1")
+	in.MemoryBytes, in.MemoryLimitBytes, in.CPUPercent = &high, &gib, ptr(12.5)
+	send(in)
+	send(in)
+	failed := running("web", "c1")
+	failed.StatsUnavailable = true
+	if sv := send(failed); sv.MemoryHighReports != 2 || sv.MemoryBytes == nil || *sv.MemoryBytes != high ||
+		sv.MemoryLimitBytes == nil || *sv.MemoryLimitBytes != gib || sv.CPUPercent != nil {
+		t.Errorf("with stats unavailable = %+v; want the last memory, the count kept and no CPU", sv)
+	}
+	if sv := send(in); sv.MemoryHighReports != 3 {
+		t.Errorf("after stats came back = %+v; want the count going on", sv)
+	}
+	// A new container has no numbers to keep.
+	other := failed
+	other.ContainerID = "c2"
+	if sv := send(other); sv.MemoryBytes != nil || sv.MemoryHighReports != 0 {
+		t.Errorf("a new container with stats unavailable = %+v", sv)
+	}
+	for name, bad := range map[string]ServiceInput{
+		"stopped":      {Name: "x", ContainerID: "c", State: StateExited, StatsUnavailable: true},
+		"with numbers": {Name: "x", ContainerID: "c", State: StateRunning, StatsUnavailable: true, MemoryBytes: &high},
+	} {
+		if _, err := s.Replace(ctx, 1, []ServiceInput{bad}); status(err) != http.StatusUnprocessableEntity {
+			t.Errorf("%s: %v, want 422", name, err)
+		}
+	}
+}

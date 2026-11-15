@@ -90,6 +90,9 @@ type ServiceInput struct {
 	MemoryBytes      *int64   `json:"memory_bytes"`
 	MemoryLimitBytes *int64   `json:"memory_limit_bytes"`
 	CPUPercent       *float64 `json:"cpu_percent"`
+	// StatsUnavailable says the container runs but its stats couldn't be read, so its usage is
+	// unknown, not gone: the hub keeps the last memory numbers. Stopped containers leave it false.
+	StatsUnavailable bool `json:"stats_unavailable,omitempty"`
 }
 
 // Report is the body of PUT /v1/machines/{machine}/services: {"docker": "running", "services": [...]}

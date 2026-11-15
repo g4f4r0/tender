@@ -130,6 +130,8 @@ func (in ServiceInput) validate() error {
 	case in.MemoryBytes != nil && *in.MemoryBytes < 0, in.MemoryLimitBytes != nil && *in.MemoryLimitBytes <= 0,
 		in.CPUPercent != nil && (*in.CPUPercent < 0 || math.IsNaN(*in.CPUPercent) || math.IsInf(*in.CPUPercent, 0)):
 		return server.Invalid("Service %q has a negative memory_bytes or cpu_percent, or a memory_limit_bytes that isn't above 0.", in.Name)
+	case in.StatsUnavailable && (in.State != StateRunning || in.MemoryBytes != nil || in.MemoryLimitBytes != nil || in.CPUPercent != nil):
+		return server.Invalid("Service %q has stats_unavailable, which is only for a running container without usage numbers.", in.Name)
 	}
 	return nil
 }
@@ -180,6 +182,7 @@ type previous struct {
 	containerID                            string
 	restartCount                           int64
 	down, restarting, unhealth, memoryHigh int
+	memory, limit                          *int64
 }
 
 // memoryHighShare is how much of its memory limit a service may use before it counts as near it.
@@ -228,7 +231,8 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 
 	prev := map[string]previous{}
 	rows, err := tx.QueryContext(ctx,
-		`SELECT name, container_id, restart_count, down_reports, restarting_reports, unhealthy_reports, memory_high_reports
+		`SELECT name, container_id, restart_count, down_reports, restarting_reports, unhealthy_reports, memory_high_reports,
+			   memory_bytes, memory_limit_bytes
 			 FROM services WHERE machine_id = ?`, machineID)
 	if err != nil {
 		return nil, err
@@ -236,7 +240,7 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 	for rows.Next() {
 		var name string
 		var p previous
-		if err := rows.Scan(&name, &p.containerID, &p.restartCount, &p.down, &p.restarting, &p.unhealth, &p.memoryHigh); err != nil {
+		if err := rows.Scan(&name, &p.containerID, &p.restartCount, &p.down, &p.restarting, &p.unhealth, &p.memoryHigh, &p.memory, &p.limit); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		prev[name] = p
@@ -260,6 +264,12 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 		unhealthy := streak(sv.Health != nil && *sv.Health == HealthUnhealthy, p.unhealth)
 		memoryHigh := streak(sv.MemoryBytes != nil && sv.MemoryLimitBytes != nil &&
 			float64(*sv.MemoryBytes) > memoryHighShare*float64(*sv.MemoryLimitBytes), p.memoryHigh)
+		if sv.StatsUnavailable { // its usage is unknown this time, not gone: keep the last numbers and the count
+			memoryHigh, sv.MemoryBytes, sv.MemoryLimitBytes = 0, nil, nil
+			if known && p.containerID == sv.ContainerID {
+				memoryHigh, sv.MemoryBytes, sv.MemoryLimitBytes = p.memoryHigh, p.memory, p.limit
+			}
+		}
 		exitCode := sv.ExitCode
 		if sv.State != StateExited && sv.State != StateDead {
 			exitCode = nil

@@ -516,3 +516,22 @@ func TestListMachineGone(t *testing.T) {
 		t.Errorf("listMachine of a machine that is gone = %v, want a 404", err)
 	}
 }
+
+// When a running container's stats can't be read, the daemon says so, and the hub keeps its last
+// memory numbers instead of treating it as stopped.
+func TestDaemonStatsUnavailable(t *testing.T) {
+	h := newTestHub(t)
+	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", Image: "nginx", State: "running", MemLimit: 1 << 30, Memory: 300 << 20,
+		Cache: 100 << 20, CPU: 1e9, System: 1e11, CPUs: 2})
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+	d.reportNow(ctx)
+	f.mu.Lock()
+	f.byName["web"].StatsFail = true
+	f.mu.Unlock()
+	d.reportNow(ctx)
+	web, err := NewStore(h.db).Get(ctx, 1, "web")
+	if err != nil || web.MemoryBytes == nil || *web.MemoryBytes != 200<<20 || web.MemoryLimitBytes == nil || *web.MemoryLimitBytes != 1<<30 {
+		t.Errorf("after a failed stats read: %+v, %v; want the last memory numbers", web, err)
+	}
+}
