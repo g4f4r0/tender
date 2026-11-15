@@ -1,28 +1,28 @@
-{{define "opened.subject"}}{{.Machine}}: {{.Title}}{{end}}
+{{define "opened.subject"}}{{or .Machine "Tender"}}: {{.Title}}{{end}}
 {{define "opened"}}{{.Content}}
 
-This is {{.Severity}} and has been open since {{.Since}}.
+This is {{.Severity}}, as of {{.Since}}.
 
-To look closer, ask your AI client to call {{.Tool}} for {{.Machine}}.
+To look closer, ask your AI client to call {{.Tool}}{{with .Machine}} for {{.}}{{end}}.
 
 You'll get one more email when this is resolved.
 
 Sent by the Tender hub on {{.Hub}}.
 {{end}}
-{{define "escalated.subject"}}{{.Machine}}: {{.Title}}, now critical{{end}}
+{{define "escalated.subject"}}{{or .Machine "Tender"}}: {{.Title}}, now {{.Severity}}{{end}}
 {{define "escalated"}}{{.Content}}
 
-This was a warning and is now critical. It has been open since {{.Since}}.
+This got worse and is now {{.Severity}}, as of {{.Since}}.
 
-To look closer, ask your AI client to call {{.Tool}} for {{.Machine}}.
+To look closer, ask your AI client to call {{.Tool}}{{with .Machine}} for {{.}}{{end}}.
 
 Sent by the Tender hub on {{.Hub}}.
 {{end}}
-{{define "resolved.subject"}}{{.Machine}}: {{.Title}}, resolved{{end}}
-{{define "resolved"}}This is resolved as of {{.ResolvedAt}}. It was open for {{.Duration}}.
+{{define "resolved.subject"}}{{or .Machine "Tender"}}: {{.Title}}, resolved{{end}}
+{{define "resolved"}}This is resolved as of {{.Since}}.
 
 Sent by the Tender hub on {{.Hub}}.
 {{end}}
 {{define "test.subject"}}Tender test email{{end}}
-{{define "test"}}This is a test from the Tender hub on {{.Hub}}. If you can read it, alert emails reach you.
+{{define "test"}}This is a test from the Tender hub on {{.Hub}}. If you can read it, notification emails reach you.
 {{end}}

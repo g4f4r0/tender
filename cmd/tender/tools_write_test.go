@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -85,12 +84,24 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	structured(t, callTool(t, cs, "add_machine", map[string]any{"name": "a"}), &machines.MachineCreated{})
 
 	dest := func(name string, extra map[string]any) map[string]any {
-		args := map[string]any{"name": name, "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": name,
+		config := map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": name + "-bucket",
 			"access_key_id": "marker-key-id", "secret_access_key": "marker-secret-key"}
+		args := map[string]any{"name": name, "config": config}
 		for k, v := range extra {
-			args[k] = v
+			if k == "password" || k == "type" {
+				args[k] = v
+			} else {
+				config[k] = v
+			}
 		}
 		return args
+	}
+	creds := func(id int64) backups.Credentials {
+		st, err := backups.NewStore(d, testKey).DaemonSettings(context.Background(), id)
+		if err != nil || st.Credentials == nil {
+			t.Fatalf("daemon settings: %v", err)
+		}
+		return *st.Credentials
 	}
 
 	// Without a password, the hub makes one and returns it once.
@@ -103,13 +114,14 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	// With one, nothing comes back.
 	var given backups.DestinationCreated
 	structured(t, callTool(t, cs, "add_destination", dest("r2-two", map[string]any{"password": "marker-given", "path": "/hosts/"})), &given)
-	if given.Password != "" || given.Path != "hosts" {
+	if given.Password != "" || given.Config["path"] != "hosts" || given.Config["secret_access_key"] != "***" {
 		t.Errorf("add_destination with a password = %+v, want no password back and the trimmed path", given)
 	}
 	fails(t, cs, "add_destination", dest("r2", map[string]any{"bucket": "other"}), "already exists")
 	fails(t, cs, "add_destination", dest("bad", map[string]any{"endpoint": "nope"}), "endpoint must be a URL")
-	fails(t, cs, "add_destination", dest("bad", map[string]any{"type": "gcs"}), "type must be s3")
-	fails(t, cs, "add_destination", map[string]any{"name": "bad", "endpoint": "https://x.example.com", "bucket": "b"})
+	fails(t, cs, "add_destination", dest("bad", map[string]any{"type": "gcs"}), "type must be one of local, rclone, rest, s3, sftp")
+	fails(t, cs, "add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt"}}, "access_key_id is required")
+	fails(t, cs, "add_destination", map[string]any{"name": "bad", "type": "local", "config": map[string]any{"path": "relative"}}, "absolute")
 
 	// The daemon's side shows the tool stored what it was given, sealed.
 	structured(t, callTool(t, cs, "set_backup", map[string]any{"machine": "a", "destination": "r2-two", "schedule": "30 3 * * *", "retention_days": 30}), &backups.Settings{})
@@ -117,23 +129,24 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds, err := backups.NewStore(d, testKey).Credentials(context.Background(), id)
-	if err != nil || creds != (backups.Credentials{AccessKeyID: "marker-key-id", SecretAccessKey: "marker-secret-key", Password: "marker-given"}) {
-		t.Errorf("stored credentials = %+v, %v", creds, err)
+	if c := creds(id); c.AccessKeyID != "marker-key-id" || c.SecretAccessKey != "marker-secret-key" || c.Password != "marker-given" {
+		t.Errorf("stored credentials = %+v", c)
 	}
 
 	// Update: new keys and a new bucket; the password can't change.
 	var upd backups.Destination
-	structured(t, callTool(t, cs, "update_destination", map[string]any{"destination": "r2-two", "bucket": "moved", "access_key_id": "marker-new-id"}), &upd)
-	if upd.Bucket != "moved" {
+	structured(t, callTool(t, cs, "update_destination", map[string]any{"destination": "r2-two",
+		"config": map[string]any{"bucket": "moved", "access_key_id": "marker-new-id"}}), &upd)
+	if upd.Config["bucket"] != "moved" || upd.Config["access_key_id"] != "***" {
 		t.Errorf("update_destination = %+v", upd)
 	}
-	if creds, _ := backups.NewStore(d, testKey).Credentials(context.Background(), id); creds.AccessKeyID != "marker-new-id" || creds.SecretAccessKey != "marker-secret-key" || creds.Password != "marker-given" {
-		t.Errorf("credentials after the update = %+v, want the new id and the old secret and password", creds)
+	if c := creds(id); c.AccessKeyID != "marker-new-id" || c.SecretAccessKey != "marker-secret-key" || c.Password != "marker-given" {
+		t.Errorf("credentials after the update = %+v, want the new id and the old secret and password", c)
 	}
 	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "password": "marker-other"}, "can't change", "encrypted with it")
-	fails(t, cs, "update_destination", map[string]any{"destination": "nope", "bucket": "x"}, `"nope" doesn't exist`)
-	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "bucket": ""}, "can't be empty")
+	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "type": "local"}, "type can't change")
+	fails(t, cs, "update_destination", map[string]any{"destination": "nope", "config": map[string]any{"bucket": "x"}}, `"nope" doesn't exist`)
+	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "config": map[string]any{"bucket": ""}}, "bucket is required")
 
 	// set_backup answers with settings and no credentials.
 	var st backups.Settings
@@ -162,7 +175,7 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	fails(t, cs, "remove_destination", map[string]any{"destination": "r2"}, `"r2" doesn't exist`)
 }
 
-// mailbox records what send_test_email sends.
+// mailbox records what the email channels send.
 type mailbox struct {
 	to   [][]string
 	fail bool
@@ -176,55 +189,67 @@ func (m *mailbox) Send(_ context.Context, to []string, _ notifications.Message) 
 	return nil
 }
 
-func TestRecipientToolsAndTestEmail(t *testing.T) {
+func TestChannelToolsAndTest(t *testing.T) {
 	box := &mailbox{}
 	cs := connectSending(t, schema(t), box)
 
-	var list server.List[notifications.Recipient]
-	structured(t, callTool(t, cs, "list_recipients", nil), &list)
+	var list server.List[notifications.Channel]
+	structured(t, callTool(t, cs, "list_channels", nil), &list)
 	if list.Data == nil || len(list.Data) != 0 {
-		t.Errorf("no recipients = %#v, want []", list.Data)
+		t.Errorf("no channels = %#v, want []", list.Data)
 	}
-	fails(t, cs, "send_test_email", nil, "no recipients", "Add one")
+	fails(t, cs, "send_test_notification", nil, "no enabled channels", "Add one")
 
-	var one, two notifications.Recipient
-	structured(t, callTool(t, cs, "add_recipient", map[string]any{"email": "johan@example.com"}), &one)
-	structured(t, callTool(t, cs, "add_recipient", map[string]any{"email": "ops@example.com"}), &two)
-	if one.ID == 0 || one.Email != "johan@example.com" || two.ID == one.ID {
-		t.Fatalf("add_recipient = %+v, %+v", one, two)
+	var mail, hook notifications.Channel
+	structured(t, callTool(t, cs, "add_channel", map[string]any{"name": "ops", "type": "email", "config": map[string]any{"to": "ops@example.com"}}), &mail)
+	structured(t, callTool(t, cs, "add_channel", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://example.com/in"}}), &hook)
+	if mail.ID == 0 || mail.MinSeverity != "warning" || hook.Config["secret_set"] != true {
+		t.Fatalf("add_channel = %+v, %+v", mail, hook)
 	}
-	fails(t, cs, "add_recipient", map[string]any{"email": "johan@example.com"}, "already a recipient")
-	fails(t, cs, "add_recipient", map[string]any{"email": "Johan <johan@example.com>"}, "bare address")
-	fails(t, cs, "add_recipient", map[string]any{"email": "nope"}, "bare address")
-	structured(t, callTool(t, cs, "list_recipients", nil), &list)
-	if len(list.Data) != 2 || list.Data[0].Email != "johan@example.com" {
-		t.Errorf("recipients = %+v", list.Data)
+	if s, _ := hook.Config["secret"].(string); len(s) < 30 {
+		t.Errorf("the webhook's made secret wasn't shown once: %+v", hook.Config)
+	}
+	fails(t, cs, "add_channel", map[string]any{"name": "ops", "type": "email", "config": map[string]any{"to": "x@example.com"}}, "already exists")
+	fails(t, cs, "add_channel", map[string]any{"name": "x", "type": "email", "config": map[string]any{"to": "Johan <johan@example.com>"}}, "bare address")
+	fails(t, cs, "add_channel", map[string]any{"name": "x", "type": "exec", "config": map[string]any{"command": "../sh"}}, "no slash")
+
+	structured(t, callTool(t, cs, "list_channels", nil), &list)
+	if len(list.Data) != 2 || list.Data[1].Config["secret"] != "***" {
+		t.Errorf("channels = %+v", list.Data)
+	}
+	var updated notifications.Channel
+	structured(t, callTool(t, cs, "update_channel", map[string]any{"channel": "hook", "enabled": false}), &updated)
+	if updated.Enabled {
+		t.Errorf("update_channel = %+v", updated)
 	}
 
-	var sent notifications.TestResult
-	structured(t, callTool(t, cs, "send_test_email", nil), &sent)
-	if !slices.Equal(sent.SentTo, []string{"johan@example.com", "ops@example.com"}) || len(box.to) != 1 {
-		t.Errorf("send_test_email = %+v after %d sends, want both addresses in one", sent, len(box.to))
+	var res server.List[notifications.Delivery]
+	structured(t, callTool(t, cs, "send_test_notification", nil), &res)
+	if len(res.Data) != 1 || res.Data[0].Channel != "ops" || res.Data[0].Status != "delivered" || len(box.to) != 1 {
+		t.Errorf("send_test_notification = %+v after %d sends", res, len(box.to))
 	}
 	box.fail = true
-	fails(t, cs, "send_test_email", nil, "smtp down", "TENDER_SMTP_")
+	structured(t, callTool(t, cs, "send_test_notification", map[string]any{"channel": "ops"}), &res)
+	if res.Data[0].Status != "failed" || res.Data[0].Error == nil || *res.Data[0].Error != "smtp down" {
+		t.Errorf("failed test = %+v", res.Data)
+	}
 
 	var removed mcp.Removed
-	structured(t, callTool(t, cs, "remove_recipient", map[string]any{"id": one.ID}), &removed)
-	if removed.Removed == "" {
-		t.Errorf("remove_recipient = %+v", removed)
+	structured(t, callTool(t, cs, "remove_channel", map[string]any{"channel": "ops"}), &removed)
+	if removed.Removed != "channel ops" {
+		t.Errorf("remove_channel = %+v", removed)
 	}
-	fails(t, cs, "remove_recipient", map[string]any{"id": one.ID}, "doesn't exist", "List the recipients")
-	structured(t, callTool(t, cs, "list_recipients", nil), &list)
-	if len(list.Data) != 1 || list.Data[0].Email != "ops@example.com" {
-		t.Errorf("recipients after the removal = %+v", list.Data)
-	}
+	fails(t, cs, "remove_channel", map[string]any{"channel": "ops"}, "doesn't exist", "List the channels")
 }
 
-func TestTestEmailWhenEmailIsOff(t *testing.T) {
+func TestTestWhenEmailIsOff(t *testing.T) {
 	cs := connect(t, schema(t))
-	structured(t, callTool(t, cs, "add_recipient", map[string]any{"email": "johan@example.com"}), &notifications.Recipient{})
-	fails(t, cs, "send_test_email", nil, "Email is off", "TENDER_SMTP_HOST")
+	structured(t, callTool(t, cs, "add_channel", map[string]any{"name": "ops", "type": "email", "config": map[string]any{"to": "ops@example.com"}}), &notifications.Channel{})
+	var res server.List[notifications.Delivery]
+	structured(t, callTool(t, cs, "send_test_notification", nil), &res)
+	if res.Data[0].Status != "failed" || !strings.Contains(*res.Data[0].Error, "TENDER_SMTP_HOST") {
+		t.Errorf("email off: %+v", res.Data)
+	}
 }
 
 // A process with no key (tender mcp --stdio without it) still reads, and says what is missing for credentials.
@@ -241,6 +266,6 @@ func TestToolsWithoutAKey(t *testing.T) {
 	t.Cleanup(func() { _ = cs.Close(); cancel(); <-done })
 
 	structured(t, callTool(t, cs, "list_machines", nil), &server.List[machines.Overview]{})
-	fails(t, cs, "add_destination", map[string]any{"name": "r2", "endpoint": "https://x.example.com", "bucket": "b",
-		"access_key_id": "k", "secret_access_key": "s"}, "TENDER_ENCRYPTION_KEY")
+	fails(t, cs, "add_destination", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
+		"access_key_id": "k", "secret_access_key": "s"}}, "TENDER_ENCRYPTION_KEY")
 }

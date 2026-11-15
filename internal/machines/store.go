@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -132,7 +133,7 @@ func (s *Store) Lookup(ctx context.Context, name string) (int64, error) {
 }
 
 const overviewQuery = `
-SELECT m.id, m.name, m.created_at, m.updated_at,
+SELECT m.id, m.name, m.version, m.updates, m.security_allowed_ports, m.security_alerts, m.created_at, m.updated_at,
        u.id, u.cpu_load, u.memory_used_percent, u.disk_used_percent, u.uptime_seconds, u.created_at, u.updated_at
 FROM machines m
 LEFT JOIN machine_usage u ON u.id = (
@@ -145,8 +146,14 @@ func scanOverview(row scanner) (Overview, error) {
 	var created, updated int64
 	var uid, uptime, ucreated, uupdated *int64
 	var cpu, memory, disk *float64
-	err := row.Scan(&o.ID, &o.Name, &created, &updated, &uid, &cpu, &memory, &disk, &uptime, &ucreated, &uupdated)
+	var ports string
+	err := row.Scan(&o.ID, &o.Name, &o.Version, &o.Updates, &ports, &o.SecurityAlerts, &created, &updated,
+		&uid, &cpu, &memory, &disk, &uptime, &ucreated, &uupdated)
 	if err != nil {
+		return o, err
+	}
+	o.SecurityAllowedPorts = []string{}
+	if err := json.Unmarshal([]byte(ports), &o.SecurityAllowedPorts); err != nil {
 		return o, err
 	}
 	o.CreatedAt, o.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
@@ -187,6 +194,11 @@ func (s *Store) Get(ctx context.Context, name string) (Overview, error) {
 
 // AddUsage stores one reading for a machine.
 func (s *Store) AddUsage(ctx context.Context, machineID int64, in UsageInput) (Usage, error) {
+	if in.Version != "" {
+		if err := s.setVersion(ctx, machineID, in.Version); err != nil {
+			return Usage{}, err
+		}
+	}
 	u := Usage{CPULoad: in.CPULoad, MemoryUsedPercent: in.MemoryUsedPercent, DiskUsedPercent: in.DiskUsedPercent,
 		UptimeSeconds: in.UptimeSeconds, CreatedAt: time.Unix(in.CreatedAt.Unix(), 0).UTC(), UpdatedAt: time.Unix(time.Now().Unix(), 0).UTC()}
 	err := s.db.Write.QueryRowContext(ctx,
@@ -241,6 +253,8 @@ func (in UsageInput) validate() error {
 		return server.Invalid("disk_used_percent must be from 0 to 100.")
 	case in.UptimeSeconds < 0:
 		return server.Invalid("uptime_seconds can't be negative.")
+	case in.Version != "" && (len(in.Version) > 64 || !versionPattern.MatchString(in.Version)):
+		return server.Invalid("version must be a Tender version, such as 0.3.1.")
 	}
 	return nil
 }

@@ -147,8 +147,8 @@ func (h *hub) setup() {
 
 // input is a destination with keys and a password.
 func input(name, endpoint, bucket, path string) backups.DestinationInput {
-	return backups.DestinationInput{Name: name, Type: "s3", Endpoint: endpoint, Bucket: bucket, Path: path,
-		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}
+	return backups.DestinationInput{Name: name, Type: "s3", Password: "repo-password", Config: map[string]any{
+		"endpoint": endpoint, "bucket": bucket, "path": path, "access_key_id": "key-id", "secret_access_key": "key-secret"}}
 }
 
 func snap(id string, minutes int, size int64) backups.SnapshotInput {
@@ -182,26 +182,26 @@ func TestDestinations(t *testing.T) {
 
 	created, err := h.store.AddDestination(ctx, input("r2-code", "https://acct.r2.cloudflarestorage.com", "code", "/hosts/"))
 	d := created.Destination
-	if err != nil || d.Path != "hosts" || d.Type != "s3" || d.Repository("apps") != "s3:https://acct.r2.cloudflarestorage.com/code/hosts/apps" {
+	if err != nil || d.Config["path"] != "hosts" || d.Type != "s3" || d.Location != "s3:https://acct.r2.cloudflarestorage.com/code/hosts" {
 		t.Fatalf("AddDestination = %+v, %v", created, err)
 	}
 	if created.Password != "" {
 		t.Errorf("a password the owner gave came back: %q", created.Password)
 	}
 	for name, bad := range map[string]backups.DestinationInput{
-		"same name":     input("r2-code", "https://other.example.com", "b", ""),
+		"same name":     input("r2-code", "https://other.example.com", "bkt", ""),
 		"same location": input("other", "https://acct.r2.cloudflarestorage.com", "code", "hosts"),
 	} {
 		if _, err := h.store.AddDestination(ctx, bad); !errors.As(err, &e) || e.Status != 409 {
 			t.Errorf("%s: %v, want 409", name, err)
 		}
 	}
-	noKeyID, noSecret := input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", "")
-	noKeyID.AccessKeyID, noSecret.SecretAccessKey = "", ""
+	noKeyID, noSecret, badType := input("x", "https://x.example.com", "bkt", ""), input("x", "https://x.example.com", "bkt", ""), input("x", "https://x.example.com", "bkt", "")
+	noKeyID.Config["access_key_id"], noSecret.Config["secret_access_key"], badType.Type = "", "", "gcs"
 	for name, bad := range map[string]backups.DestinationInput{
-		"bad name":      input("R2", "https://x.example.com", "b", ""),
-		"bad type":      {Name: "x", Type: "gcs", Endpoint: "https://x.example.com", Bucket: "b", AccessKeyID: "a", SecretAccessKey: "b"},
-		"bad endpoint":  input("x", "x.example.com", "b", ""),
+		"bad name":      input("R2", "https://x.example.com", "bkt", ""),
+		"bad type":      badType,
+		"bad endpoint":  input("x", "x.example.com", "bkt", ""),
 		"no bucket":     input("x", "https://x.example.com", "", ""),
 		"no key id":     noKeyID,
 		"no secret key": noSecret,
@@ -210,7 +210,7 @@ func TestDestinations(t *testing.T) {
 			t.Errorf("%s: %v, want 422", name, err)
 		}
 	}
-	if _, err := h.store.AddDestination(ctx, input("b-two", "https://x.example.com", "b", "")); err != nil {
+	if _, err := h.store.AddDestination(ctx, input("b-two", "https://x.example.com", "bkt", "")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,7 +221,7 @@ func TestDestinations(t *testing.T) {
 	}
 	var got backups.Destination
 	h.do("GET", "/v1/backups/destinations/r2-code", "", nil, &got)
-	if got.ID != d.ID || got.Bucket != "code" {
+	if got.ID != d.ID || got.Config["bucket"] != "code" || got.Config["access_key_id"] != "***" || got.Config["secret_access_key_set"] != true {
 		t.Errorf("destination by name = %+v", got)
 	}
 	h.status(404, "GET", "/v1/backups/destinations/nope", "", nil)
@@ -407,7 +407,8 @@ func TestHistoryCreate(t *testing.T) {
 	} {
 		h.status(422, "POST", "/v1/machines/a/backups/history", "tok-a", in)
 	}
-	h.status(400, "POST", "/v1/machines/a/backups/history", "tok-a", map[string]any{"type": "backup", "status": "pending", "created_at": base, "extra": 1})
+	// A field this hub doesn't know, from a newer daemon, is ignored.
+	h.status(201, "POST", "/v1/machines/a/backups/history", "tok-a", map[string]any{"type": "backup", "status": "pending", "created_at": base, "extra": 1})
 	h.status(401, "POST", "/v1/machines/a/backups/history", "", backups.HistoryInput{Type: "backup", Status: "pending", CreatedAt: base})
 	h.status(403, "POST", "/v1/machines/a/backups/history", "tok-b", backups.HistoryInput{Type: "backup", Status: "pending", CreatedAt: base})
 
@@ -418,8 +419,8 @@ func TestHistoryCreate(t *testing.T) {
 	h.do("POST", "/v1/machines/a/backups/history", "tok-a", in, &second, "Idempotency-Key", "run-1")
 	var all server.List[backups.History]
 	h.do("GET", "/v1/machines/a/backups/history?limit=100", "", nil, &all)
-	if first.ID != second.ID || len(all.Data) != 5 {
-		t.Errorf("retry made ids %d and %d and %d runs, want one id and 5 runs", first.ID, second.ID, len(all.Data))
+	if first.ID != second.ID || len(all.Data) != 6 {
+		t.Errorf("retry made ids %d and %d and %d runs, want one id and 6 runs", first.ID, second.ID, len(all.Data))
 	}
 	var one backups.History
 	h.do("GET", "/v1/machines/a/backups/history/"+strconv.FormatInt(first.ID, 10), "", nil, &one)
@@ -490,7 +491,7 @@ func TestHistoryPatch(t *testing.T) {
 	h.status(422, "PATCH", path("a", id), "tok-a", backups.HistoryPatch{Error: ptr("x")})                                 // still in_progress
 	h.status(422, "PATCH", path("a", id), "tok-a", backups.HistoryPatch{Status: ptr("completed"), SnapshotID: &snapB.ID}) // b's snapshot
 	h.status(422, "PATCH", path("a", id), "tok-a", backups.HistoryPatch{Status: ptr("completed"), SnapshotID: ptr(int64(9999))})
-	h.status(400, "PATCH", path("a", id), "tok-a", map[string]any{"state": "completed"})
+	h.status(200, "PATCH", path("a", id), "tok-a", map[string]any{"state": "completed"}) // a newer daemon's field, ignored: no change
 	h.do("GET", path("a", id), "", nil, &out)
 	if out.Status != "in_progress" || out.SnapshotID != nil {
 		t.Errorf("run after rejected patches = %+v", out)

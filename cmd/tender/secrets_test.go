@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -64,10 +65,15 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		newKeyID  = "MARKER-NEW-KEY-ID-0d44"
 		newSecret = "MARKER-NEW-SECRET-KEY-e8a1"
 		badPass   = "MARKER-REFUSED-PASSWORD-33f0"
+		// Slack webhook URLs carry their key. Port 1 refuses, so a test reaches no one.
+		slackURL    = "http://127.0.0.1:1/services/MARKER-SLACK-KEY-4c1d"
+		newSlackURL = "http://127.0.0.1:1/services/MARKER-SLACK-KEY-NEW-77ab"
+		toolSlack   = "http://127.0.0.1:1/services/MARKER-SLACK-KEY-TOOL-19fe"
+		hookSecret  = "MARKER-WEBHOOK-SECRET-REPLACED-0b8c"
 	)
-	secrets := []string{keyID, secretKey, password, newKeyID, newSecret, badPass}
+	secrets := []string{keyID, secretKey, password, newKeyID, newSecret, badPass, "MARKER-SLACK-KEY", hookSecret}
 
-	// Set up through REST: a machine, two destinations (one with a generated password), settings, a recipient.
+	// Set up through REST: a machine, two destinations (one with a generated password), settings, and channels.
 	var machine struct{ Token string }
 	status, body := restCall(t, hub.URL, "POST", "/v1/machines", "", map[string]any{"name": "g4f4r0-code"})
 	if status != 201 || json.Unmarshal([]byte(body), &machine) != nil || machine.Token == "" {
@@ -77,14 +83,14 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	if status != 201 {
 		t.Fatal("create second machine")
 	}
-	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com",
-		"bucket": "code", "access_key_id": keyID, "secret_access_key": secretKey, "password": password})
+	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com",
+		"bucket": "code", "access_key_id": keyID, "secret_access_key": secretKey}, "password": password})
 	if status != 201 {
 		t.Fatalf("create destination: %d %s", status, body)
 	}
 	var generated struct{ Password string }
-	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-apps", "endpoint": "https://acct.r2.cloudflarestorage.com",
-		"bucket": "apps", "access_key_id": keyID, "secret_access_key": secretKey})
+	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-apps", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com",
+		"bucket": "apps", "access_key_id": keyID, "secret_access_key": secretKey}})
 	if status != 201 || json.Unmarshal([]byte(body), &generated) != nil || generated.Password == "" {
 		t.Fatalf("create destination without a password: %d %s", status, body)
 	}
@@ -92,9 +98,25 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	if status, _ = restCall(t, hub.URL, "PUT", "/v1/machines/g4f4r0-code/backups/settings", "", map[string]any{"destination": "r2-code", "schedule": "30 3 * * *", "retention_days": 30}); status != 200 {
 		t.Fatalf("set backups: %d", status)
 	}
-	if status, _ = restCall(t, hub.URL, "POST", "/v1/notifications/recipients", "", map[string]any{"email": "johan@example.com"}); status != 201 {
-		t.Fatalf("add recipient: %d", status)
+	if status, _ = restCall(t, hub.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "ops", "type": "email",
+		"config": map[string]any{"to": "johan@example.com"}}); status != 201 {
+		t.Fatalf("add email channel: %d", status)
 	}
+	if status, body = restCall(t, hub.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "chat", "type": "slack",
+		"config": map[string]any{"webhook_url": slackURL}}); status != 201 || strings.Contains(body, "MARKER") {
+		t.Fatalf("add slack channel: %d %s", status, body)
+	}
+	var hook struct{ Config map[string]any }
+	status, body = restCall(t, hub.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "hook", "type": "webhook",
+		"config": map[string]any{"url": "http://127.0.0.1:1/in"}})
+	if status != 201 || json.Unmarshal([]byte(body), &hook) != nil {
+		t.Fatalf("add webhook channel: %d %s", status, body)
+	}
+	made, _ := hook.Config["secret"].(string)
+	if len(made) < 30 {
+		t.Fatalf("the webhook's secret wasn't shown on create: %s", body)
+	}
+	secrets = append(secrets, made)
 	// Daemon traffic, so the token passes through the request log too.
 	if status, _ = restCall(t, hub.URL, "POST", "/v1/machines/g4f4r0-code/usage", machine.Token,
 		map[string]any{"cpu_load": 1, "memory_used_percent": 1, "disk_used_percent": 1, "uptime_seconds": 1, "created_at": "2026-11-14T03:30:00Z"}); status != 201 {
@@ -135,24 +157,31 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		"/v1/backups", "/v1/backups/destinations", "/v1/backups/destinations/r2-code", "/v1/backups/destinations/r2-apps",
 		"/v1/machines/g4f4r0-code/backups", "/v1/machines/g4f4r0-code/backups/settings", "/v1/machines/g4f4r0-code/backups/snapshots",
 		"/v1/machines/g4f4r0-code/backups/history", "/v1/notifications", "/v1/machines/g4f4r0-code/notifications",
-		"/v1/notifications/recipients",
+		"/v1/notifications/channels", "/v1/notifications/channels/chat", "/v1/notifications/channels/hook",
 	} {
 		rest("GET", path, nil)
 	}
 	// REST writes and refusals that carry secrets in their bodies.
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
-		"access_key_id": keyID, "secret_access_key": secretKey, "password": password}) // 409
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "endpoint": "nope", "bucket": "b",
-		"access_key_id": keyID, "secret_access_key": secretKey, "password": password}) // 422
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "endpoint": "https://x.example.com", "bucket": "b",
-		"access_key_id": keyID, "secret_access_key": secretKey, "password": password, "region": "auto"}) // 400
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
+		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}) // 409
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "bkt",
+		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}) // 422
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt",
+		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password, "region": "auto"}) // 400
 	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"password": badPass}) // 422
-	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret})
-	rest("PATCH", "/v1/backups/destinations/nope", map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}) // 404
-	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"endpoint": "nope", "access_key_id": newKeyID})          // 422
-	rest("DELETE", "/v1/backups/destinations/r2-code", nil)                                                                   // 409, in use
-	rest("GET", "/v1/backups/destinations", nil)                                                                              // after the patch
+	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}})
+	rest("PATCH", "/v1/backups/destinations/nope", map[string]any{"config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}) // 404
+	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"config": map[string]any{"endpoint": "nope", "access_key_id": newKeyID}})          // 422
+	rest("DELETE", "/v1/backups/destinations/r2-code", nil)                                                                                             // 409, in use
+	rest("GET", "/v1/backups/destinations", nil)                                                                                                        // after the patch
 	rest("GET", "/v1/machines/g4f4r0-code/backups/settings", nil)
+	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": newSlackURL}})
+	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": "***"}}) // 422
+	rest("PATCH", "/v1/notifications/channels/hook", map[string]any{"config": map[string]any{"secret": hookSecret}})
+	rest("PATCH", "/v1/notifications/channels/hook", map[string]any{"config": map[string]any{"secret": "short"}, "nope": 1}) // 400
+	rest("POST", "/v1/notifications/test", map[string]any{"channel": "chat"})                                                // fails, port 1
+	rest("POST", "/v1/notifications/test", map[string]any{"channel": "hook"})
+	rest("GET", "/v1/notifications/channels", nil)
 
 	// Every MCP tool, with the same secrets where a tool takes them.
 	for _, c := range []struct {
@@ -166,29 +195,65 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		{"list_backup_snapshots", map[string]any{"machine": "g4f4r0-code"}},
 		{"list_backup_history", map[string]any{"machine": "g4f4r0-code"}},
 		{"list_notifications", nil},
-		{"list_recipients", nil},
+		{"list_channels", nil},
 		{"list_destinations", nil},
-		{"add_destination", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
-			"access_key_id": keyID, "secret_access_key": secretKey, "password": password}}, // 409
-		{"add_destination", map[string]any{"name": "tool-made", "endpoint": "https://other.r2.cloudflarestorage.com", "bucket": "tool",
-			"access_key_id": keyID, "secret_access_key": secretKey, "password": password}}, // an owner's password is not returned
-		{"add_destination", map[string]any{"name": "bad", "endpoint": "nope", "bucket": "b", "access_key_id": keyID, "secret_access_key": secretKey, "password": password}},
-		{"update_destination", map[string]any{"destination": "r2-code", "access_key_id": newKeyID, "secret_access_key": newSecret}},
+		{"add_destination", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
+			"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}}, // 409
+		{"add_destination", map[string]any{"name": "tool-made", "config": map[string]any{"endpoint": "https://other.r2.cloudflarestorage.com", "bucket": "tool",
+			"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}}, // an owner's password is not returned
+		{"add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "bkt", "access_key_id": keyID, "secret_access_key": secretKey}, "password": password}},
+		{"update_destination", map[string]any{"destination": "r2-code", "config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}},
 		{"update_destination", map[string]any{"destination": "r2-code", "password": badPass}},
-		{"update_destination", map[string]any{"destination": "nope", "access_key_id": newKeyID, "secret_access_key": newSecret}},
+		{"update_destination", map[string]any{"destination": "nope", "config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}},
 		{"remove_destination", map[string]any{"destination": "r2-code"}}, // in use
 		{"set_backup", map[string]any{"machine": "g4f4r0-apps", "destination": "r2-apps", "schedule": "0 4 * * *", "retention_days": 7}},
 		{"get_backup_status", nil},
 		{"unset_backup", map[string]any{"machine": "g4f4r0-apps"}},
-		{"add_recipient", map[string]any{"email": "ops@example.com"}},
-		{"send_test_email", nil},
-		{"remove_recipient", map[string]any{"id": 2}},
+		{"add_channel", map[string]any{"name": "tool-chat", "type": "slack", "config": map[string]any{"webhook_url": toolSlack}}},
+		{"add_channel", map[string]any{"name": "chat", "type": "slack", "config": map[string]any{"webhook_url": toolSlack}}}, // 409
+		{"update_channel", map[string]any{"channel": "tool-chat", "config": map[string]any{"webhook_url": newSlackURL}}},
+		{"update_channel", map[string]any{"channel": "hook", "config": map[string]any{"secret": hookSecret}}},
+		{"send_test_notification", map[string]any{"channel": "tool-chat"}},
+		{"send_test_notification", nil},
+		{"list_channels", nil},
+		{"remove_channel", map[string]any{"channel": "tool-chat"}},
 	} {
 		tool(c.name, c.args)
 	}
 	rest("GET", "/v1/backups/destinations", nil)
 	rest("GET", "/v1/backups/destinations/tool-made", nil)
 	rest("GET", "/v1/machines/g4f4r0-apps/backups/settings", nil)
+
+	// Log sinks: an OTLP header and a webhook secret go in, and come out only to the daemon.
+	const (
+		otlpKey     = "MARKER-OTLP-HEADER-4c1d"
+		sinkSecret  = "MARKER-WEBHOOK-SECRET-a9e0"
+		newHookSec  = "MARKER-NEW-WEBHOOK-SECRET-77b2"
+		toolHookSec = "MARKER-TOOL-WEBHOOK-SECRET-1f5c"
+	)
+	secrets = append(secrets, otlpKey, sinkSecret, newHookSec, toolHookSec)
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "otel", "type": "otlp", "config": map[string]any{"endpoint": "https://otel.example.com/v1/logs",
+		"headers": map[string]any{"Authorization": "Bearer " + otlpKey}}})
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/in", "secret": sinkSecret}})
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/in", "secret": sinkSecret}}) // 409
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "bad", "type": "webhook", "config": map[string]any{"url": "nope", "secret": sinkSecret}})                         // 422
+	rest("PATCH", "/v1/logs/sinks/hook", map[string]any{"config": map[string]any{"secret": newHookSec}})
+	rest("PATCH", "/v1/logs/sinks/hook", map[string]any{"config": map[string]any{"secret": newHookSec, "url": "nope"}}) // 422
+	rest("GET", "/v1/logs/sinks", nil)
+	rest("GET", "/v1/logs/sinks/otel", nil)
+	rest("GET", "/v1/logs/sinks/hook", nil)
+	tool("list_log_sinks", nil)
+	tool("add_log_sink", map[string]any{"name": "tool-hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/t", "secret": toolHookSec}})
+	tool("add_log_sink", map[string]any{"name": "tool-hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/t", "secret": toolHookSec}}) // 409
+	tool("update_log_sink", map[string]any{"sink": "otel", "config": map[string]any{"headers": map[string]any{"Authorization": "Bearer " + otlpKey}}})
+	tool("update_log_sink", map[string]any{"sink": "otel", "config": map[string]any{"headers": "***", "endpoint": "nope"}}) // 422
+	tool("list_log_sinks", nil)
+	status, body = restCall(t, hub.URL, "GET", "/v1/machines/g4f4r0-code/logs/sinks", machine.Token, nil)
+	for _, want := range []string{otlpKey, newHookSec, toolHookSec} {
+		if status != 200 || !strings.Contains(body, want) {
+			t.Fatalf("the daemon's sinks lack %q: %d %s", want, status, body)
+		}
+	}
 
 	checked := 0
 	for _, o := range outputs {
@@ -198,10 +263,18 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 				t.Errorf("%s shows a secret (%q...): %s", o.label, s[:12], o.text)
 			}
 		}
-		for _, field := range []string{`"password"`, `"secret_access_key"`, `"access_key_id"`, `"credentials"`, `"token"`} {
+		for _, field := range []string{`"password"`, `"credentials"`, `"token"`} {
 			// None of the outputs above is one of the few that show a secret once, so none has these fields.
 			if strings.Contains(o.text, field) {
 				t.Errorf("%s has the field %s: %s", o.label, field, o.text)
+			}
+		}
+		// A destination's secret fields show only as hidden.
+		if m := regexp.MustCompile(`"(secret_access_key|access_key_id|secret|headers)": ?"([^"]*)"`).FindAllStringSubmatch(o.text, -1); m != nil {
+			for _, f := range m {
+				if f[2] != "***" {
+					t.Errorf("%s shows %s as %q, want ***", o.label, f[1], f[2])
+				}
 			}
 		}
 	}

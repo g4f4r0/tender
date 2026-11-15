@@ -19,7 +19,9 @@ type DB struct {
 	Read  *sql.DB
 }
 
-const pragmas = "_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
+// secure_delete zeroes what a write frees, so content the hub deletes or clears, such as logs,
+// doesn't stay in free pages; Checkpoint then takes it out of the WAL.
+const pragmas = "_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)"
 
 // Open opens or creates the database at path in WAL mode.
 func Open(path string) (*DB, error) {
@@ -41,6 +43,17 @@ func Open(path string) (*DB, error) {
 	read.SetMaxOpenConns(max(4, runtime.NumCPU()))
 
 	return &DB{Write: write, Read: read}, nil
+}
+
+// Checkpoint copies the WAL into the database file and empties it, so the WAL keeps no old copy
+// of a page whose content was cleared. A reader in the middle of a query can keep it from
+// finishing; done says whether it did.
+func (d *DB) Checkpoint(ctx context.Context) (done bool, err error) {
+	var busy, logFrames, checkpointed int
+	if err := d.Write.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return false, err
+	}
+	return busy == 0, nil
 }
 
 // Ping checks that both pools answer.

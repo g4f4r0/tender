@@ -1,0 +1,102 @@
+package actions
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Action types and statuses. The code checks the types; the statuses match the CHECK constraint in the migrations.
+const (
+	TypeStart   = "start"
+	TypeStop    = "stop"
+	TypeRestart = "restart"
+	TypeLogs    = "logs"
+	TypeTest    = "test"    // tries a backup destination from the machine
+	TypeUpdate  = "update"  // install a Tender release on the machine; only an update rollout queues it
+	TypeUpgrade = "upgrade" // upgrade the machine's system packages
+
+	PackagesSecurity = "security"
+	PackagesAll      = "all"
+
+	StatusPending    = "pending"
+	StatusInProgress = "in_progress"
+	StatusCompleted  = "completed"
+	StatusFailed     = "failed"
+)
+
+// PackagesText names an upgrade's packages in a sentence: "the security packages" or "every package".
+func PackagesText(packages string) string {
+	if packages == PackagesAll {
+		return "every package"
+	}
+	return "the " + packages + " packages"
+}
+
+// The limits of a logs action.
+const (
+	DefaultLines   = 200
+	MaxLines       = 2000
+	MaxOutputBytes = 256 << 10
+	MaxSince       = 7 * 24 * time.Hour
+)
+
+// Priorities are the journal's, most severe first. A machine logs action with a priority gets
+// that priority and the more severe ones.
+var Priorities = []string{"emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"}
+
+// Summary is an action without its output, as GET /v1/machines/{machine}/actions lists them.
+type Summary struct {
+	ID            int64     `json:"id"`
+	Machine       string    `json:"machine"`     // the machine's name
+	Type          string    `json:"type"`        // start, stop, restart, logs, test, update or upgrade
+	Service       *string   `json:"service"`     // the service's name; null for the machine's journal
+	Unit          *string   `json:"unit"`        // machine logs only: the systemd unit, or null for every unit
+	Priority      *string   `json:"priority"`    // machine logs only: this priority and the more severe ones, or null for all
+	Since         *string   `json:"since"`       // logs only: how far back, such as 1h, or null for no limit
+	Lines         *int      `json:"lines"`       // logs only: at most this many of the newest lines
+	Destination   *string   `json:"destination"` // test only: the backup destination it tries
+	Version       *string   `json:"version"`     // update only: the Tender release, such as 0.3.1
+	Packages      *string   `json:"packages"`    // upgrade only: security or all
+	Status        string    `json:"status"`      // pending, in_progress, completed or failed
+	OutputCleared bool      `json:"output_cleared"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// Action is one action with its output, as GET /v1/machines/{machine}/actions/{id} returns it.
+type Action struct {
+	Summary
+	Output *string `json:"output"` // the logs, or why it failed; null when cleared or when there is none
+}
+
+// Handout is an action as the hub hands it to the machine's daemon. Target is the destination a
+// test action tries, with its secrets: only the machine's own daemon gets it, and it is never
+// stored with the action.
+type Handout struct {
+	Action
+	Target json.RawMessage `json:"target,omitempty"`
+}
+
+// Finished reports whether the action ended, well or not.
+func (a Summary) Finished() bool { return a.Status == StatusCompleted || a.Status == StatusFailed }
+
+// Input is the body of POST /v1/machines/{machine}/actions.
+type Input struct {
+	Type     string  `json:"type"`
+	Service  *string `json:"service,omitempty"`  // required for start, stop and restart; with logs, that service's logs
+	Unit     *string `json:"unit,omitempty"`     // machine logs only
+	Priority *string `json:"priority,omitempty"` // machine logs only
+	Since    *string `json:"since,omitempty"`    // logs only, such as 30m, 1h or 7d, at most 7d
+	Lines    *int    `json:"lines,omitempty"`    // logs only, 1 to 2000, default 200
+	// Destination is the backup destination a test action tries. POST
+	// /v1/backups/destinations/{destination}/test sets it; the actions collection doesn't take it.
+	Destination *string `json:"-"`
+	Packages    *string `json:"packages,omitempty"` // upgrade only: security (the default) or all
+}
+
+// Patch is the body of PATCH /v1/machines/{machine}/actions/{id}, with which the daemon reports
+// how an action ended.
+type Patch struct {
+	Status string  `json:"status"` // in_progress to claim the action, then completed or failed
+	Output *string `json:"output,omitempty"`
+}

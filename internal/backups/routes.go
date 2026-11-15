@@ -79,16 +79,20 @@ func (s *Store) addDestination(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Store) patchDestination(w http.ResponseWriter, r *http.Request) error {
-	// The password isn't in DestinationPatch; it is read here only to refuse it with a sentence.
+	// The password and the type aren't in DestinationPatch; they are read here only to refuse them with a sentence.
 	var in struct {
 		DestinationPatch
 		Password *string `json:"password"`
+		Type     *string `json:"type"`
 	}
 	if err := server.Decode(w, r, &in); err != nil {
 		return err
 	}
-	if in.Password != nil {
+	switch {
+	case in.Password != nil:
 		return errPasswordFixed
+	case in.Type != nil:
+		return errTypeFixed
 	}
 	d, err := s.PatchDestination(r.Context(), r.PathValue("destination"), in.DestinationPatch)
 	if err != nil {
@@ -110,16 +114,17 @@ func (s *Store) removeDestination(w http.ResponseWriter, r *http.Request) error 
 // of the destination; nobody else ever does.
 func (s *Store) settings(w http.ResponseWriter, r *http.Request) error {
 	id := server.MachineID(r.Context())
-	st, err := s.Settings(r.Context(), id)
-	if err != nil {
-		return err
-	}
 	if server.IsDaemon(r.Context()) {
-		c, err := s.Credentials(r.Context(), id)
+		st, err := s.DaemonSettings(r.Context(), id)
 		if err != nil {
 			return err
 		}
-		st.Credentials = &c
+		server.WriteJSON(w, http.StatusOK, st)
+		return nil
+	}
+	st, err := s.Settings(r.Context(), id)
+	if err != nil {
+		return err
 	}
 	server.WriteJSON(w, http.StatusOK, st)
 	return nil
@@ -161,7 +166,7 @@ func (s *Store) listSnapshots(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) replaceSnapshots(w http.ResponseWriter, r *http.Request) error {
 	var in []SnapshotInput
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	if in == nil {
@@ -207,7 +212,7 @@ func (s *Store) listHistory(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) createHistory(w http.ResponseWriter, r *http.Request) error {
 	var in HistoryInput
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	h, err := s.CreateHistory(r.Context(), server.MachineID(r.Context()), in)
@@ -238,7 +243,7 @@ func (s *Store) patchHistory(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var p HistoryPatch
-	if err := server.Decode(w, r, &p); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &p); err != nil {
 		return err
 	}
 	h, err := s.PatchHistory(r.Context(), server.MachineID(r.Context()), id, p)

@@ -6,6 +6,7 @@ package install
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"embed"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -48,9 +51,14 @@ type Installer struct {
 	ResticArchiveSHA256 string // of the downloaded .bz2
 	ResticBinarySHA256  string // of the decompressed restic
 
-	Version     string // the running tender version, "dev" for a local build
-	LatestURL   string // answers with the newest release as JSON, including its tag_name
-	DownloadURL string // holds the releases: <DownloadURL>/<tag>/<file>
+	Version     string              // the running tender version, "dev" for a local build
+	ReleasesURL string              // GitHub's API for the releases: <ReleasesURL>/latest and <ReleasesURL>/tags/<tag>
+	DownloadURL string              // holds the releases: <DownloadURL>/<tag>/<file>
+	ReleaseKeys []ed25519.PublicKey // a release's SHA256SUMS must be signed by one of these
+
+	BusyWait    time.Duration // how long an update waits for a running backup or action
+	HealthWait  time.Duration // how long the services have to be healthy on a new version
+	HealthEvery time.Duration // how often an update looks
 
 	Refreshing bool // refresh the installed services: restart them whatever changed, skip the next steps
 
@@ -67,10 +75,12 @@ func New(out io.Writer) (*Installer, error) {
 	if err != nil {
 		return nil, err
 	}
+	api, download := ReleaseURLs(os.Getenv)
 	return &Installer{
-		Root: "/", Run: execRunner, Out: out, Platform: runtime.GOOS + "/" + runtime.GOARCH, Binary: self,
+		Root: config.Root(), Run: execRunner, Out: out, Platform: runtime.GOOS + "/" + runtime.GOARCH, Binary: self,
 		ResticURL: resticURL, ResticArchiveSHA256: resticArchiveSHA256, ResticBinarySHA256: resticBinarySHA256,
-		Version: "dev", LatestURL: latestURL, DownloadURL: downloadURL,
+		Version: "dev", ReleasesURL: api, DownloadURL: download, ReleaseKeys: ReleaseKeys(),
+		BusyWait: defaultBusyWait, HealthWait: defaultHealthWait, HealthEvery: defaultHealthEvery,
 	}, nil
 }
 
@@ -300,7 +310,7 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 	if err := in.checkHub(ctx, o, cfg != nil, installedConfig); err != nil {
 		return err
 	}
-	unit, err := units.ReadFile("units/tenderd.service")
+	unit, err := in.daemonUnit()
 	if err != nil {
 		return err
 	}
@@ -319,6 +329,9 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 		if err := in.moveOldDaemon(ctx); err != nil {
 			return err
 		}
+	}
+	if err := in.moveToRoot(ctx); err != nil {
+		return err
 	}
 	if err := in.writeConfig(ctx, configPath, cfg, o.Hub != ""); err != nil {
 		return err
@@ -347,6 +360,64 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 		in.say("tenderd is already installed and up to date. Nothing to change.")
 	}
 	return nil
+}
+
+// daemonUnit is tenderd.service. The daemon runs as root since v0.3.0, so it needs no groups.
+func (in *Installer) daemonUnit() ([]byte, error) {
+	return units.ReadFile("units/tenderd.service")
+}
+
+// The daemon's own folders, which systemd makes for its unit.
+const daemonCacheDir = "/var/cache/tender"
+
+// moveToRoot finishes moving a daemon from before v0.3.0, which ran as the tender user, to root: its
+// state and cache folders become root's, and the tender user leaves the docker and systemd-journal
+// groups, which the daemon needed and the hub, still the tender user, never did.
+func (in *Installer) moveToRoot(ctx context.Context) error {
+	for _, dir := range []string{daemonStateDir, daemonCacheDir} {
+		fi, err := os.Stat(in.path(dir))
+		if err != nil {
+			continue
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid == 0 && st.Gid == 0 {
+			continue
+		}
+		if _, err := in.run(ctx, "chown", "-R", "root:root", in.path(dir)); err != nil {
+			return err
+		}
+		in.changed = true
+		in.say("Gave %s to root, which the daemon runs as now", in.path(dir))
+	}
+	for _, group := range []string{"docker", "systemd-journal"} {
+		if !in.inGroup(userName, group) {
+			continue
+		}
+		if _, err := in.run(ctx, "gpasswd", "--delete", userName, group); err != nil {
+			return err
+		}
+		in.changed = true
+		in.say("Took the %s user out of the %s group, which only the daemon needed", userName, group)
+	}
+	return nil
+}
+
+// inGroup reports whether /etc/group lists user as a member of group.
+func (in *Installer) inGroup(user, group string) bool {
+	b, err := os.ReadFile(in.path("/etc/group"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) == 4 && fields[0] == group {
+			for _, m := range strings.Split(fields[3], ",") {
+				if strings.TrimSpace(m) == user {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // checkHub runs CheckHub when the config or the token is new: newConfig means o's hub and machine
@@ -408,9 +479,9 @@ Next:
        tender machines add NAME
   3. Set when that machine backs up:
        tender backups set NAME --destination NAME --schedule "30 3 * * *" --retention-days 30
-  4. Choose who gets alerts, then check that the email arrives:
-       tender recipients add you@example.com
-       tender email test
+  4. Choose where alerts go, then check that they arrive:
+       tender channels add ops --type email --to you@example.com
+       tender channels test
   5. Install the daemon on that machine, with the token when it asks:
        curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh \
          | sudo sh -s -- daemon --hub ` + url + ` --machine NAME`
@@ -430,6 +501,9 @@ type HubOptions struct {
 	SMTPUsername string
 	SMTPPassword string
 	SMTPFrom     string
+	// Clear names the hub.env settings to remove, such as TENDER_SMTP_HOST: their options were
+	// passed empty. Clearing TENDER_SMTP_USERNAME clears TENDER_SMTP_PASSWORD too.
+	Clear []string
 }
 
 // Hub installs and starts the hub, then publishes it with Tailscale Serve. The hub's settings
@@ -448,6 +522,9 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 	}
 	unit, err := units.ReadFile("units/tenderhub.service")
 	if err != nil {
+		return err
+	}
+	if unit, err = hubUnit(unit, envValue(env, "TENDER_LISTEN")); err != nil {
 		return err
 	}
 	oldUnit := in.installed(oldUnitPath(oldHubUnit)) // a tender-hub unit, from v0.2.1 or earlier

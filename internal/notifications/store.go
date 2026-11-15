@@ -5,54 +5,96 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"net/http"
-	"net/mail"
 	"slices"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 	"github.com/g4f4r0/tender/internal/server"
 )
 
-// Store reads notifications and keeps the recipients.
-type Store struct{ db *db.DB }
+// Store reads notifications and keeps the channels and their deliveries.
+type Store struct {
+	db       *db.DB
+	key      []byte                      // seals the channels' secrets; nil where nothing reads or writes them
+	adapters map[string]channels.Adapter // the channel types; they send only once sending set them up
+	hub      Hub
+}
 
-// NewStore returns a store on d.
-func NewStore(d *db.DB) *Store { return &Store{db: d} }
+// NewStore returns a store on d. key is TENDER_ENCRYPTION_KEY, decoded: it seals the secrets in
+// channel configs. Without it, channels without secrets still work.
+func NewStore(d *db.DB, key []byte) *Store {
+	return &Store{db: d, key: key, adapters: adapters(nil, Hub{})}
+}
+
+// sending returns a copy of the store whose channels send email through sender, nil when email
+// is off, and name hub in what they send.
+func (s *Store) sending(sender Sender, hub Hub) *Store {
+	c := *s
+	c.adapters, c.hub = adapters(sender, hub), hub
+	return &c
+}
 
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 const selectNotifications = `
-SELECT n.id, m.name, n.type, n.severity, n.status, n.content, n.created_at, n.updated_at
+SELECT n.id, m.name, n.service, n.channel, n.event, n.severity, n.message, n.status, n.sent_at, n.created_at, n.updated_at
 FROM notifications n LEFT JOIN machines m ON m.id = n.machine_id`
+
+// latestOpen holds for a notification n that is the latest of an open problem: no newer one has
+// its base event, machine, service and channel, and it is neither a .resolved one nor a test.
+const latestOpen = `n.event NOT LIKE '%.resolved' AND n.event != '` + EventTest + `'
+	AND NOT EXISTS (SELECT 1 FROM notifications o WHERE ` + sameProblem + ` AND o.id > n.id)`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scan(row scanner) (Notification, error) {
 	var n Notification
 	var created, updated int64
-	err := row.Scan(&n.ID, &n.Machine, &n.Type, &n.Severity, &n.Status, &n.Content, &created, &updated)
+	var sent *int64
+	err := row.Scan(&n.ID, &n.Machine, &n.Service, &n.Channel, &n.Event, &n.Severity, &n.Message, &n.Status, &sent, &created, &updated)
 	n.CreatedAt, n.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
+	if sent != nil {
+		at := time.Unix(*sent, 0).UTC()
+		n.SentAt = &at
+	}
 	return n, err
 }
 
+// Filter narrows a list of notifications. An empty field takes any value.
+type Filter struct {
+	Status   string // pending, sent or failed
+	Severity string // info, warning or critical
+	Open     bool   // only the latest notification of each open problem
+}
+
 // List returns notifications newest first, optionally of one machine (machineID 0 means every
-// machine), status and severity ("" means any). It fetches one row more than the page limit;
-// server.NewList cuts it.
-func (s *Store) List(ctx context.Context, machineID int64, status, severity string, p server.Page) ([]Notification, error) {
+// machine) and narrowed by f. It fetches one row more than the page limit; server.NewList cuts it.
+func (s *Store) List(ctx context.Context, machineID int64, f Filter, p server.Page) ([]Notification, error) {
 	switch {
-	case status != "" && status != StatusPending && status != StatusSent && status != StatusResolved:
-		return nil, server.Invalid("status must be pending, sent or resolved.")
-	case severity != "" && severity != SeverityInfo && severity != SeverityWarning && severity != SeverityCritical:
+	case f.Status != "" && f.Status != StatusPending && f.Status != StatusSent && f.Status != StatusFailed:
+		return nil, server.Invalid("status must be pending, sent or failed.")
+	case f.Severity != "" && !validSeverityName(f.Severity):
 		return nil, server.Invalid("severity must be info, warning or critical.")
 	}
-	rows, err := s.db.Read.QueryContext(ctx, selectNotifications+`
-		WHERE (? = 0 OR n.machine_id = ?) AND (? = '' OR n.status = ?) AND (? = '' OR n.severity = ?)
+	where := `WHERE (? = 0 OR n.machine_id = ?) AND (? = '' OR n.status = ?) AND (? = '' OR n.severity = ?)`
+	if f.Open {
+		where += ` AND ` + latestOpen
+	}
+	rows, err := s.db.Read.QueryContext(ctx, selectNotifications+` `+where+`
 		  AND (n.created_at, n.id) < (?, ?)
 		ORDER BY n.created_at DESC, n.id DESC LIMIT ?`,
-		machineID, machineID, status, status, severity, severity, p.Before.CreatedAt, p.Before.ID, p.Size())
+		machineID, machineID, f.Status, f.Status, f.Severity, f.Severity, p.Before.CreatedAt, p.Before.ID, p.Size())
 	if err != nil {
 		return nil, err
 	}
+	out, err := scanAll(rows)
+	if err != nil {
+		return nil, err
+	}
+	return out, s.withDeliveries(ctx, out)
+}
+
+func scanAll(rows *sql.Rows) ([]Notification, error) {
 	defer func() { _ = rows.Close() }()
 	var out []Notification
 	for rows.Next() {
@@ -71,30 +113,53 @@ func (s *Store) Get(ctx context.Context, machineID, id int64) (Notification, err
 	if errors.Is(err, sql.ErrNoRows) {
 		return n, server.NotFound("Notification %d doesn't exist on this machine.", id)
 	}
-	return n, err
+	if err != nil {
+		return n, err
+	}
+	ns := []Notification{n}
+	err = s.withDeliveries(ctx, ns)
+	return ns[0], err
 }
 
-// key names a rule's notification: the type and the machine's name.
-type key struct{ typ, machine string }
+// key names a problem: its base event, the machine's name and, for a service's problem, the
+// service's name, or for a channel's, the channel's name.
+type key struct{ base, machine, service, channel string }
 
-// open returns the unresolved notifications of the rules, by type and machine.
+func keyOf(n Notification) key {
+	k := key{base: channels.Base(n.Event)}
+	for _, f := range []struct {
+		from *string
+		to   *string
+	}{{n.Machine, &k.machine}, {n.Service, &k.service}, {n.Channel, &k.channel}} {
+		if f.from != nil {
+			*f.to = *f.from
+		}
+	}
+	return k
+}
+
+// about names what a problem is about, for the log.
+func (k key) about() string {
+	if k.channel != "" {
+		return "channel " + k.channel
+	}
+	return k.machine
+}
+
+// open returns the latest notification of each open problem of a registered event, by key.
 func (s *Store) open(ctx context.Context) (map[key]Notification, error) {
-	rows, err := s.db.Read.QueryContext(ctx, selectNotifications+` WHERE n.status != 'resolved' AND m.id IS NOT NULL`)
+	rows, err := s.db.Read.QueryContext(ctx, selectNotifications+` WHERE `+latestOpen+` AND (m.id IS NOT NULL OR n.channel IS NOT NULL)`)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	ns, err := scanAll(rows)
 	out := map[key]Notification{}
-	for rows.Next() {
-		n, err := scan(rows)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := typeText[n.Type]; ok {
-			out[key{n.Type, *n.Machine}] = n
+	for _, n := range ns {
+		if _, ok := eventType(n.Event); ok {
+			out[keyOf(n)] = n
 		}
 	}
-	return out, rows.Err()
+	return out, err
 }
 
 func sortedByID(m map[key]Notification) []Notification {
@@ -106,126 +171,20 @@ func sortedByID(m map[key]Notification) []Notification {
 	return out
 }
 
-// insert opens a pending notification. Its updated_at equals its created_at until it is emailed.
-func (s *Store) insert(ctx context.Context, machineID int64, f finding, now time.Time) error {
-	_, err := s.db.Write.ExecContext(ctx,
-		`INSERT INTO notifications (machine_id, type, severity, status, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		machineID, f.typ, f.severity, StatusPending, f.content, now.Unix(), now.Unix())
-	return err
-}
-
-// changeSeverity stores a new severity and content for an open notification. A rise sets a sent
-// notification back to pending, which owes an "escalated" email. A drop owes nothing: it also
-// settles a pending escalation, since the email that went out was at the lower severity.
-func (s *Store) changeSeverity(ctx context.Context, n Notification, f finding, now time.Time) error {
-	status, updated := n.Status, now
-	switch {
-	case neverEmailed(n):
-		updated = n.CreatedAt // stays "opened"
-	case severityRank(f.severity) > severityRank(n.Severity):
-		status = StatusPending
-	case n.Status == StatusPending:
-		status = StatusSent
+// add adds a pending notification of event about a machine (machineID) or a channel (channel,
+// with machineID 0), and returns it.
+func add(ctx context.Context, tx *sql.Tx, machineID int64, service, channel, event, severity, message string, now time.Time) (Notification, error) {
+	var id any // NULL for a channel's notification or a test
+	if machineID != 0 {
+		id = machineID
 	}
-	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET severity = ?, status = ?, content = ?, updated_at = ? WHERE id = ?`,
-		f.severity, status, f.content, updated.Unix(), n.ID)
-	return err
-}
-
-func (s *Store) setStatus(ctx context.Context, id int64, status string, now time.Time) error {
-	_, err := s.db.Write.ExecContext(ctx, `UPDATE notifications SET status = ?, updated_at = ? WHERE id = ?`, status, now.Unix(), id)
-	return err
-}
-
-// Recipients
-
-func scanRecipient(row scanner) (Recipient, error) {
-	var r Recipient
-	var created, updated int64
-	err := row.Scan(&r.ID, &r.Email, &created, &updated)
-	r.CreatedAt, r.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
-	return r, err
-}
-
-// Recipients returns everyone who gets alert emails, in the order they were added.
-func (s *Store) Recipients(ctx context.Context) ([]Recipient, error) {
-	rows, err := s.db.Read.QueryContext(ctx, `SELECT id, email, created_at, updated_at FROM notification_recipients ORDER BY id`)
+	var nid int64
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO notifications (machine_id, service, channel, event, severity, message, status, created_at, updated_at)
+		 VALUES (?, nullif(?, ''), nullif(?, ''), ?, ?, ?, 'pending', ?, ?) RETURNING id`,
+		id, service, channel, event, severity, message, now.Unix(), now.Unix()).Scan(&nid)
 	if err != nil {
-		return nil, err
+		return Notification{}, err
 	}
-	defer func() { _ = rows.Close() }()
-	out := []Recipient{}
-	for rows.Next() {
-		r, err := scanRecipient(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// emails lists the recipients' addresses; none is nil.
-func (s *Store) emails(ctx context.Context) ([]string, error) {
-	rs, err := s.Recipients(ctx)
-	var out []string
-	for _, r := range rs {
-		out = append(out, r.Email)
-	}
-	return out, err
-}
-
-// AddRecipient adds an address that gets every alert. It must be a bare address, like
-// alerts@example.com, not "Name <alerts@example.com>".
-func (s *Store) AddRecipient(ctx context.Context, email string) (Recipient, error) {
-	addr, err := mail.ParseAddress(email)
-	if err != nil || addr.Address != email {
-		return Recipient{}, server.Invalid("email must be a bare address such as alerts@example.com.")
-	}
-	now := time.Now().Unix()
-	r, err := scanRecipient(s.db.Write.QueryRowContext(ctx,
-		`INSERT INTO notification_recipients (email, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING
-		 RETURNING id, email, created_at, updated_at`, email, now, now))
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, server.Conflict("%s is already a recipient.", email)
-	}
-	return r, err
-}
-
-// DeleteRecipient removes a recipient by id.
-func (s *Store) DeleteRecipient(ctx context.Context, id int64) error {
-	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM notification_recipients WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
-		return server.NotFound("Recipient %d doesn't exist. List the recipients to see their ids.", id)
-	}
-	return nil
-}
-
-// SendTest emails the test message to every recipient and returns who got it. It is a 422 when
-// email is off or nobody is a recipient, with the sentence that says what to do.
-func (s *Store) SendTest(ctx context.Context, sender Sender, hub string) (TestResult, error) {
-	if sender == nil {
-		return TestResult{}, server.Invalid("Email is off on this hub. Set TENDER_SMTP_HOST and TENDER_SMTP_FROM in /etc/tender/hub.env and restart the hub.")
-	}
-	to, err := s.emails(ctx)
-	if err != nil {
-		return TestResult{}, err
-	}
-	if len(to) == 0 {
-		return TestResult{}, server.Invalid("There are no recipients to send to. Add one first, such as alerts@example.com.")
-	}
-	msg, err := TestMessage(hub)
-	if err != nil {
-		return TestResult{}, err
-	}
-	if err := sender.Send(ctx, to, msg); err != nil {
-		return TestResult{}, &server.Error{Status: http.StatusBadGateway,
-			Detail: "The hub couldn't send the email: " + err.Error() + ". Check the TENDER_SMTP_ settings in /etc/tender/hub.env."}
-	}
-	return TestResult{SentTo: to}, nil
+	return scan(tx.QueryRowContext(ctx, selectNotifications+` WHERE n.id = ?`, nid))
 }

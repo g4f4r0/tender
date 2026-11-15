@@ -62,16 +62,20 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 				"The hub keeps its settings in /etc/tender/hub.env, with the key that encrypts the secrets it stores. "+
 				"The key is made once and stays on every later run. Back that file up.\n\n"+
 				"Alert emails are optional. Pass --smtp-host and --smtp-from to turn them on; "+
-				"with --smtp-username it asks for the SMTP password with typing hidden. Run the command again to change them.")
+				"with --smtp-username it asks for the SMTP password with typing hidden. Run the command again to change them: "+
+				"an option left out keeps its setting, and one passed empty, such as --smtp-username \"\", removes it.")
 		fs.StringVar(&hub.SMTPHost, "smtp-host", "", "`HOST` the SMTP server")
 		fs.StringVar(&hub.SMTPFrom, "smtp-from", "", "`SENDER` the sender, such as \"Tender <alerts@example.net>\"")
-		fs.IntVar(&hub.SMTPPort, "smtp-port", 0, "`PORT` the SMTP port, implicit TLS (default: 465)")
+		fs.IntVar(&hub.SMTPPort, "smtp-port", 0, "`PORT` the SMTP port, implicit TLS (default: 465; 0 goes back to it)")
 		fs.StringVar(&hub.SMTPUsername, "smtp-username", "", "`USER` the SMTP login name, for servers that ask for one")
 		fs.StringVar(&smtpPasswordFile, "smtp-password-file", "", "`PATH` file with the SMTP password (default: ask)")
 	case "refresh":
 		fs = newFlagSet("install refresh", "",
 			"Check the pinned restic, rewrite the service units and restart the installed services. "+
-				"The configs and the credentials stay. Run as root. \"tender update\" runs this for you.")
+				"The configs and the credentials stay. On a machine installed before v0.3.0 it also moves the daemon to root. "+
+				"Run as root. \"tender update\" runs this for you.")
+	case "check": // not in the usage: "tender update" runs it with the new binary before it swaps it in
+		fs = newFlagSet("install check", "", "Check that this binary reads the installed daemon config and hub settings. Run as root.")
 	default:
 		return fmt.Errorf("unknown install command %q. Run \"tender install --help\" for the commands.", args[0])
 	}
@@ -94,8 +98,9 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 		if smtpPasswordFile != "" && hub.SMTPUsername == "" {
 			return usageError(fs, "--smtp-password-file needs --smtp-username")
 		}
+		hub.Clear = clearedSettings(fs)
 	}
-	if os.Geteuid() != 0 {
+	if !isRoot() {
 		return fmt.Errorf("install %s needs root. Run it again with sudo.", args[0])
 	}
 
@@ -131,6 +136,8 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 	in.CheckHub = checkHub
 	ctx := context.Background()
 	switch args[0] {
+	case "check":
+		return in.Check()
 	case "daemon":
 		return in.Daemon(ctx, daemon)
 	case "hub":
@@ -187,4 +194,20 @@ func checkHub(ctx context.Context, hub, machine, token string) error {
 	default:
 		return fmt.Errorf("cannot reach the hub at %s, so nothing was changed. Check --hub and that this machine can reach the hub: %w", hub, err)
 	}
+}
+
+// hubOptionSettings are the hub.env settings that "tender install hub" options set.
+var hubOptionSettings = map[string]string{"smtp-host": "TENDER_SMTP_HOST", "smtp-from": "TENDER_SMTP_FROM",
+	"smtp-port": "TENDER_SMTP_PORT", "smtp-username": "TENDER_SMTP_USERNAME"}
+
+// clearedSettings names the hub.env settings whose options were passed empty, or 0 for the port,
+// to remove them. An option left out keeps its setting.
+func clearedSettings(fs *flag.FlagSet) []string {
+	var out []string
+	fs.Visit(func(f *flag.Flag) {
+		if name, ok := hubOptionSettings[f.Name]; ok && (f.Value.String() == "" || f.Value.String() == "0") {
+			out = append(out, name)
+		}
+	})
+	return out
 }

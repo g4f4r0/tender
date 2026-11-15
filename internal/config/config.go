@@ -74,7 +74,7 @@ func CredentialsDir() string {
 	if d := os.Getenv("CREDENTIALS_DIRECTORY"); d != "" {
 		return d
 	}
-	return "/etc/tender/credentials"
+	return filepath.Join(Root(), "/etc/tender/credentials")
 }
 
 // ReadCredential returns the content of dir/name without its trailing newline.

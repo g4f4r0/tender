@@ -44,6 +44,7 @@ func (fakeMachines) Lookup(_ context.Context, name string) (int64, error) {
 //
 //	POST  /v1/machines/{machine}/things   daemon, counts calls, answers 201 with Location
 //	PATCH /v1/machines/{machine}/things   daemon, counts calls
+//	PATCH /v1/machines/{machine}/quiet    daemon, counts calls, answers 204 with no body
 //	POST  /v1/machines/{machine}/boom     daemon, fails with a plain error
 //	POST  /v1/machines/{machine}/echo     daemon, decodes {"a": int}
 //	GET   /v1/machines/{machine}/either   daemon or people, says which
@@ -83,6 +84,11 @@ func routes(t *testing.T) (*Server, *httptest.Server, *atomic.Int64) {
 	}
 	s.Handle("POST /v1/machines/{machine}/things", s.Daemon(created))
 	s.Handle("PATCH /v1/machines/{machine}/things", s.Daemon(created))
+	s.Handle("PATCH /v1/machines/{machine}/quiet", s.Daemon(func(w http.ResponseWriter, r *http.Request) error {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}))
 	s.Handle("POST /v1/machines/{machine}/boom", s.Daemon(func(http.ResponseWriter, *http.Request) error {
 		calls.Add(1)
 		return io.ErrUnexpectedEOF
@@ -233,6 +239,17 @@ func TestIdempotency(t *testing.T) {
 	if again.StatusCode != 201 || againBody != firstBody || calls.Load() != 1 {
 		t.Errorf("replay: %d %q after %d calls, want 201 %q after 1", again.StatusCode, againBody, calls.Load(), firstBody)
 	}
+	if again.Header.Get("Location") != "/v1/machines/a/things/1" || again.Header.Get("Content-Type") != "application/json" {
+		t.Errorf("replay headers: Location %q, Content-Type %q", again.Header.Get("Location"), again.Header.Get("Content-Type"))
+	}
+
+	// An answer with no body is kept too: a retried 204 is a 204, and runs nothing.
+	for range 2 {
+		if res, body := send(t, srv, "PATCH", "/v1/machines/a/quiet", "{}", a("k0")...); res.StatusCode != 204 || body != "" || calls.Load() != 2 {
+			t.Errorf("quiet: %d %q after %d calls, want 204 after 2", res.StatusCode, body, calls.Load())
+		}
+	}
+	calls.Store(1)
 
 	// The same key on another method or path is a mistake, and nothing runs.
 	for _, c := range []struct{ method, path string }{{"PATCH", "/v1/machines/a/things"}, {"POST", "/v1/machines/a/echo"}} {
@@ -329,10 +346,18 @@ func TestDecode(t *testing.T) {
 		{"unknown field", `{"b":1}`, 400},
 		{"two values", `{"a":1}{"a":2}`, 400},
 		{"wrong type", `{"a":"x"}`, 422},
+		{"not an object", `[]`, 422},
+		{"a number", `7`, 422},
 		{"too large", `{"a":1,"pad":"` + strings.Repeat("x", 1<<20) + `"}`, 413},
 	} {
-		if res, body := send(t, srv, "POST", "/v1/machines/a/echo", c.body, daemon...); res.StatusCode != c.want {
+		res, body := send(t, srv, "POST", "/v1/machines/a/echo", c.body, daemon...)
+		if res.StatusCode != c.want {
 			t.Errorf("%s: got %d, want %d (%.80s)", c.name, res.StatusCode, c.want, body)
+		}
+		if strings.HasPrefix(c.name, "not an object") || c.name == "a number" {
+			if !strings.Contains(body, `"detail":"The request body must be a JSON object."`) {
+				t.Errorf("%s: %s", c.name, body)
+			}
 		}
 	}
 }

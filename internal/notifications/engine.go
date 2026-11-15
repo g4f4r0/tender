@@ -2,8 +2,12 @@ package notifications
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
+	"sync"
 	"time"
+
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 )
 
 // Sender delivers an email to bare addresses. A nil Sender means email is off.
@@ -11,199 +15,402 @@ type Sender interface {
 	Send(ctx context.Context, to []string, msg Message) error
 }
 
-// Engine runs the rules and delivers their notifications.
+// Engine runs the rules and delivers their notifications to the channels.
 //
-// A notification is emailed once when it opens and once when it resolves, and again when its
-// severity goes up. The status column is the only delivery state:
-//  1. pending: the next email (opened or escalated) isn't sent yet.
-//  2. sent: the last email went out.
-//  3. resolved: the condition cleared, and the resolved email went out if one was owed.
-//
-// "Opened" or "escalated" is not stored. A pending row whose updated_at is after its created_at
-// was emailed before, so its email is "escalated". The engine keeps updated_at equal to
-// created_at on a row it has never emailed, even when the severity of that row changes, so it
-// still gets an "opened" email.
+// A notification is one message, added once. A problem adds one when it starts, such as
+// service.down, one when its severity first goes up, service.down.escalated, and one when it
+// clears, service.down.resolved, which goes only to the channels that got one of the others.
+// Each notification becomes one delivery per channel that gets it, tried and retried on its own,
+// so one failing channel never delays or repeats another. Every change of state is one
+// transaction, and a try is recorded only while its delivery is still pending, so a delivery
+// that finishes after its problem resolved, or its channel was turned off, changes nothing.
 type Engine struct {
-	store  *Store
+	store  *Store // whose channels can send
 	sender Sender
-	hub    string
 	log    *slog.Logger
 
-	failures map[attempt]failure // in memory: a restart starts the backoff over
-	silent   bool                // the "nobody gets email" line was logged and nothing has changed since
+	// FailingAfter is how long a channel's deliveries fail before channel.failing fires: an hour.
+	FailingAfter time.Duration
+
+	silent bool // the "nobody gets notifications" line was logged and nothing has changed since
+
+	mu   sync.Mutex
+	busy map[int64]bool // the channels being delivered to now
 }
 
-type attempt struct {
-	id   int64
-	kind string
+// deliverEvery is how often the engine tries the deliveries that are due, between rule runs.
+const deliverEvery = 15 * time.Second
+
+// NewEngine returns an engine whose email channels send through sender, nil when email is off.
+// hub names the hub in what it sends.
+func NewEngine(s *Store, sender Sender, hub Hub, log *slog.Logger) *Engine {
+	return &Engine{store: s.sending(sender, hub), sender: sender, log: log, FailingAfter: time.Hour, busy: map[int64]bool{}}
 }
 
-type failure struct {
-	count int
-	next  time.Time
-}
-
-// NewEngine returns an engine that emails through sender, or not at all when sender is nil.
-// hub is the hub's host name, shown in every email.
-func NewEngine(s *Store, sender Sender, hub string, log *slog.Logger) *Engine {
-	return &Engine{store: s, sender: sender, hub: hub, log: log, failures: map[attempt]failure{}}
-}
-
-// Run evaluates the rules now and then every minute until ctx ends. load returns the machines' current state.
+// Run evaluates the rules now and then every minute, and delivers what is due every 15 seconds,
+// until ctx ends. load returns the machines' current state. Each channel is delivered to on its
+// own goroutine, so a slow one holds up neither the rules nor the others.
 func (e *Engine) Run(ctx context.Context, load func(context.Context) ([]Machine, error)) {
-	tick := time.NewTicker(time.Minute)
-	defer tick.Stop()
+	rules := time.NewTicker(time.Minute)
+	defer rules.Stop()
+	deliveries := time.NewTicker(deliverEvery)
+	defer deliveries.Stop()
 	for {
 		ms, err := load(ctx)
 		if err == nil {
-			err = e.Tick(ctx, time.Now(), ms)
+			err = e.evaluate(ctx, time.Now(), ms)
 		}
 		if err != nil && ctx.Err() == nil {
 			e.log.Error("run notification rules", "error", err)
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
+		for again := true; again; {
+			e.deliver(ctx, time.Now, false)
+			select {
+			case <-ctx.Done():
+				return
+			case <-rules.C:
+				again = false
+			case <-deliveries.C:
+			}
 		}
 	}
 }
 
-// Tick opens, updates and resolves notifications for ms as of now, then delivers what's owed to
-// every recipient. Without email or recipients, notifications are still recorded and stay pending,
-// and the first tick that finds nobody to email says so in the log. It returns database errors; a
-// failed email is logged and retried on a later tick.
+// Tick adds the notifications the rules call for as of now, and delivers what is due, waiting
+// for every channel. Without an enabled channel, notifications are still recorded and stay
+// pending, and the first tick that finds none says so in the log. It returns database errors; a
+// failed delivery is logged and retried on a later tick.
 func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
-	to, err := e.store.emails(ctx)
+	if err := e.evaluate(ctx, now, ms); err != nil {
+		return err
+	}
+	e.deliver(ctx, func() time.Time { return now }, true)
+	return nil
+}
+
+// usable lists the channels that can get notifications now: enabled, of a type this hub knows,
+// and for email, with email on.
+func (e *Engine) usable(ctx context.Context) ([]stored, error) {
+	cs, err := e.store.loadChannels(ctx, e.store.db.Read, false, `WHERE enabled = 1`)
+	out := cs[:0]
+	for _, c := range cs {
+		if e.store.adapters[c.Type] != nil && (c.Type != TypeEmail || e.sender != nil) {
+			out = append(out, c)
+		}
+	}
+	return out, err
+}
+
+// gets says whether channel c gets notification n: its events take n's event, and n is at least
+// as severe as its min_severity. A channel.failing notification goes to every channel but the
+// failing one, whatever its min_severity. A test goes to every channel it is sent to.
+func gets(c stored, n Notification) bool {
+	switch {
+	case n.Event == EventTest:
+		return true
+	case !matches(c.Events, n.Event):
+		return false
+	case channels.Base(n.Event) == EventChannelFailing:
+		return n.Channel == nil || *n.Channel != c.Name
+	}
+	return severityRank(c.MinSeverity) <= severityRank(n.Severity)
+}
+
+// evaluate runs the rules as of now and adds the notifications they call for.
+func (e *Engine) evaluate(ctx context.Context, now time.Time, ms []Machine) error {
+	usable, err := e.usable(ctx)
 	if err != nil {
 		return err
 	}
-	if e.sender == nil || len(to) == 0 {
-		to = nil
+	if len(usable) == 0 {
 		if !e.silent {
-			e.log.Info("nobody gets alert emails: email is off or there are no recipients, so alerts are only recorded. " +
-				"Set TENDER_SMTP_HOST and TENDER_SMTP_FROM and add a recipient to get them by email")
+			e.log.Info("nobody gets notifications: there is no enabled channel, or only email ones while email is off, so notifications are only recorded. " +
+				"Add a channel with \"tender channels add\" to get them")
 			e.silent = true
 		}
 	} else {
 		e.silent = false
+	}
+	if err := e.store.prune(ctx, now); err != nil {
+		return err
 	}
 	open, err := e.store.open(ctx)
 	if err != nil {
 		return err
 	}
 	holds := map[key]bool{}
+	changed := map[key]bool{}
+	silent := map[string]bool{}
+	byName := map[string]Machine{}
+	found := func(k key, machineID int64, f finding) error {
+		holds[k] = true
+		n, ok := open[k]
+		switch {
+		case !ok:
+			changed[k] = true
+			n, err := e.store.raise(ctx, machineID, k, f, usable, now)
+			if err == nil {
+				e.log.Info("notification added", "id", n.ID, "event", n.Event, "about", k.about(), "service", f.service, "severity", f.severity)
+			}
+			return err
+		case severityRank(f.severity) > severityRank(n.Severity):
+			changed[k] = true
+			n, err := e.store.follow(ctx, n, k.base+"."+channels.PhaseEscalated, f.severity, f.content, usable, now)
+			if err == nil {
+				e.log.Info("notification added", "id", n.ID, "event", n.Event, "about", k.about(), "severity", f.severity)
+			}
+			return err
+		}
+		return nil
+	}
 	for _, m := range ms {
+		byName[m.Name] = m
 		for _, f := range evaluate(m, now) {
-			k := key{f.typ, m.Name}
-			holds[k] = true
-			switch n, ok := open[k]; {
-			case !ok:
-				if err := e.store.insert(ctx, m.ID, f, now); err != nil {
-					return err
-				}
-				e.log.Info("notification opened", "type", f.typ, "machine", m.Name, "severity", f.severity)
-			case severityRank(f.severity) != severityRank(n.Severity):
-				if err := e.store.changeSeverity(ctx, n, f, now); err != nil {
-					return err
-				}
-				e.log.Info("notification severity changed", "id", n.ID, "type", f.typ, "machine", m.Name, "from", n.Severity, "to", f.severity)
+			silent[m.Name] = silent[m.Name] || f.event == EventMachineSilent
+			if err := found(key{f.event, m.Name, f.service, ""}, m.ID, f); err != nil {
+				return err
 			}
 		}
 	}
-
-	rows, err := e.store.open(ctx)
+	failing, err := e.store.failing(ctx)
 	if err != nil {
 		return err
 	}
-	for _, n := range sortedByID(rows) {
-		k := key{n.Type, *n.Machine}
-		switch {
-		case !holds[k]:
-			err = e.resolve(ctx, now, n, to)
-		case n.Status == StatusPending && to != nil:
-			err = e.sendPending(ctx, now, n, to)
+	for name, fc := range failing {
+		if now.Sub(fc.since) < e.FailingAfter {
+			continue
 		}
-		if err != nil {
+		f := finding{event: EventChannelFailing, severity: SeverityWarning, content: fc.describe(now)}
+		if err := found(key{base: EventChannelFailing, channel: name}, 0, f); err != nil {
 			return err
 		}
 	}
+
+	for _, n := range sortedByID(open) {
+		k := keyOf(n)
+		switch {
+		case changed[k]:
+		case !holds[k] && !byName[k.machine].keeps(n, silent[k.machine], now):
+			r, err := e.store.resolve(ctx, n, usable, now)
+			if err != nil {
+				return err
+			}
+			e.log.Info("notification added", "id", r.ID, "event", r.Event, "about", k.about())
+		case n.Status == StatusPending:
+			if err := e.store.late(ctx, n, usable, now); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
-// sendPending emails an open notification that is pending.
-func (e *Engine) sendPending(ctx context.Context, now time.Time, n Notification, to []string) error {
-	kind := kindOpened
-	if n.UpdatedAt.After(n.CreatedAt) {
-		kind = kindEscalated
+// targets lists the channels in usable that get n.
+func targets(usable []stored, n Notification) []int64 {
+	var ids []int64
+	for _, c := range usable {
+		if gets(c, n) {
+			ids = append(ids, c.ID)
+		}
 	}
-	if !e.send(ctx, now, n, kind, to) {
-		return nil
-	}
-	return e.store.setStatus(ctx, n.ID, StatusSent, now)
+	return ids
 }
 
-// resolve closes a notification whose condition cleared. It emails first when an email was owed
-// and there is someone to send it to.
-func (e *Engine) resolve(ctx context.Context, now time.Time, n Notification, to []string) error {
-	if to != nil && !neverEmailed(n) && !e.send(ctx, now, n, kindResolved, to) {
+// raise adds the notification a new problem starts with, queued to every channel that gets it.
+func (s *Store) raise(ctx context.Context, machineID int64, k key, f finding, usable []stored, now time.Time) (Notification, error) {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return Notification{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	n, err := add(ctx, tx, machineID, k.service, k.channel, f.event, f.severity, f.content, now)
+	if err != nil {
+		return n, err
+	}
+	if _, err := queue(ctx, tx, n.ID, targets(usable, n), now); err != nil {
+		return n, err
+	}
+	return n, tx.Commit()
+}
+
+// follow adds a notification of event to prev's problem, queued to every channel that gets it.
+func (s *Store) follow(ctx context.Context, prev Notification, event, severity, message string, usable []stored, now time.Time) (Notification, error) {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return Notification{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	n, err := next(ctx, tx, prev, event, severity, message, now)
+	if err != nil {
+		return n, err
+	}
+	if _, err := queue(ctx, tx, n.ID, targets(usable, n), now); err != nil {
+		return n, err
+	}
+	return n, tx.Commit()
+}
+
+// next adds a pending notification of event about what prev is about.
+func next(ctx context.Context, tx *sql.Tx, prev Notification, event, severity, message string, now time.Time) (Notification, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO notifications (machine_id, service, channel, event, severity, message, status, created_at, updated_at)
+		SELECT machine_id, service, channel, ?, ?, ?, 'pending', ?, ? FROM notifications WHERE id = ? RETURNING id`,
+		event, severity, message, now.Unix(), now.Unix(), prev.ID).Scan(&id)
+	if err != nil {
+		return Notification{}, err
+	}
+	return scan(tx.QueryRowContext(ctx, selectNotifications+` WHERE n.id = ?`, id))
+}
+
+// resolve adds the .resolved notification of the open problem whose latest notification is
+// latest, in one transaction. It goes to the channels that got one of the problem's
+// notifications, and still get its event; what the problem still owed is moot.
+func (s *Store) resolve(ctx context.Context, latest Notification, usable []stored, now time.Time) (Notification, error) {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return Notification{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	ids, err := problem(ctx, tx, latest)
+	if err != nil {
+		return Notification{}, err
+	}
+	got, err := deliveredTo(ctx, tx, ids)
+	if err != nil {
+		return Notification{}, err
+	}
+	if err := supersede(ctx, tx, ids, "The problem resolved before this was delivered.", now); err != nil {
+		return Notification{}, err
+	}
+	base := channels.Base(latest.Event)
+	r, err := next(ctx, tx, latest, base+"."+channels.PhaseResolved, latest.Severity, "Resolved: "+latest.Message, now)
+	if err != nil {
+		return r, err
+	}
+	var to []int64
+	for _, c := range usable {
+		if got[c.ID] && matches(c.Events, base) {
+			to = append(to, c.ID)
+		}
+	}
+	if _, err := queue(ctx, tx, r.ID, to, now); err != nil {
+		return r, err
+	}
+	for _, id := range append(ids, r.ID) {
+		if err := refresh(ctx, tx, id, now); err != nil {
+			return r, err
+		}
+	}
+	return r, tx.Commit()
+}
+
+// late queues the latest notification of an open problem, which went to no channel, to the
+// channels that get it now: ones added since.
+func (s *Store) late(ctx context.Context, n Notification, usable []stored, now time.Time) error {
+	to := targets(usable, n)
+	if len(to) == 0 {
 		return nil
 	}
-	if err := e.store.setStatus(ctx, n.ID, StatusResolved, now); err != nil {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	delete(e.failures, attempt{n.ID, kindOpened})
-	delete(e.failures, attempt{n.ID, kindEscalated})
-	delete(e.failures, attempt{n.ID, kindResolved})
-	e.log.Info("notification resolved", "id", n.ID, "type", n.Type, "machine", *n.Machine)
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM notification_deliveries WHERE notification_id = ?`, n.ID).Scan(&count); err != nil || count > 0 {
+		return err
+	}
+	if _, err := queue(ctx, tx, n.ID, to, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// neverEmailed reports whether no email went out for n yet.
-func neverEmailed(n Notification) bool {
-	return n.Status == StatusPending && !n.UpdatedAt.After(n.CreatedAt)
-}
-
-// send emails one notification and reports whether it went out. A failure is logged and the
-// next try waits: none on the next tick, then 2, 4 and 8 minutes, then 10 minutes at most.
-func (e *Engine) send(ctx context.Context, now time.Time, n Notification, kind string, to []string) bool {
-	a := attempt{n.ID, kind}
-	f := e.failures[a]
-	if now.Before(f.next) {
-		return false
-	}
-	text := typeText[n.Type]
-	data := emailData{
-		Machine: *n.Machine, Title: text.title, Content: n.Content, Severity: n.Severity,
-		Since: formatTime(n.CreatedAt), Duration: formatDuration(now.Sub(n.CreatedAt)), ResolvedAt: formatTime(now),
-		Tool: text.tool, Hub: e.hub, Color: "#b00020",
-	}
-	if n.Severity == SeverityWarning {
-		data.Color = "#8a5a00"
-	}
-	msg, err := render(kind, data)
-	if err == nil {
-		err = e.sender.Send(ctx, to, msg)
-	}
+// deliver tries the due deliveries of every channel that has some, one goroutine per channel,
+// skipping a channel that is still busy from the last pass. With wait, it returns once all are
+// done. clock gives the time of each try.
+func (e *Engine) deliver(ctx context.Context, clock func() time.Time, wait bool) {
+	ids, err := e.store.channelsOwed(ctx)
 	if err != nil {
-		f.count++
-		f.next = now.Add(backoff(f.count))
-		e.failures[a] = f
-		e.log.Warn("email failed", "id", n.ID, "type", n.Type, "machine", *n.Machine, "email", kind, "attempt", f.count, "error", err)
-		return false
+		if ctx.Err() == nil {
+			e.log.Error("list the deliveries owed", "error", err)
+		}
+		return
 	}
-	delete(e.failures, a)
-	e.log.Info("email sent", "id", n.ID, "type", n.Type, "machine", *n.Machine, "email", kind)
-	return true
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		e.mu.Lock()
+		busy := e.busy[id]
+		e.busy[id] = true
+		e.mu.Unlock()
+		if busy {
+			continue
+		}
+		wg.Go(func() {
+			defer func() {
+				e.mu.Lock()
+				delete(e.busy, id)
+				e.mu.Unlock()
+			}()
+			if err := e.deliverTo(ctx, id, clock); err != nil && ctx.Err() == nil {
+				e.log.Error("deliver notifications", "channel_id", id, "error", err)
+			}
+		})
+	}
+	if wait {
+		wg.Wait()
+	}
 }
 
-// backoff is the wait after the count-th failure in a row.
-func backoff(count int) time.Duration {
-	if count < 2 {
-		return 0
+// deliverTo tries one channel's due deliveries, oldest first. One that waits for its next try
+// holds up the later ones, so a channel gets its notifications in order.
+func (e *Engine) deliverTo(ctx context.Context, channelID int64, clock func() time.Time) error {
+	cs, err := e.store.loadChannels(ctx, e.store.db.Read, true, `WHERE id = ? AND enabled = 1`, channelID)
+	if err != nil || len(cs) == 0 {
+		return err
 	}
-	if count >= 5 {
-		return 10 * time.Minute
+	c := cs[0]
+	a := e.store.adapters[c.Type]
+	if a == nil {
+		return nil // a type from a newer Tender: it waits for that version
 	}
-	return time.Duration(1<<(count-1)) * time.Minute
+	ds, err := e.store.pendingOf(ctx, channelID)
+	if err != nil {
+		return err
+	}
+	for _, d := range ds {
+		if clock().Before(d.updatedAt.Add(backoff(d.attempts))) {
+			return nil
+		}
+		sendErr := a.Send(ctx, c.config, event(d.n, e.store.hub.URL))
+		if ctx.Err() != nil {
+			return nil // the hub is stopping: this try doesn't count
+		}
+		now := clock()
+		t := try{delivery: d.id, notification: d.n.ID, channel: c.ID, status: DeliveryDelivered, attempts: d.attempts + 1, err: sendErr}
+		switch {
+		case sendErr == nil:
+		case channels.IsPermanent(sendErr), now.Sub(d.createdAt) >= giveUpAfter:
+			t.status = DeliveryFailed
+		default:
+			t.status = DeliveryPending
+		}
+		recorded, err := e.store.attempted(ctx, t, now)
+		if err != nil {
+			return err
+		}
+		attrs := []any{"id", d.n.ID, "event", d.n.Event, "channel", c.Name, "attempt", t.attempts}
+		switch {
+		case !recorded:
+			e.log.Info("notification delivery ended while it ran: its problem resolved or its channel was turned off", attrs...)
+		case t.status == DeliveryDelivered:
+			e.log.Info("notification delivered", attrs...)
+		case t.status == DeliveryFailed:
+			e.log.Warn("notification delivery failed for good", append(attrs, "error", sendErr)...)
+		default:
+			e.log.Warn("notification delivery failed; it is tried again", append(attrs, "next_in", backoff(t.attempts).String(), "error", sendErr)...)
+			return nil
+		}
+	}
+	return nil
 }

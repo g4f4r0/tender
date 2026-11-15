@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,8 +85,7 @@ func TestHubRefusesTheWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Endpoint: "https://x.example.com", Bucket: "b",
-		AccessKeyID: "marker-key-id", SecretAccessKey: "marker-secret", Password: "marker-password"})
+	_, err = backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://x.example.com", "bucket": "bkt", "access_key_id": "marker-key-id", "secret_access_key": "marker-secret"}, Password: "marker-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,5 +100,30 @@ func TestHubRefusesTheWrongKey(t *testing.T) {
 	err = serveHub([]string{"--database", path}, quiet)
 	if err == nil || !strings.Contains(err.Error(), config.EnvEncryptionKey) || !strings.Contains(err.Error(), `"r2"`) || strings.Contains(err.Error(), "marker") {
 		t.Errorf("wrong key: %v, want a message about the key and destination r2, with no secret", err)
+	}
+}
+
+// A database the hub can't write, such as one outside its state folder under systemd's
+// ProtectSystem, stops the hub at once with a message that says how to fix it.
+func TestHubRefusesADatabaseItCantWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.db")
+	d, err := openHub(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	_, err = openHub(context.Background(), path)
+	if err == nil || !strings.Contains(err.Error(), "can't write its database "+path) || !strings.Contains(err.Error(), "ReadWritePaths=") {
+		t.Errorf("read-only folder: %v", err)
 	}
 }

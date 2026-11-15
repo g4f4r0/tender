@@ -2,62 +2,93 @@ package notifications
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/g4f4r0/tender/internal/server"
 )
 
-// Routes registers the notifications REST routes on srv. The test route sends through sender,
-// which is nil when email is off, and names hub, the hub's host name, in the message.
-func (s *Store) Routes(srv *server.Server, sender Sender, hub string) {
+// Routes registers the notifications REST routes on srv. The test route sends email through
+// sender, which is nil when email is off, and names hub in what it sends.
+func (s *Store) Routes(srv *server.Server, sender Sender, hub Hub) {
+	t := s.sending(sender, hub)
 	srv.Handle("GET /v1/notifications", srv.People(s.list))
 	srv.Handle("GET /v1/machines/{machine}/notifications", srv.People(s.list))
 	srv.Handle("GET /v1/machines/{machine}/notifications/{id}", srv.People(s.get))
-	srv.Handle("GET /v1/notifications/recipients", srv.People(s.listRecipients))
-	srv.Handle("POST /v1/notifications/recipients", srv.People(s.addRecipient))
-	srv.Handle("DELETE /v1/notifications/recipients/{id}", srv.People(s.removeRecipient))
-	srv.Handle("POST /v1/notifications/test", srv.People(func(w http.ResponseWriter, r *http.Request) error {
-		res, err := s.SendTest(r.Context(), sender, hub)
-		if err != nil {
-			return err
-		}
-		server.WriteJSON(w, http.StatusAccepted, res)
-		return nil
-	}))
+	srv.Handle("GET /v1/notifications/channels", srv.People(s.listChannels))
+	srv.Handle("POST /v1/notifications/channels", srv.People(s.addChannel))
+	srv.Handle("GET /v1/notifications/channels/{channel}", srv.People(s.getChannel))
+	srv.Handle("PATCH /v1/notifications/channels/{channel}", srv.People(s.patchChannel))
+	srv.Handle("DELETE /v1/notifications/channels/{channel}", srv.People(s.removeChannel))
+	srv.Handle("POST /v1/notifications/test", srv.People(t.test))
 }
 
-func (s *Store) listRecipients(w http.ResponseWriter, r *http.Request) error {
-	rs, err := s.Recipients(r.Context())
+func (s *Store) listChannels(w http.ResponseWriter, r *http.Request) error {
+	cs, err := s.Channels(r.Context())
 	if err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.List[Recipient]{Data: rs})
+	server.WriteJSON(w, http.StatusOK, server.List[Channel]{Data: cs})
 	return nil
 }
 
-func (s *Store) addRecipient(w http.ResponseWriter, r *http.Request) error {
-	var in RecipientInput
+func (s *Store) addChannel(w http.ResponseWriter, r *http.Request) error {
+	var in ChannelInput
 	if err := server.Decode(w, r, &in); err != nil {
 		return err
 	}
-	rec, err := s.AddRecipient(r.Context(), in.Email)
+	c, err := s.AddChannel(r.Context(), in)
 	if err != nil {
 		return err
 	}
-	w.Header().Set("Location", "/v1/notifications/recipients/"+strconv.FormatInt(rec.ID, 10))
-	server.WriteJSON(w, http.StatusCreated, rec)
+	w.Header().Set("Location", "/v1/notifications/channels/"+url.PathEscape(c.Name))
+	server.WriteJSON(w, http.StatusCreated, c)
 	return nil
 }
 
-func (s *Store) removeRecipient(w http.ResponseWriter, r *http.Request) error {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+func (s *Store) getChannel(w http.ResponseWriter, r *http.Request) error {
+	c, err := s.Channel(r.Context(), r.PathValue("channel"))
 	if err != nil {
-		return server.NotFound("%q is not an id. List the recipients to see their ids.", r.PathValue("id"))
+		return err
 	}
-	if err := s.DeleteRecipient(r.Context(), id); err != nil {
+	server.WriteJSON(w, http.StatusOK, c)
+	return nil
+}
+
+func (s *Store) patchChannel(w http.ResponseWriter, r *http.Request) error {
+	var p ChannelPatch
+	if err := server.Decode(w, r, &p); err != nil {
+		return err
+	}
+	c, err := s.PatchChannel(r.Context(), r.PathValue("channel"), p)
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, c)
+	return nil
+}
+
+func (s *Store) removeChannel(w http.ResponseWriter, r *http.Request) error {
+	if err := s.DeleteChannel(r.Context(), r.PathValue("channel")); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// test sends the test event. The body is optional: no body tests every enabled channel.
+func (s *Store) test(w http.ResponseWriter, r *http.Request) error {
+	var in TestInput
+	if r.ContentLength != 0 {
+		if err := server.Decode(w, r, &in); err != nil {
+			return err
+		}
+	}
+	res, err := s.SendTest(r.Context(), in.Channel)
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, res)
 	return nil
 }
 
@@ -68,7 +99,15 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	q := r.URL.Query()
-	items, err := s.List(r.Context(), server.MachineID(r.Context()), q.Get("status"), q.Get("severity"), page)
+	f := Filter{Status: q.Get("status"), Severity: q.Get("severity")}
+	switch q.Get("open") {
+	case "", "false":
+	case "true":
+		f.Open = true
+	default:
+		return server.Invalid("open must be true or false.")
+	}
+	items, err := s.List(r.Context(), server.MachineID(r.Context()), f, page)
 	if err != nil {
 		return err
 	}

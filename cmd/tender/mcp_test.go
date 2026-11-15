@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -60,8 +61,7 @@ func seeded(t *testing.T) *db.DB {
 			t.Fatal(err)
 		}
 	}
-	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "b",
-		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}); err != nil {
+	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "bkt", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bs.SetSettings(ctx, 1, "r2-code", "30 3 * * *", 30); err != nil {
@@ -85,17 +85,17 @@ func seeded(t *testing.T) *db.DB {
 			t.Fatalf("history %d: %v", i, err)
 		}
 	}
-	must(t, d, `INSERT INTO notifications (id, machine_id, type, severity, status, content, created_at, updated_at) VALUES
-		(1, 1, 'backup_failed', 'critical', 'sent', 'Backup failed on g4f4r0-code', 100, 100),
-		(2, 1, 'disk_full', 'warning', 'resolved', 'Disk was full', 200, 250),
-		(3, NULL, 'hub_restarted', 'info', 'sent', 'The hub restarted', 300, 300)`)
+	must(t, d, `INSERT INTO notifications (id, machine_id, event, severity, status, message, sent_at, created_at, updated_at) VALUES
+		(1, 1, 'backup.failed', 'critical', 'sent', 'Backup failed on g4f4r0-code', 100, 100, 100),
+		(2, 1, 'disk.full.resolved', 'warning', 'failed', 'Resolved: Disk was full', NULL, 200, 250),
+		(3, NULL, 'hub.restarted', 'info', 'sent', 'The hub restarted', 300, 300, 300)`)
 	return d
 }
 
 // connect connects a real MCP client to the tools over the SDK's in-memory transport.
 func connect(t *testing.T, d *db.DB) *sdk.ClientSession { return connectSending(t, d, nil) }
 
-// connectSending is connect with send_test_email sending through sender.
+// connectSending is connect with send_test_notification sending email through sender.
 func connectSending(t *testing.T, d *db.DB, sender notifications.Sender) *sdk.ClientSession {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,20 +161,27 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_backup_status", "get_machine_usage", "list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients"}
+	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
+		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks",
+		"list_machines", "list_notifications", "list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
-		"add_machine": {false, false}, "rotate_machine_token": {false, false}, "remove_machine": {true, true},
+		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
 		"add_destination": {false, false}, "update_destination": {false, true}, "remove_destination": {true, true},
 		"set_backup": {false, true}, "unset_backup": {true, true},
-		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
+		"add_channel": {false, false}, "update_channel": {false, true}, "remove_channel": {true, true}, "send_test_notification": {false, false},
+		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
+		"test_destination": {false, true},
+		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
+		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
 	}
+	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, and the package mirrors.
+	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine"}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
-		// Only send_test_email reaches outside the hub.
-		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "send_test_email") {
-			t.Errorf("%s annotations = %+v, want open world only for send_test_email", tool.Name, a)
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != slices.Contains(openWorld, tool.Name) {
+			t.Errorf("%s annotations = %+v, want open world only for %v", tool.Name, a, openWorld)
 			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {
@@ -197,6 +204,53 @@ func TestToolsList(t *testing.T) {
 	}
 	if want := slices.Sorted(maps.Keys(writes)); !reflect.DeepEqual(slices.Sorted(slices.Values(gotWrites)), want) {
 		t.Errorf("write tools = %v, want %v", gotWrites, want)
+	}
+}
+
+// Each tool's description names every field of what it returns, or the tool whose result it
+// matches ("as list_services shows it"), so a client knows what it gets without calling it. Every
+// paged tool states its page size.
+func TestToolDescriptionsSayWhatTheyReturn(t *testing.T) {
+	// Fields in a result's type that a tool never fills, and why.
+	sameAs := regexp.MustCompile(`as (\w+) shows it`)
+	never := map[string]string{
+		"set_backup credentials": "only the machine's own daemon gets the keys, over REST",
+	}
+	list, err := connect(t, seeded(t)).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type schema struct {
+		Properties map[string]schema `json:"properties"`
+		Items      *schema           `json:"items"`
+	}
+	for _, tool := range list.Tools {
+		var in, out schema
+		for _, c := range []struct {
+			from any
+			to   *schema
+		}{{tool.InputSchema, &in}, {tool.OutputSchema, &out}} {
+			b, _ := json.Marshal(c.from)
+			if err := json.Unmarshal(b, c.to); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, paged := in.Properties["cursor"]; paged && !strings.Contains(tool.Description, "1 to 500, default 50") {
+			t.Errorf("%s is paged, but its description doesn't give the page size (1 to 500, default 50)", tool.Name)
+		}
+		fields := out.Properties
+		if data, ok := fields["data"]; ok && data.Items != nil {
+			fields = data.Items.Properties // a list: the fields of each element
+		}
+		if m := sameAs.FindStringSubmatch(tool.Description); m != nil && m[1] != tool.Name && slices.ContainsFunc(list.Tools,
+			func(o *sdk.Tool) bool { return o.Name == m[1] }) {
+			continue // it names the tool whose fields it has; that tool's own description is checked
+		}
+		for name := range fields {
+			if _, ok := never[tool.Name+" "+name]; !ok && !regexp.MustCompile(`\b`+name+`\b`).MatchString(tool.Description) {
+				t.Errorf("%s returns %s, but its description doesn't say so", tool.Name, name)
+			}
+		}
 	}
 }
 
@@ -232,6 +286,7 @@ func TestToolsMatchREST(t *testing.T) {
 		{"list_destinations", nil, "/v1/backups/destinations"},
 		{"list_notifications", nil, "/v1/notifications"},
 		{"list_notifications", map[string]any{"machine": "g4f4r0-code", "severity": "critical"}, "/v1/machines/g4f4r0-code/notifications?severity=critical"},
+		{"list_notifications", map[string]any{"open": true}, "/v1/notifications?open=true"},
 	} {
 		var got any
 		structured(t, callTool(t, cs, c.tool, c.args), &got)
@@ -352,6 +407,8 @@ func TestListNotifications(t *testing.T) {
 		{map[string]any{"severity": "warning"}, []int64{2}},
 		{map[string]any{"machine": "g4f4r0-apps"}, []int64{}},
 		{map[string]any{"limit": 1}, []int64{3}},
+		{map[string]any{"open": true}, []int64{3, 1}},
+		{map[string]any{"open": true, "machine": "g4f4r0-code"}, []int64{1}},
 	} {
 		var l struct {
 			Data []struct {
@@ -368,7 +425,7 @@ func TestListNotifications(t *testing.T) {
 			t.Errorf("list_notifications %v = %v, want %v", c.args, got, c.want)
 		}
 	}
-	for _, args := range []map[string]any{{"status": "open"}, {"severity": "fatal"}} {
+	for _, args := range []map[string]any{{"status": "resolved"}, {"severity": "fatal"}} {
 		if res := callTool(t, cs, "list_notifications", args); !res.IsError {
 			t.Errorf("%v: want a tool error", args)
 		}
@@ -516,8 +573,7 @@ func TestMCPStdioRefusesTheWrongKey(t *testing.T) {
 	if err := d.Migrate(ctx, migrations()...); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Endpoint: "https://acct.r2.cloudflarestorage.com",
-		Bucket: "b", AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}); err != nil {
+	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "bkt", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Close(); err != nil {

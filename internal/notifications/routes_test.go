@@ -3,14 +3,11 @@ package notifications_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -35,15 +32,26 @@ func (i identity) Lookup(ctx context.Context, name string) (int64, error) {
 }
 
 // newHub serves the routes over seeded rows: ids 1 to 5, created at times 100 to 500.
-//  1. a, backup_failed, critical, sent
-//  2. a, disk_full, warning, pending
-//  3. b, backup_failed, critical, resolved
-//  4. none, hub_restarted, info, sent
-//  5. a, backup_failed, critical, resolved
+//  1. a, backup.failed, critical, sent
+//  2. a, disk.full, warning, pending
+//  3. b, backup.failed.resolved, critical, failed
+//  4. none, hub.restarted, info, sent
+//  5. a, backup.failed.resolved, critical, sent
+//
+// The open problems are 2 and 4: 5 resolved 1, and 3 is a resolved one.
 func newHub(t *testing.T) *httptest.Server { return newHubSending(t, nil) }
 
-// newHubSending is newHub with the test email route sending through sender.
+// newHubSending is newHub with the test route sending email through sender.
 func newHubSending(t *testing.T, sender notifications.Sender) *httptest.Server {
+	t.Helper()
+	srv, _ := newHubDB(t, sender)
+	return srv
+}
+
+var testKey = []byte("0123456789abcdef0123456789abcdef")
+
+// newHubDB is newHubSending that also returns the database.
+func newHubDB(t *testing.T, sender notifications.Sender) (*httptest.Server, *db.DB) {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
 	if err != nil {
@@ -63,20 +71,20 @@ func newHubSending(t *testing.T, sender notifications.Sender) *httptest.Server {
 	if err := d.Migrate(context.Background(), notifications.Migrations, server.Migrations); err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.Write.Exec(`INSERT INTO notifications (id, machine_id, type, severity, status, content, created_at, updated_at) VALUES
-		(1, 1, 'backup_failed', 'critical', 'sent', 'first', 100, 110),
-		(2, 1, 'disk_full', 'warning', 'pending', 'second', 200, 200),
-		(3, 2, 'backup_failed', 'critical', 'resolved', 'third', 300, 310),
-		(4, NULL, 'hub_restarted', 'info', 'sent', 'fourth', 400, 400),
-		(5, 1, 'backup_failed', 'critical', 'resolved', 'fifth', 500, 510)`)
+	_, err = d.Write.Exec(`INSERT INTO notifications (id, machine_id, event, severity, status, message, sent_at, created_at, updated_at) VALUES
+		(1, 1, 'backup.failed', 'critical', 'sent', 'first', 110, 100, 110),
+		(2, 1, 'disk.full', 'warning', 'pending', 'second', NULL, 200, 200),
+		(3, 2, 'backup.failed.resolved', 'critical', 'failed', 'third', NULL, 300, 310),
+		(4, NULL, 'hub.restarted', 'info', 'sent', 'fourth', 400, 400, 400),
+		(5, 1, 'backup.failed.resolved', 'critical', 'sent', 'fifth', 510, 500, 510)`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := server.New(d, slog.New(slog.NewTextHandler(io.Discard, nil)), identity{d})
-	notifications.NewStore(d).Routes(s, sender, "hub1")
+	notifications.NewStore(d, testKey).Routes(s, sender, notifications.Hub{Name: "hub1", URL: "https://hub1.example.com"})
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, d
 }
 
 func get(t *testing.T, srv *httptest.Server, path string, login bool, out any) int {
@@ -132,12 +140,17 @@ func TestList(t *testing.T) {
 		want       []int64
 	}{
 		{"all, newest first", "/v1/notifications", []int64{5, 4, 3, 2, 1}},
-		{"status", "/v1/notifications?status=resolved", []int64{5, 3}},
+		{"status", "/v1/notifications?status=sent", []int64{5, 4, 1}},
+		{"failed", "/v1/notifications?status=failed", []int64{3}},
 		{"severity", "/v1/notifications?severity=critical", []int64{5, 3, 1}},
-		{"status and severity", "/v1/notifications?status=sent&severity=critical", []int64{1}},
+		{"status and severity", "/v1/notifications?status=sent&severity=critical", []int64{5, 1}},
 		{"no match", "/v1/notifications?status=pending&severity=info", []int64{}},
+		{"open problems", "/v1/notifications?open=true", []int64{4, 2}},
+		{"open false", "/v1/notifications?open=false", []int64{5, 4, 3, 2, 1}},
+		{"open and severity", "/v1/notifications?open=true&severity=warning", []int64{2}},
 		{"one machine", "/v1/machines/a/notifications", []int64{5, 2, 1}},
-		{"one machine and status", "/v1/machines/a/notifications?status=resolved", []int64{5}},
+		{"one machine, open", "/v1/machines/a/notifications?open=true", []int64{2}},
+		{"one machine and status", "/v1/machines/a/notifications?status=pending", []int64{2}},
 		{"machine without any", "/v1/machines/c/notifications", []int64{}},
 	} {
 		var l server.List[notifications.Notification]
@@ -179,7 +192,8 @@ func TestListPages(t *testing.T) {
 func TestListRejectsBadQueries(t *testing.T) {
 	srv := newHub(t)
 	for path, want := range map[string]int{
-		"/v1/notifications?status=open":     422,
+		"/v1/notifications?status=resolved": 422,
+		"/v1/notifications?open=yes":        422,
 		"/v1/notifications?severity=fatal":  422,
 		"/v1/notifications?limit=0":         400,
 		"/v1/notifications?limit=501":       400,
@@ -203,8 +217,8 @@ func TestGet(t *testing.T) {
 	if code := get(t, srv, "/v1/machines/a/notifications/1", true, &n); code != 200 {
 		t.Fatalf("GET: %d", code)
 	}
-	if n.ID != 1 || n.Machine == nil || *n.Machine != "a" || n.Type != "backup_failed" || n.Severity != "critical" ||
-		n.Status != "sent" || n.Content != "first" || n.CreatedAt.Unix() != 100 || n.UpdatedAt.Unix() != 110 {
+	if n.ID != 1 || n.Machine == nil || *n.Machine != "a" || n.Event != "backup.failed" || n.Severity != "critical" ||
+		n.Status != "sent" || n.Message != "first" || n.SentAt == nil || n.SentAt.Unix() != 110 || n.CreatedAt.Unix() != 100 || n.UpdatedAt.Unix() != 110 {
 		t.Errorf("got %+v", n)
 	}
 	// Notification 3 belongs to machine b, 4 to no machine.
@@ -248,108 +262,3 @@ func send(t *testing.T, srv *httptest.Server, method, path, body string, out any
 }
 
 type problem struct{ Detail string }
-
-func TestRecipientRoutes(t *testing.T) {
-	srv := newHub(t)
-
-	var list server.List[notifications.Recipient]
-	if res := send(t, srv, "GET", "/v1/notifications/recipients", "", &list); res.StatusCode != 200 || list.Data == nil || len(list.Data) != 0 {
-		t.Fatalf("empty list: %d %+v, want 200 and []", res.StatusCode, list)
-	}
-
-	var added notifications.Recipient
-	res := send(t, srv, "POST", "/v1/notifications/recipients", `{"email":"johan@example.com"}`, &added)
-	if res.StatusCode != 201 || added.ID == 0 || added.Email != "johan@example.com" || added.CreatedAt.IsZero() ||
-		res.Header.Get("Location") != "/v1/notifications/recipients/"+strconv.FormatInt(added.ID, 10) {
-		t.Fatalf("add: %d %+v location %q", res.StatusCode, added, res.Header.Get("Location"))
-	}
-	send(t, srv, "POST", "/v1/notifications/recipients", `{"email":"ops@example.com"}`, nil)
-	send(t, srv, "GET", "/v1/notifications/recipients", "", &list)
-	if len(list.Data) != 2 || list.Data[0].Email != "johan@example.com" || list.Data[1].Email != "ops@example.com" {
-		t.Errorf("list = %+v, want both in the order added", list.Data)
-	}
-
-	var p problem
-	for _, c := range []struct {
-		name, body string
-		want       int
-	}{
-		{"duplicate", `{"email":"johan@example.com"}`, 409},
-		{"duplicate in another case", `{"email":"Johan@Example.com"}`, 409},
-		{"not an address", `{"email":"johan"}`, 422},
-		{"empty", `{"email":""}`, 422},
-		{"with a display name", `{"email":"Johan <johan@example.com>"}`, 422},
-		{"with a second address", `{"email":"a@example.com, b@example.com"}`, 422},
-		{"with a header injection", `{"email":"a@example.com\r\nBcc: x@example.com"}`, 422},
-		{"unknown field", `{"email":"x@example.com","name":"X"}`, 400},
-		{"not JSON", `{`, 400},
-		{"wrong type", `{"email":5}`, 422},
-	} {
-		if res := send(t, srv, "POST", "/v1/notifications/recipients", c.body, &p); res.StatusCode != c.want || p.Detail == "" {
-			t.Errorf("%s: %d %q, want %d with a sentence", c.name, res.StatusCode, p.Detail, c.want)
-		}
-	}
-	send(t, srv, "GET", "/v1/notifications/recipients", "", &list)
-	if len(list.Data) != 2 {
-		t.Errorf("%d recipients after the refused adds, want 2", len(list.Data))
-	}
-
-	path := "/v1/notifications/recipients/" + strconv.FormatInt(added.ID, 10)
-	if res := send(t, srv, "DELETE", path, "", nil); res.StatusCode != 204 {
-		t.Errorf("delete: %d, want 204", res.StatusCode)
-	}
-	for _, path := range []string{path, "/v1/notifications/recipients/999", "/v1/notifications/recipients/x"} {
-		if res := send(t, srv, "DELETE", path, "", &p); res.StatusCode != 404 || p.Detail == "" {
-			t.Errorf("DELETE %s: %d %q, want 404 with a sentence", path, res.StatusCode, p.Detail)
-		}
-	}
-	send(t, srv, "GET", "/v1/notifications/recipients", "", &list)
-	if len(list.Data) != 1 || list.Data[0].Email != "ops@example.com" {
-		t.Errorf("recipients after the delete = %+v, want only ops", list.Data)
-	}
-}
-
-// mailbox records what it is asked to send, and fails when fail is set.
-type mailbox struct {
-	to   [][]string
-	fail bool
-}
-
-func (m *mailbox) Send(_ context.Context, to []string, _ notifications.Message) error {
-	if m.fail {
-		return errors.New("smtp down")
-	}
-	m.to = append(m.to, to)
-	return nil
-}
-
-func TestTestEmailRoute(t *testing.T) {
-	// Email off.
-	off := newHub(t)
-	send(t, off, "POST", "/v1/notifications/recipients", `{"email":"a@example.com"}`, nil)
-	var p problem
-	if res := send(t, off, "POST", "/v1/notifications/test", "", &p); res.StatusCode != 422 || !strings.Contains(p.Detail, "TENDER_SMTP_HOST") {
-		t.Errorf("email off: %d %q, want 422 that says what to set", res.StatusCode, p.Detail)
-	}
-
-	box := &mailbox{}
-	srv := newHubSending(t, box)
-	if res := send(t, srv, "POST", "/v1/notifications/test", "", &p); res.StatusCode != 422 || !strings.Contains(p.Detail, "Add one") || len(box.to) != 0 {
-		t.Errorf("no recipients: %d %q, %d sent, want 422 that says to add one and nothing sent", res.StatusCode, p.Detail, len(box.to))
-	}
-
-	send(t, srv, "POST", "/v1/notifications/recipients", `{"email":"a@example.com"}`, nil)
-	send(t, srv, "POST", "/v1/notifications/recipients", `{"email":"b@example.com"}`, nil)
-	var sent notifications.TestResult
-	if res := send(t, srv, "POST", "/v1/notifications/test", "", &sent); res.StatusCode != 202 || !slices.Equal(sent.SentTo, []string{"a@example.com", "b@example.com"}) {
-		t.Errorf("test: %d %+v, want 202 to both", res.StatusCode, sent)
-	}
-	if len(box.to) != 1 || !slices.Equal(box.to[0], []string{"a@example.com", "b@example.com"}) {
-		t.Errorf("one email to both expected, got %v", box.to)
-	}
-
-	box.fail = true
-	if res := send(t, srv, "POST", "/v1/notifications/test", "", &p); res.StatusCode != 502 || !strings.Contains(p.Detail, "smtp down") || !strings.Contains(p.Detail, "TENDER_SMTP_") {
-		t.Errorf("send fails: %d %q, want 502 with the reason and what to check", res.StatusCode, p.Detail)
-	}
-}

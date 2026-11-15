@@ -14,17 +14,17 @@
 </html>
 {{end}}
 {{define "opened"}}{{template "head" .}}<p style="margin:0 0 16px;white-space:pre-wrap">{{.Content}}</p>
-<p style="margin:0 0 16px">This is <strong style="color:{{.Color}}">{{.Severity}}</strong> and has been open since {{.Since}}.</p>
-<p style="margin:0 0 16px">To look closer, ask your AI client to call <code>{{.Tool}}</code> for {{.Machine}}.</p>
+<p style="margin:0 0 16px">This is <strong style="color:{{.Color}}">{{.Severity}}</strong>, as of {{.Since}}.</p>
+<p style="margin:0 0 16px">To look closer, ask your AI client to call <code>{{.Tool}}</code>{{with .Machine}} for {{.}}{{end}}.</p>
 <p style="margin:0 0 16px">You'll get one more email when this is resolved.</p>
 {{template "foot" .}}{{end}}
 {{define "escalated"}}{{template "head" .}}<p style="margin:0 0 16px;white-space:pre-wrap">{{.Content}}</p>
-<p style="margin:0 0 16px">This was a warning and is now <strong style="color:{{.Color}}">critical</strong>. It has been open since {{.Since}}.</p>
-<p style="margin:0 0 16px">To look closer, ask your AI client to call <code>{{.Tool}}</code> for {{.Machine}}.</p>
+<p style="margin:0 0 16px">This got worse and is now <strong style="color:{{.Color}}">{{.Severity}}</strong>, as of {{.Since}}.</p>
+<p style="margin:0 0 16px">To look closer, ask your AI client to call <code>{{.Tool}}</code>{{with .Machine}} for {{.}}{{end}}.</p>
 {{template "foot" .}}{{end}}
-{{define "resolved"}}{{template "head" .}}<p style="margin:0 0 16px">This is resolved as of {{.ResolvedAt}}. It was open for {{.Duration}}.</p>
+{{define "resolved"}}{{template "head" .}}<p style="margin:0 0 16px">This is resolved as of {{.Since}}.</p>
 {{template "foot" .}}{{end}}
-{{define "test"}}{{template "head" .}}<p style="margin:0 0 16px">This is a test from the Tender hub on {{.Hub}}. If you can read it, alert emails reach you.</p>
+{{define "test"}}{{template "head" .}}<p style="margin:0 0 16px">This is a test from the Tender hub on {{.Hub}}. If you can read it, notification emails reach you.</p>
 </div>
 </body>
 </html>

@@ -246,7 +246,8 @@ func TestOldServicesStopRightBeforeTheNewOnesStart(t *testing.T) {
 	if err := e.in.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got := e.commands()
+	// Giving the moved state folder to root, as the daemon runs now, happens while neither runs.
+	got := slices.DeleteFunc(e.commands(), func(c string) bool { return strings.HasPrefix(c, "chown -R root:root ") })
 	for _, c := range []struct{ old, next string }{
 		{"systemctl disable --now tender-agent", "systemctl enable --now tenderd"},
 		{"systemctl disable --now tender-hub", "systemctl enable --now tenderhub"},

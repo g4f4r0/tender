@@ -180,8 +180,9 @@ func TestAddUsageRoute(t *testing.T) {
 			t.Errorf("%s: %d, want 422", name, res.StatusCode)
 		}
 	}
-	if res := h.do("POST", "/v1/machines/a/usage", tokenA, map[string]any{"cpu_loud": 1}, nil); res.StatusCode != 400 {
-		t.Errorf("unknown field: %d, want 400", res.StatusCode)
+	// A field this hub doesn't know, from a newer daemon, is ignored; the reading is still checked.
+	if res := h.do("POST", "/v1/machines/a/usage", tokenA, map[string]any{"cpu_loud": 1}, nil); res.StatusCode != 422 {
+		t.Errorf("unknown field: %d, want 422 for the reading without its time", res.StatusCode)
 	}
 
 	// A retry with the same Idempotency-Key stores one reading.

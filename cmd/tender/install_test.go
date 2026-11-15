@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -89,5 +91,31 @@ func TestCheckHub(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), machine.Token) {
 			t.Errorf("%s: the error shows the token", c.name)
 		}
+	}
+}
+
+// An install hub option passed empty clears its setting; one left out keeps it.
+func TestInstallHubClearsOptionsPassedEmpty(t *testing.T) {
+	fs := flag.NewFlagSet("install hub", flag.ContinueOnError)
+	var host, from, user string
+	var port int
+	fs.StringVar(&host, "smtp-host", "", "")
+	fs.StringVar(&from, "smtp-from", "", "")
+	fs.StringVar(&user, "smtp-username", "", "")
+	fs.IntVar(&port, "smtp-port", 0, "")
+	if err := fs.Parse([]string{"--smtp-host", "", "--smtp-from=", "--smtp-port", "0"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := clearedSettings(fs); !slices.Equal(got, []string{"TENDER_SMTP_FROM", "TENDER_SMTP_HOST", "TENDER_SMTP_PORT"}) {
+		t.Errorf("cleared %q", got)
+	}
+	fs = flag.NewFlagSet("install hub", flag.ContinueOnError)
+	fs.StringVar(&host, "smtp-host", "", "")
+	fs.StringVar(&user, "smtp-username", "", "")
+	if err := fs.Parse([]string{"--smtp-host", "smtp.example.net"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := clearedSettings(fs); len(got) != 0 {
+		t.Errorf("cleared %q, though nothing was passed empty", got)
 	}
 }

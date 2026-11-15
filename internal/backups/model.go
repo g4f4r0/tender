@@ -15,51 +15,67 @@ const (
 )
 
 // Destination is a named place backups go, as GET /v1/backups/destinations/{destination} returns it.
-// Its keys and password stay in the hub, encrypted, and are never part of this response.
+// Config holds the type's settings. Its secrets show as "***", with <field>_set true, and the
+// password is never part of it.
 type Destination struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`     // s3
-	Endpoint  string    `json:"endpoint"` // https://<account>.r2.cloudflarestorage.com
-	Bucket    string    `json:"bucket"`
-	Path      string    `json:"path"` // folder inside the bucket, may be empty
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        int64          `json:"id"`
+	Name      string         `json:"name"`
+	Type      string         `json:"type"`     // s3, local, sftp, rest or rclone
+	Config    map[string]any `json:"config"`   // the type's fields, secrets hidden
+	Location  string         `json:"location"` // the restic repository, without a machine's folder
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
-// Repository is the restic repository of one machine at this destination: a folder named after
-// the machine, so machines can share a bucket. Each machine has its own repository because
-// restic's prune and check lock the whole repository.
-func (d Destination) Repository(machine string) string {
-	repo := "s3:" + d.Endpoint + "/" + d.Bucket
-	if d.Path != "" {
-		repo += "/" + d.Path
+// DaemonSettings is Settings as the machine's own daemon gets them: with the credentials, and an
+// s3 destination's place where daemons before v0.3 read it, so one that isn't updated yet keeps
+// backing up. A daemon reads an older hub's answer, and its own saved copy, through it too.
+type DaemonSettings struct {
+	Settings
+	Destination DaemonDestination `json:"destination"`
+}
+
+// DaemonDestination is a destination with an s3 destination's place in the fields before v0.3.
+type DaemonDestination struct {
+	Destination
+	Endpoint string `json:"endpoint,omitempty"`
+	Bucket   string `json:"bucket,omitempty"`
+	Path     string `json:"path,omitempty"`
+}
+
+// settings returns the settings with the destination's whole config in the credentials, made
+// from the fields before v0.3 when an older hub sent no config.
+func (ds DaemonSettings) settings() Settings {
+	s := ds.Settings
+	s.Destination = ds.Destination.Destination
+	if c := s.Credentials; c != nil && c.Config == nil && (s.Destination.Type == "s3" || s.Destination.Type == "") &&
+		c.AccessKeyID != "" && c.SecretAccessKey != "" {
+		cc := *c
+		cc.Config = map[string]any{"endpoint": ds.Destination.Endpoint, "bucket": ds.Destination.Bucket, "path": ds.Destination.Path,
+			"access_key_id": c.AccessKeyID, "secret_access_key": c.SecretAccessKey}
+		s.Credentials = &cc
 	}
-	return repo + "/" + machine
+	if s.Destination.Type == "" {
+		s.Destination.Type = "s3"
+	}
+	return s
 }
 
-// DestinationInput is the body of POST /v1/backups/destinations. The secrets are write-only:
-// the hub stores them encrypted and never returns them on a people route. Without a password,
-// the hub generates one and returns it once, in DestinationCreated.
+// DestinationInput is the body of POST /v1/backups/destinations. The secrets in Config are
+// write-only: the hub stores them encrypted and never returns them on a people route. Without a
+// password, the hub generates one and returns it once, in DestinationCreated.
 type DestinationInput struct {
-	Name            string `json:"name"`
-	Type            string `json:"type"` // s3, the default
-	Endpoint        string `json:"endpoint"`
-	Bucket          string `json:"bucket"`
-	Path            string `json:"path"`
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
-	Password        string `json:"password,omitempty"` // encrypts every machine's repository at this destination
+	Name     string         `json:"name"`
+	Type     string         `json:"type"` // s3, the default, local, sftp, rest or rclone
+	Config   map[string]any `json:"config"`
+	Password string         `json:"password,omitempty"` // encrypts every machine's repository at this destination
 }
 
-// DestinationPatch is the JSON Merge Patch body of PATCH /v1/backups/destinations/{destination}.
-// The password can't change: the repositories are encrypted with it.
+// DestinationPatch is the JSON Merge Patch body of PATCH /v1/backups/destinations/{destination}:
+// fields of config to change, null to remove an optional one. A secret given as "***" stays as it
+// is. The type and the password can't change.
 type DestinationPatch struct {
-	Endpoint        *string `json:"endpoint,omitempty"`
-	Bucket          *string `json:"bucket,omitempty"`
-	Path            *string `json:"path,omitempty"`
-	AccessKeyID     *string `json:"access_key_id,omitempty"`
-	SecretAccessKey *string `json:"secret_access_key,omitempty"`
+	Config map[string]any `json:"config"`
 }
 
 // DestinationCreated is the 201 response of POST /v1/backups/destinations. Password is set only
@@ -72,9 +88,26 @@ type DestinationCreated struct {
 // Credentials are what a daemon needs to open its repository. Only the daemon's own
 // GET /v1/machines/{machine}/backups/settings, with its token, includes them.
 type Credentials struct {
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
-	Password        string `json:"password"`
+	Password string         `json:"password"`
+	Config   map[string]any `json:"config,omitempty"` // the destination's whole config, secrets in the clear
+
+	// An s3 destination's keys, as daemons before v0.3 read them.
+	AccessKeyID     string `json:"access_key_id,omitempty"`
+	SecretAccessKey string `json:"secret_access_key,omitempty"`
+}
+
+// Target is a destination with everything a daemon needs to reach it, for a test action: the hub
+// hands it to the daemon that runs the test, with the action, and never stores it with it.
+type Target struct {
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Config   map[string]any `json:"config"` // secrets in the clear
+	Password string         `json:"password"`
+}
+
+// TestInput is the body of POST /v1/backups/destinations/{destination}/test.
+type TestInput struct {
+	Machine string `json:"machine"` // the machine whose daemon tries the destination
 }
 
 // Settings is a machine's backup settings, as GET /v1/machines/{machine}/backups/settings returns it.

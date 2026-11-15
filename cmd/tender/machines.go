@@ -2,18 +2,25 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
+	"time"
 
+	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/machines"
 )
 
-var machinesUsage = groupUsage("machines", "Add the machines that back up, and manage their tokens.", []row{
+var machinesUsage = groupUsage("machines", "Add the machines that back up, manage their tokens and settings, and upgrade their packages.", []row{
 	{"list", "List the machines and when each last reported"},
 	{"add NAME", "Add a machine and print its token once"},
 	{"remove NAME --yes", "Remove a machine and its history from the hub"},
 	{"rotate-token NAME", "Replace a machine's token and print the new one"},
+	{"set NAME [--updates MODE ...]", "Change a machine's update mode and security settings"},
+	{"upgrade NAME [--all-packages]", "Upgrade a machine's system packages"},
 })
 
 // runMachines runs "tender machines list|add|remove|rotate-token".
@@ -23,6 +30,8 @@ func runMachines(args []string, s session) error {
 		"add":          func(a []string) error { return machinesAdd(a, s) },
 		"remove":       func(a []string) error { return machinesRemove(a, s) },
 		"rotate-token": func(a []string) error { return machinesRotate(a, s) },
+		"set":          func(a []string) error { return machinesSet(a, s) },
+		"upgrade":      func(a []string) error { return machinesUpgrade(a, s) },
 	})
 }
 
@@ -50,15 +59,18 @@ func machinesList(args []string, s session) error {
 	}
 	rows := make([][]string, len(list))
 	for i, m := range list {
-		rows[i] = []string{m.Name, "never", "-", "-"}
+		rows[i] = []string{m.Name, "never", "-", "-", "-"}
 		if m.LastSeen != nil {
 			rows[i][1] = ago(s.now(), *m.LastSeen)
 		}
 		if m.Usage != nil {
 			rows[i][2], rows[i][3] = fmt.Sprintf("%.0f%%", m.Usage.MemoryUsedPercent), fmt.Sprintf("%.0f%%", m.Usage.DiskUsedPercent)
 		}
+		if m.Version != nil {
+			rows[i][4] = *m.Version
+		}
 	}
-	printTable(s.out, []string{"NAME", "LAST SEEN", "MEMORY", "DISK"}, rows)
+	printTable(s.out, []string{"NAME", "LAST SEEN", "MEMORY", "DISK", "VERSION"}, rows)
 	return nil
 }
 
@@ -158,4 +170,113 @@ func daemonHubURL(hub string) string {
 		return "HUB_URL"
 	}
 	return hub
+}
+
+// listFlag is a flag that may be given more than once.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
+
+func machinesSet(args []string, s session) error {
+	fs := newFlagSet("machines set", "NAME [--updates inherit|auto|manual] [--allow-port PORT ...]\n[--deny-port PORT ...] [--security-alerts on|off] [--hub URL]",
+		"Change a machine's settings. --updates gives it its own update mode, or inherit to follow the hub's (tender updates set). "+
+			"--allow-port puts a port, such as 41641/udp, on its security allowlist, so it doesn't alert as exposed; --deny-port "+
+			"takes one off. --security-alerts turns its security alert emails on or off.")
+	hubURL := hubFlag(fs)
+	mode := fs.String("updates", "", "`MODE` inherit, auto or manual")
+	var allow, deny listFlag
+	fs.Var(&allow, "allow-port", "`PORT` a port with its protocol, such as 41641/udp, that may listen on a public address; repeat for more")
+	fs.Var(&deny, "deny-port", "`PORT` a port to take off the allowlist; repeat for more")
+	alerts := fs.String("security-alerts", "", "`on|off` the machine's security alert emails")
+	rest, err := parseWithArgs(fs, args, s.out)
+	if err != nil {
+		return err
+	}
+	name, err := oneArg(fs, rest, "a machine name")
+	if err != nil {
+		return err
+	}
+	var p machines.Patch
+	if *mode != "" {
+		p.Updates = mode
+	}
+	switch *alerts {
+	case "":
+	case "on", "off":
+		on := *alerts == "on"
+		p.SecurityAlerts = &on
+	default:
+		return usageError(fs, "--security-alerts takes on or off, got %q", *alerts)
+	}
+	if p.Updates == nil && p.SecurityAlerts == nil && len(allow) == 0 && len(deny) == 0 {
+		return usageError(fs, "machines set needs --updates, --allow-port, --deny-port or --security-alerts")
+	}
+	hub, err := newHubAPI(fs, *hubURL)
+	if err != nil {
+		return err
+	}
+	if len(allow) > 0 || len(deny) > 0 {
+		var m machines.Overview
+		if err := hub.do(http.MethodGet, machinePath(name, ""), nil, &m); err != nil {
+			return err
+		}
+		ports := append(slices.Clone(m.SecurityAllowedPorts), allow...)
+		ports = slices.DeleteFunc(ports, func(p string) bool { return slices.Contains(deny, p) })
+		p.SecurityAllowedPorts = &ports
+	}
+	var m machines.Overview
+	if err := hub.do(http.MethodPatch, machinePath(name, ""), p, &m); err != nil {
+		return err
+	}
+	ports := "none"
+	if len(m.SecurityAllowedPorts) > 0 {
+		ports = strings.Join(m.SecurityAllowedPorts, ", ")
+	}
+	state := "on"
+	if !m.SecurityAlerts {
+		state = "off"
+	}
+	say(s.out, "%s: updates %s, allowed ports %s, security alerts %s.", m.Name, m.Updates, ports, state)
+	return nil
+}
+
+// upgradeWait is how long "tender machines upgrade" waits for the upgrade, which the hub gives 45 minutes.
+var upgradeWait = 45 * time.Minute
+
+func machinesUpgrade(args []string, s session) error {
+	fs := newFlagSet("machines upgrade", "NAME [--all-packages] [--hub URL]",
+		"Upgrade a Debian or Ubuntu machine's system packages: the security updates, with unattended-upgrade, or every package with "+
+			"--all-packages, with apt-get upgrade, keeping changed config files. The daemon runs it outside its sandbox, in the "+
+			"tenderupgrade unit, and this waits for it and prints the end of its output. Tender never reboots the machine: "+
+			"tender security says when it needs one.")
+	hubURL := hubFlag(fs)
+	all := fs.Bool("all-packages", false, "upgrade every package, not only the security updates")
+	rest, err := parseWithArgs(fs, args, s.out)
+	if err != nil {
+		return err
+	}
+	name, err := oneArg(fs, rest, "a machine name")
+	if err != nil {
+		return err
+	}
+	hub, err := newHubAPI(fs, *hubURL)
+	if err != nil {
+		return err
+	}
+	packages := actions.PackagesSecurity
+	if *all {
+		packages = actions.PackagesAll
+	}
+	say(s.out, "Upgrading %s on %s. This can take a few minutes.", actions.PackagesText(packages), name)
+	a, err := queueActionFor(hub, name, actions.Input{Type: actions.TypeUpgrade, Packages: &packages}, upgradeWait)
+	if err != nil {
+		return err
+	}
+	if a.Output != nil && *a.Output != "" {
+		_, _ = io.WriteString(s.out, strings.TrimRight(*a.Output, "\n")+"\n")
+	}
+	say(s.out, "Upgraded %s on %s.", actions.PackagesText(packages), name)
+	return nil
 }

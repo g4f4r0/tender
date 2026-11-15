@@ -9,36 +9,49 @@ import (
 	"os"
 	"strings"
 
+	"github.com/g4f4r0/tender/internal/actions"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/server"
+	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/updates"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 var usage = `Tender backs up whole servers on a schedule and reports every run to a hub.
+It also watches and controls each machine's Docker services.
 AI clients can check on it and manage it over MCP.
 
 Usage: tender COMMAND [options]
 
 Work with the hub, from any machine that can reach it:
 ` + table([]row{
-	{"status", "Show the machines, their last backup and the open alerts"},
-	{"machines COMMAND", "list, add, remove, rotate-token"},
-	{"destinations COMMAND", "list, add, remove"},
+	{"status", "Show the machines, their last backup, services and open problems"},
+	{"machines COMMAND", "list, add, remove, rotate-token, set, upgrade"},
+	{"destinations COMMAND", "list, add, update, test, remove"},
 	{"backups COMMAND", "status, set, unset"},
-	{"recipients COMMAND", "list, add, remove"},
-	{"email test", "Send a test email to every recipient"},
+	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
+	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
+	{"actions COMMAND", "list, show"},
+	{"sinks COMMAND", "list, add, show, update, remove"},
+	{"channels COMMAND", "list, add, show, update, remove, test"},
+	{"notifications COMMAND", "list"},
+	{"security [MACHINE]", "Show the machines' security checks"},
+	{"update MACHINE ...|--all", "Update Tender on machines, through the hub"},
+	{"updates COMMAND", "show, set"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
 	{"install daemon --hub URL --machine NAME", "Install and start the daemon"},
 	{"install hub [--smtp-host HOST ...]", "Install and start the hub"},
 	{"install refresh", "Restart the installed services on this binary"},
-	{"update [--version vX.Y.Z]", "Update Tender to the latest release"},
+	{"update [--version X.Y.Z]", "Update Tender on this machine to the latest release"},
 }) + `
 Run as services:
 ` + table([]row{
@@ -58,17 +71,24 @@ Docs: ` + docsURL + `
 
 // hubCommands are the commands that talk to the hub over its REST API, and need no root.
 var hubCommands = map[string]func([]string, session) error{
-	"status":       runStatus,
-	"machines":     runMachines,
-	"destinations": runDestinations,
-	"backups":      runBackups,
-	"recipients":   runRecipients,
-	"email":        runEmail,
+	"status":        runStatus,
+	"machines":      runMachines,
+	"destinations":  runDestinations,
+	"backups":       runBackups,
+	"services":      runServices,
+	"logs":          runLogs,
+	"actions":       runActions,
+	"sinks":         runSinks,
+	"channels":      runChannels,
+	"notifications": runNotifications,
+	"updates":       runUpdates,
+	"security":      runSecurity,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
-	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, server.Migrations}
+	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations,
+		logs.Migrations, security.Migrations, updates.Migrations, server.Migrations}
 }
 
 func main() {
@@ -90,7 +110,7 @@ func main() {
 	case "install":
 		err = runInstall(os.Args[2:], os.Stdin, newSession())
 	case "update":
-		err = runUpdate(os.Args[2:], cleanVersion, os.Stdout)
+		err = runUpdate(os.Args[2:], cleanVersion, newSession())
 	case "version":
 		fmt.Println("Tender " + cleanVersion)
 	case "help", "-h", "--help":

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Stands in for systemctl in tests, for the transient units the fake systemd-run starts: show, stop
+# and reset-failed.
+dir=${FAKE_SYSTEMD_DIR:-$TENDER_TEST_ROOT/run/fake-systemd}
+mkdir -p "$dir"
+echo "systemctl $*" >>"$dir/log"
+cmd=$1
+unit=${*: -1}
+unit=${unit%.service}
+case $cmd in
+  show)
+    if [ -f "$dir/$unit.service" ]; then cat "$dir/$unit.service"
+    else printf 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\n'; fi ;;
+  stop|reset-failed) rm -f "$dir/$unit.service" ;;
+  *) echo "the fake systemctl doesn't know $cmd" >&2; exit 1 ;;
+esac
