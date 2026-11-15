@@ -36,10 +36,13 @@ CREATE TABLE services (
   UNIQUE (machine_id, name)
 ) STRICT;
 
+-- An action outlives its service, such as the stop of a container that removes itself: service
+-- keeps the name, and service_id is null once the service is gone.
 CREATE TABLE service_actions (
   id         INTEGER PRIMARY KEY,
   machine_id INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
-  service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  service_id INTEGER REFERENCES services(id) ON DELETE SET NULL,
+  service    TEXT NOT NULL,
   type       TEXT NOT NULL CHECK (type IN ('start', 'stop', 'restart', 'logs')),
   status     TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
   lines      INTEGER CHECK (lines BETWEEN 1 AND 2000),

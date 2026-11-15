@@ -190,10 +190,10 @@ func (d *Daemon) runActions(ctx context.Context) {
 
 // run does one action and reports how it ended. The output, which may be logs, is never logged.
 func (d *Daemon) run(ctx context.Context, a Action) {
-	status := d.finish(ctx, a)
-	// A report after a change shows the new state at once. Not after a failure: the report would
-	// remove a container that is gone, and its actions with it, before the result is read.
-	if a.Type != TypeLogs && status == StatusCompleted {
+	d.finish(ctx, a)
+	// A report after a start, stop or restart shows the new state at once, even after a failure,
+	// which may have changed the container too. The action stays readable when its container is gone.
+	if a.Type != TypeLogs {
 		select {
 		case d.report <- struct{}{}:
 		default:
@@ -201,8 +201,8 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 	}
 }
 
-// finish does one action and tells the hub how it ended, in its turn, and returns the status.
-func (d *Daemon) finish(ctx context.Context, a Action) string {
+// finish does one action and tells the hub how it ended, in its turn.
+func (d *Daemon) finish(ctx context.Context, a Action) {
 	d.turn.Lock()
 	defer d.turn.Unlock()
 	actx, cancel := context.WithTimeout(ctx, actionTimeout)
@@ -248,7 +248,6 @@ func (d *Daemon) finish(ctx context.Context, a Action) string {
 	if err != nil {
 		d.Log.Error("could not tell the hub how a service action ended", "id", a.ID, "type", a.Type, "error", err)
 	}
-	return p.Status
 }
 
 // failure says why an action failed, as one sentence.

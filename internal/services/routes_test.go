@@ -277,10 +277,11 @@ func TestDaemon(t *testing.T) {
 	if a.Status != StatusFailed || a.Output == nil || *a.Output != "Could not restart worker: Docker answered 404: No such container: worker." {
 		t.Errorf("restart of a gone container = %+v", a)
 	}
-	// A failed action doesn't bring the report forward, so the result is there to read before the
-	// report removes the service, and its actions with it. The next start does.
-	do(ActionInput{Type: TypeStart}, "web")
+	// The report after it removes worker; the failed restart stays readable.
 	waitFor("worker to leave the list", func() bool { l, _ := s.List(ctx, 1); return len(l) == 1 })
+	if got, err := s.Action(ctx, 1, a.ID); err != nil || got.Status != StatusFailed || got.Service != "worker" {
+		t.Errorf("the failed restart after worker went = %+v, %v", got, err)
+	}
 
 	for name, logs := range map[string]string{"hub": h.logs.String(), "daemon": daemonLogs.String()} {
 		if strings.Contains(logs, "secret-looking") {

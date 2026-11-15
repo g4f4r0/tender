@@ -199,7 +199,7 @@ func streak(holds bool, n int) int {
 }
 
 // Replace makes in the machine's full service list, from a report that Docker is running, as the daemon reports it: it adds new
-// services, updates the others and deletes the ones that are gone, with their actions. A service
+// services, updates the others and deletes the ones that are gone; their actions stay. A service
 // keeps its alert switch. stopped_by_tender clears once the service runs again, or its container
 // is made again or started since (a new container_id or started_at).
 func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput) ([]Service, error) {
@@ -316,8 +316,8 @@ func (s *Store) SetAlerts(ctx context.Context, machineID int64, name string, on 
 // Actions
 
 const selectActions = `
-SELECT a.id, m.name, s.name, a.type, a.status, a.lines, a.output, a.created_at, a.updated_at
-FROM service_actions a JOIN machines m ON m.id = a.machine_id JOIN services s ON s.id = a.service_id`
+SELECT a.id, m.name, a.service, a.type, a.status, a.lines, a.output, a.created_at, a.updated_at
+FROM service_actions a JOIN machines m ON m.id = a.machine_id`
 
 func scanAction(row scanner) (Action, error) {
 	var a Action
@@ -363,8 +363,8 @@ func (s *Store) CreateAction(ctx context.Context, machineID int64, service strin
 	now := time.Now().Unix()
 	var id int64
 	err = s.db.Write.QueryRowContext(ctx,
-		`INSERT INTO service_actions (machine_id, service_id, type, status, lines, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		machineID, serviceID, in.Type, StatusPending, in.Lines, now, now).Scan(&id)
+		`INSERT INTO service_actions (machine_id, service_id, service, type, status, lines, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		machineID, serviceID, service, in.Type, StatusPending, in.Lines, now, now).Scan(&id)
 	if err != nil {
 		return Action{}, err
 	}
@@ -496,7 +496,7 @@ func (s *Store) Finish(ctx context.Context, machineID, id int64, p ActionPatch) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	var typ, status string
-	var serviceID int64
+	var serviceID *int64 // null once the service is gone
 	err = tx.QueryRowContext(ctx, `SELECT type, status, service_id FROM service_actions WHERE machine_id = ? AND id = ?`, machineID, id).
 		Scan(&typ, &status, &serviceID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -513,9 +513,9 @@ func (s *Store) Finish(ctx context.Context, machineID, id int64, p ActionPatch) 
 		p.Status, p.Output, now, id); err != nil {
 		return err
 	}
-	if typ != TypeLogs && p.Status == StatusCompleted {
+	if typ != TypeLogs && p.Status == StatusCompleted && serviceID != nil {
 		if _, err := tx.ExecContext(ctx, `UPDATE services SET stopped_by_tender = ?, updated_at = ? WHERE id = ?`,
-			typ == TypeStop, now, serviceID); err != nil {
+			typ == TypeStop, now, *serviceID); err != nil {
 			return err
 		}
 	}

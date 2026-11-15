@@ -116,7 +116,7 @@ type ServicePatch struct {
 }
 
 // Action is something a person or an AI client asked the daemon to do to a service, as
-// GET /v1/machines/{machine}/services/actions/{id} returns it.
+// GET /v1/machines/{machine}/service-actions/{id} returns it. It stays after its service is gone.
 type Action struct {
 	ID        int64     `json:"id"`
 	Machine   string    `json:"machine"` // the machine's name
@@ -135,7 +135,7 @@ type ActionInput struct {
 	Lines *int   `json:"lines,omitempty"` // logs only, 1 to 2000, default 200
 }
 
-// ActionPatch is the body of PATCH /v1/machines/{machine}/services/actions/{id}, with which the
+// ActionPatch is the body of PATCH /v1/machines/{machine}/service-actions/{id}, with which the
 // daemon reports how an action ended.
 type ActionPatch struct {
 	Status string  `json:"status"` // completed or failed

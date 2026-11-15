@@ -259,12 +259,43 @@ func TestActions(t *testing.T) {
 		t.Errorf("kept %d actions, %v", n, err)
 	}
 
-	// A removed service takes its actions with it.
+	// A removed service leaves its actions, still named, such as the stop of a --rm container.
+	last, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
+	if _, err := s.Take(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, 1, last.ID, ActionPatch{Status: StatusCompleted}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Read.QueryRow(`SELECT count(*) FROM service_actions`).Scan(&n); err != nil || n != 0 {
-		t.Errorf("%d actions left after the service went, %v", n, err)
+	if got, err := s.Action(ctx, 1, last.ID); err != nil || got.Status != StatusCompleted || got.Service != "web" {
+		t.Errorf("the stop after its service went = %+v, %v", got, err)
+	}
+	if err := d.Read.QueryRow(`SELECT count(*) FROM service_actions WHERE service_id IS NULL`).Scan(&n); err != nil || n != 100 {
+		t.Errorf("%d actions kept without their service, %v", n, err)
+	}
+	// One still running when its service goes can finish.
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
+		t.Fatal(err)
+	}
+	late, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
+	if _, err := s.Take(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, 1, late.ID, ActionPatch{Status: StatusCompleted}); err != nil {
+		t.Errorf("finish after the service went: %v", err)
+	}
+	// A new service of the same name doesn't take the old actions.
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c2")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Read.QueryRow(`SELECT count(*) FROM service_actions WHERE service_id IS NOT NULL`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d old actions joined the new service, %v", n, err)
 	}
 }
 
