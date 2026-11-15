@@ -26,7 +26,7 @@ Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, 
 4. A request body is one JSON object of at most 1 MiB, and a larger one gets `413`. A field the route doesn't know is `400`, and a field of the wrong type is `422`. JSON that isn't an object, such as `[]`, gets `422` with `The request body must be a JSON object.`
 5. A collection answers `{"data": [...]}`. A paged collection takes `limit`, from 1 to 500 with a default of 50, and adds `next_cursor` when there are more. Pass it as `cursor` for the next page. The last page has no `next_cursor`.
 6. A create answers `201 Created` with the new object and its address in the `Location` header.
-7. `PATCH` takes a JSON object with only the fields to change. The hub reads it as JSON whatever its `Content-Type`, so `application/merge-patch+json` and `application/json` both work. A field you leave out, or set to `null`, stays as it is.
+7. `PATCH` takes a JSON object with only the fields to change. The hub reads it as JSON whatever its `Content-Type`, so `application/merge-patch+json` and `application/json` both work. A field you leave out stays as it is. Inside a `config`, `null` removes an optional field and a secret sent as `"***"` stays as it is.
 8. A `DELETE` answers `204 No Content`.
 
 ### Errors
@@ -2199,6 +2199,344 @@ Content-Type: application/json
 | --- | --- |
 | `get_action` | `tender actions show apps 8` |
 
+## Log sinks
+
+A log sink is a place each machine's daemon sends its logs to: the systemd journal and its Docker containers' logs, straight from the machine. The logs never pass through the hub, which keeps only the sinks and each daemon's counters. [Log shipping](log-shipping.md) explains the batches, the buffer and the webhook contract.
+
+A sink's JSON has `id`, `name`, `type`, `config`, `enabled`, `sources`, `machines`, `status`, `created_at` and `updated_at`. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set.
+
+| Type | `config` fields | Secrets |
+| --- | --- | --- |
+| `otlp` | `endpoint`, the collector's OTLP/HTTP logs URL, such as `https://otel.example.com:4318/v1/logs` | `headers`, an object of HTTP headers, such as `{"Authorization": "Bearer <key>"}` |
+| `webhook` | `url` | `secret`, at least 16 characters. Leave it out and the hub makes one. |
+
+`sources` says which logs go, as `{"journal": {"units": [], "min_priority": "info"}, "services": {"names": []}}`. An empty `units` or `names` list means all of them, and a source that is `null` sends nothing. `min_priority` is the least severe journal priority sent: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. `machines` lists the machines that send to the sink, and an empty list means every machine.
+
+`status` has one entry per machine whose daemon reported on the sink. Daemons report every minute, and within seconds when sending starts or stops failing. Each entry has these fields:
+
+| Field | What it is |
+| --- | --- |
+| `machine` | The machine's name. |
+| `records_sent` | The records the sink took, since the daemon first sent to it. |
+| `records_dropped` | The records the daemon dropped, because its buffer for the sink was full or the sink refused them for good. |
+| `last_sent_at` | When a send last worked, or `null`. |
+| `last_error` | Why the last send failed, such as `the sink answered 503 Service Unavailable`, or `null` once a send works. |
+| `failing_since` | When sending started to fail, or `null` while it works. |
+| `last_dropped_at` | When the daemon last dropped records, or `null`. |
+| `created_at`, `updated_at` | When the machine first and last reported on the sink. |
+
+### `GET /v1/logs/sinks`
+
+Lists every sink, by name, with each machine's status. Secrets show as `"***"`.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/logs/sinks
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "otel",
+      "type": "otlp",
+      "config": {
+        "endpoint": "https://otel.example.com:4318/v1/logs",
+        "headers": "***",
+        "headers_set": true
+      },
+      "enabled": true,
+      "sources": {
+        "journal": {"units": [], "min_priority": "info"},
+        "services": {"names": []}
+      },
+      "machines": [],
+      "status": [
+        {
+          "machine": "apps",
+          "records_sent": 18342,
+          "records_dropped": 0,
+          "last_sent_at": "2026-11-15T12:04:10Z",
+          "last_error": null,
+          "failing_since": null,
+          "last_dropped_at": null,
+          "created_at": "2026-11-15T11:31:02Z",
+          "updated_at": "2026-11-15T12:04:12Z"
+        }
+      ],
+      "created_at": "2026-11-15T11:30:41Z",
+      "updated_at": "2026-11-15T11:30:41Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_log_sinks` | `tender sinks list` |
+
+### `POST /v1/logs/sinks`
+
+Adds a sink. Each daemon it is for starts sending to it within a minute, with the logs from then on.
+
+For a `webhook` sink without a `secret`, the response has `secret`, the one the hub made, shown only this once. Give it to the receiver, which checks each batch's signature with it.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
+| `type` | string | Yes | Body. `otlp` or `webhook`. |
+| `config` | object | Yes | Body. The type's fields, from the table above. The hub stores the secrets encrypted. |
+| `enabled` | boolean | No | Body. Whether daemons send to it. The default is `true`. |
+| `sources` | object | No | Body. Which logs go. The default is every unit's journal from `info` up, and every container. |
+| `machines` | array | No | Body. The machines that send to it, by name. The default, `[]`, is every machine. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "otel", "type": "otlp", "config": {"endpoint": "https://otel.example.com:4318/v1/logs", "headers": {"Authorization": "Bearer <key>"}}}'
+```
+
+A webhook sink for one machine's nginx journal and its web container:
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "hook", "type": "webhook", "config": {"url": "https://logs.example.com/tender"}, "machines": ["apps"], "sources": {"journal": {"units": ["nginx.service"], "min_priority": "warning"}, "services": {"names": ["web"]}}}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/logs/sinks/hook
+
+{
+  "id": 2,
+  "name": "hook",
+  "type": "webhook",
+  "config": {
+    "secret": "***",
+    "secret_set": true,
+    "url": "https://logs.example.com/tender"
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": ["nginx.service"], "min_priority": "warning"},
+    "services": {"names": ["web"]}
+  },
+  "machines": ["apps"],
+  "status": [],
+  "created_at": "2026-11-15T11:32:08Z",
+  "updated_at": "2026-11-15T11:32:08Z",
+  "secret": "<secret>"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `409` | A sink with this name already exists. |
+| `422` | The name or the type isn't valid, `config` is missing, a config field is missing, unknown for the type or not valid, a secret is given as `"***"`, `sources` names neither source or has a unit, container or priority that isn't valid, or `machines` names a machine that doesn't exist. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `add_log_sink` | `tender sinks add otel --type otlp --endpoint URL --headers-file PATH` |
+
+### `GET /v1/logs/sinks/{sink}`
+
+Returns one sink, with each machine's status and its secrets shown as `"***"`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | Path. The sink's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "otel",
+  "type": "otlp",
+  "config": {
+    "endpoint": "https://otel.example.com:4318/v1/logs",
+    "headers": "***",
+    "headers_set": true
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": [], "min_priority": "info"},
+    "services": {"names": []}
+  },
+  "machines": [],
+  "status": [
+    {
+      "machine": "apps",
+      "records_sent": 18342,
+      "records_dropped": 120,
+      "last_sent_at": "2026-11-15T12:04:10Z",
+      "last_error": "the sink answered 503 Service Unavailable",
+      "failing_since": "2026-11-15T12:04:40Z",
+      "last_dropped_at": "2026-11-15T12:20:13Z",
+      "created_at": "2026-11-15T11:31:02Z",
+      "updated_at": "2026-11-15T12:20:15Z"
+    }
+  ],
+  "created_at": "2026-11-15T11:30:41Z",
+  "updated_at": "2026-11-15T11:30:41Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The sink doesn't exist. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_log_sinks` | `tender sinks show otel` |
+
+### `PATCH /v1/logs/sinks/{sink}`
+
+Changes a sink's `config`, `enabled`, `sources` or `machines`, as a JSON merge patch. In `config`, `null` removes an optional field and a secret sent as `"***"` stays as it is, so you can send back what a read gave you. In `sources`, `null` turns a source off. The name and the type can't change. Daemons pick the change up within a minute.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | Path. The sink's name. |
+| `config` | object | No | Body. The config fields to change. |
+| `enabled` | boolean | No | Body. Whether daemons send to it. |
+| `sources` | object | No | Body. The sources fields to change. |
+| `machines` | array | No | Body. The machines that send to it, replacing the list. `[]` is every machine. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/logs/sinks/otel \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"sources": {"journal": {"min_priority": "warning"}, "services": null}}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "otel",
+  "type": "otlp",
+  "config": {
+    "endpoint": "https://otel.example.com:4318/v1/logs",
+    "headers": "***",
+    "headers_set": true
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": [], "min_priority": "warning"},
+    "services": null
+  },
+  "machines": [],
+  "status": [],
+  "created_at": "2026-11-15T11:30:41Z",
+  "updated_at": "2026-11-15T12:30:02Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON, or has a field a sink doesn't have. |
+| `404` | The sink doesn't exist. |
+| `422` | The body has `name` or `type`, or the sink that results isn't valid, as for `POST`. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `update_log_sink` | `tender sinks update otel --min-priority warning --no-services` |
+
+### `DELETE /v1/logs/sinks/{sink}`
+
+Removes a sink and every machine's status of it.
+
+> [!WARNING]
+> Daemons stop sending to the sink within a minute and delete the logs they buffered for it, which are then lost. The logs already sent stay at the sink.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | Path. The sink's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The sink doesn't exist. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_log_sink` | `tender sinks remove otel` |
+
 ## Daemon routes
 
 The daemons use these routes to report and to take their work. Each needs the machine's own token as `Authorization: Bearer <token>`, and you never call them yourself.
@@ -2213,6 +2551,8 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |
 | `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "services": [...]}` with every container, `[]` for none, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, once a minute and after each start, stop or restart. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. |
 | `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the oldest pending action, and gets it without changing its status. |
+| `GET /v1/machines/{machine}/logs/sinks` | Gets the enabled sinks for the machine, every 30 seconds, each with its whole `config`, secrets included, its `sources` and `updated_at`. |
+| `PUT /v1/machines/{machine}/logs/status` | Sends `{"data": [...]}`, one entry per sink with `sink_id` and the `status` fields, every minute and within seconds when sending starts or stops failing. An entry for a sink that is gone is ignored. |
 | `PATCH /v1/machines/{machine}/actions/{id}` | Claims an action with `{"status": "in_progress"}`, which answers `204`, or `409` when it isn't pending. Then records how it ended, with `completed` or `failed` and its `output`, which only those two take. |
 
 ## Next steps

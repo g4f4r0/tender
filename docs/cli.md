@@ -1,6 +1,6 @@
 # CLI
 
-The `tender` command manages the hub, its machines, backups, services and alerts, and installs Tender on a machine.
+The `tender` command manages the hub, its machines, backups, services, log sinks and alerts, and installs Tender on a machine.
 
 ## Prerequisites
 
@@ -954,6 +954,242 @@ With no matching entries, it prints `apps has no logs.` and exits 0.
 | REST route | MCP tool |
 | --- | --- |
 | `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `get_machine_logs` |
+
+## `tender sinks`
+
+Manage the log sinks, where each machine's daemon sends its journal and its Docker containers' logs, straight from the machine. [Log shipping](log-shipping.md) explains how sending works.
+
+### `tender sinks list`
+
+Lists the sinks, with how sending to each goes. Their secrets are never shown.
+
+#### Usage
+
+```sh
+tender sinks list [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks list
+```
+
+```text
+NAME   TYPE      SENDS TO                                MACHINES   STATUS
+hook   webhook   https://logs.example.com/tender         apps       ok
+otel   otlp      https://otel.example.com:4318/v1/logs   all        failing on web
+```
+
+`STATUS` is `ok` when every machine's last report says sending works, `failing on` the machines where it fails, `dropped on` the machines that dropped records, `no report yet` before the first report, and `disabled` for a disabled sink. With no sinks, it prints `No log sinks yet. Add one with: tender sinks add NAME --type otlp --endpoint URL` and exits 0.
+
+#### Errors
+
+1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/logs/sinks` | `list_log_sinks` |
+
+### `tender sinks add`
+
+Adds a sink. Each machine's daemon starts sending to it within a minute, with the logs from then on. Secrets come from files, so they stay out of your shell history.
+
+#### Usage
+
+```sh
+tender sinks add NAME --type TYPE [OPTIONS] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
+| `--type` | string | Yes | `otlp` or `webhook`. |
+| `--endpoint` | URL | For `otlp` | The collector's OTLP/HTTP logs URL, such as `https://otel.example.com:4318/v1/logs`. |
+| `--headers-file` | path | No | For `otlp`, a file of HTTP headers to send, one `Name: value` a line, such as `Authorization: Bearer <key>`. Blank lines and lines starting with `#` are skipped. |
+| `--url` | URL | For `webhook` | Where to POST the batches. |
+| `--secret-file` | path | No | For `webhook`, a file with the signing secret, at least 16 characters. Without it, the hub makes one and shows it once. |
+| `--units` | list | No | The journal's systemd units, comma-separated, such as `nginx.service,tenderd.service`, or `all`, the default. |
+| `--min-priority` | string | No | The journal's least severe priority sent: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info`, the default, or `debug`. |
+| `--services` | list | No | The Docker containers, comma-separated, or `all`, the default. |
+| `--no-journal` | flag | No | Send no journal. |
+| `--no-services` | flag | No | Send no container logs. |
+| `--machines` | list | No | The machines that send, comma-separated, or `all`, the default. |
+| `--disabled` | flag | No | Add it without sending to it yet. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks add hook --type webhook --url https://logs.example.com/tender --machines apps
+```
+
+```text
+Added log sink hook. Machines start sending to it within a minute.
+
+The signing secret, made by the hub and shown only now:
+  <secret>
+
+Give it to the receiver, which checks each batch's Tender-Signature header with it. Tender cannot
+show it again; to replace it, run tender sinks update hook --secret-file PATH.
+```
+
+An OpenTelemetry collector takes `tender sinks add otel --type otlp --endpoint https://otel.example.com:4318/v1/logs --headers-file ./otel-headers`, which prints only the first line.
+
+#### Errors
+
+1. `sinks add needs --type otlp or --type webhook. Run "tender sinks add --help" for usage.`
+2. `line 1 of ./otel-headers isn't a header. Write one "Name: value" a line, such as Authorization: Bearer KEY`
+3. `config.endpoint is required: an http or https URL, such as https://otel.example.com:4318/v1/logs.`
+4. `config has endpoint, which a webhook sink doesn't take. It takes url, secret.`, for an option of the other type.
+5. `sources must name journal, services or both, or the sink gets nothing. Leave sources out for both.`, for `--no-journal --no-services`.
+6. `A log sink called hook already exists. Choose another name, or change that one.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/logs/sinks` | `add_log_sink` |
+
+### `tender sinks show`
+
+Shows a sink and how sending to it goes on each machine. Its secrets are never shown.
+
+#### Usage
+
+```sh
+tender sinks show NAME [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink to show. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks show otel
+```
+
+```text
+NAME       otel
+TYPE       otlp
+SENDS TO   https://otel.example.com:4318/v1/logs
+ENABLED    yes
+SOURCES    journal (warning and up)
+MACHINES   all
+
+MACHINE   SENT    DROPPED   LAST SENT     PROBLEM
+web       18342   120       3 hours ago   failing since 3 hours ago: the sink answered 503 Service Unavailable
+```
+
+`SENT` and `DROPPED` count records since the daemon first sent to the sink. Before any machine reports, the table is replaced by `No machine has reported on it yet. Daemons report every minute.`
+
+#### Errors
+
+1. `Log sink "otel" doesn't exist.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/logs/sinks/{sink}` | `list_log_sinks` |
+
+### `tender sinks update`
+
+Changes a sink. Only the options you give change, and daemons pick the change up within a minute. The name and the type can't change.
+
+#### Usage
+
+```sh
+tender sinks update NAME [OPTIONS] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink to change. |
+| `OPTIONS` | | Yes, one or more | The options of [`tender sinks add`](#tender-sinks-add) except `--type` and `--disabled`. `--units`, `--min-priority` and `--services` turn their source back on. |
+| `--enable` | flag | No | Send to it. |
+| `--disable` | flag | No | Stop sending to it, and keep it. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks update otel --min-priority warning --no-services
+```
+
+```text
+Updated log sink otel. Machines pick the change up within a minute.
+```
+
+#### Errors
+
+1. `sinks update needs an option to change. Run "tender sinks update --help" for usage.`
+2. `--enable and --disable can't go together. Run "tender sinks update --help" for usage.`
+3. `Log sink "otel" doesn't exist.`
+4. The hub's sentence for a sink that isn't valid, as for `tender sinks add`.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/logs/sinks/{sink}` | `update_log_sink` |
+
+### `tender sinks remove`
+
+Removes a sink.
+
+> [!WARNING]
+> Daemons stop sending to the sink within a minute and delete the logs they buffered for it, which are then lost. The logs already sent stay at the sink.
+
+#### Usage
+
+```sh
+tender sinks remove NAME [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The sink to remove. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender sinks remove hook
+```
+
+```text
+Removed log sink hook. The logs already sent stay at the sink.
+```
+
+#### Errors
+
+1. `Log sink "hook" doesn't exist.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/logs/sinks/{sink}` | `remove_log_sink` |
 
 ## `tender actions`
 

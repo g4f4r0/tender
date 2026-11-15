@@ -26,8 +26,9 @@ Each guide does one task.
 
 1. [Backups](backups.md) explains the destination types, what a backup covers, retention, the weekly check and encryption.
 2. [Services](services.md) explains what the daemon reports about each container and how actions reach a machine.
-3. [Alerts](alerts.md) lists every alert and when it opens and resolves.
-4. [Security](security.md) explains who can reach the hub, how secrets are stored and what the daemon can do.
+3. [Log shipping](log-shipping.md) sends each machine's journal and container logs to an OpenTelemetry collector or a webhook, with the webhook contract.
+4. [Alerts](alerts.md) lists every alert and when it opens and resolves.
+5. [Security](security.md) explains who can reach the hub, how secrets are stored and what the daemon can do.
 
 ## Reference
 

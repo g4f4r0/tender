@@ -1,6 +1,6 @@
 # MCP tools
 
-The hub serves 30 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
+The hub serves 34 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_email`, which sends email, and `test_destination`, which reaches a backup destination, set it to `true`.
 5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` and `test_destination`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-7. No tool returns destination keys or repository passwords; a secret in a destination's config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, and a destination password the hub generated.
+7. No tool returns destination keys, repository passwords or log sink secrets; a secret in a config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, and a webhook sink secret the hub generated.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
@@ -64,6 +64,11 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` |
 | `GET /v1/machines/{machine}/actions` | `list_actions` |
 | `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
+| `GET /v1/logs/sinks` | `list_log_sinks` |
+| `POST /v1/logs/sinks` | `add_log_sink` |
+| `GET /v1/logs/sinks/{sink}` | `list_log_sinks` |
+| `PATCH /v1/logs/sinks/{sink}` | `update_log_sink` |
+| `DELETE /v1/logs/sinks/{sink}` | `remove_log_sink` |
 | `POST /mcp` | None. It is the MCP endpoint itself. |
 
 The routes only a machine's daemon calls with its token, such as usage reports and backup runs, have no tools. They are listed in the [API reference](api.md).
@@ -2065,6 +2070,302 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
 | REST route | CLI command |
 | --- | --- |
 | `GET /v1/machines/{machine}/actions` | `tender actions list MACHINE` |
+
+## Log sinks
+
+A log sink is a place each machine's daemon sends its journal and its Docker containers' logs to, straight from the machine. The logs never reach the hub, so no tool returns them from a sink. [Log shipping](log-shipping.md) explains the sources, the batches and the buffer, and the [API reference](api.md#log-sinks) lists each type's fields.
+
+### `list_log_sinks`
+
+Lists the log sinks, by name, with how sending to each goes on each machine.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+`data`, the sinks, each with `id`, `name`, `type` (`otlp` or `webhook`), `config`, `enabled`, `sources`, `machines`, `status` and the timestamps. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set. `machines` is empty for every machine. `status` has one entry per machine that reported on the sink, with `machine`, `records_sent`, `records_dropped`, `last_sent_at`, `last_error`, `failing_since`, `last_dropped_at`, `created_at` (its first report) and `updated_at` (its latest). `last_error` and `failing_since` are `null` while sending works.
+
+#### Limits
+
+None. The list isn't paged. Daemons report every minute, so a status can be up to a minute old.
+
+#### Example call
+
+```json
+{"name": "list_log_sinks", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "otel",
+      "type": "otlp",
+      "config": {
+        "endpoint": "https://otel.example.com:4318/v1/logs",
+        "headers": "***",
+        "headers_set": true
+      },
+      "enabled": true,
+      "sources": {
+        "journal": {"units": [], "min_priority": "info"},
+        "services": {"names": []}
+      },
+      "machines": [],
+      "status": [
+        {
+          "machine": "apps",
+          "records_sent": 18342,
+          "records_dropped": 0,
+          "last_sent_at": "2026-11-15T12:04:10Z",
+          "last_error": null,
+          "failing_since": null,
+          "last_dropped_at": null,
+          "created_at": "2026-11-15T11:31:02Z",
+          "updated_at": "2026-11-15T12:04:12Z"
+        }
+      ],
+      "created_at": "2026-11-15T11:30:41Z",
+      "updated_at": "2026-11-15T11:30:41Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+None besides the hub's own failure.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/logs/sinks` and `GET /v1/logs/sinks/{sink}` | `tender sinks list` and `tender sinks show NAME` |
+
+### `add_log_sink`
+
+Adds a place for every machine's daemon, or the named machines', to send logs to. Daemons start sending within a minute, with the logs from then on.
+
+The secrets you pass go through the AI conversation, and so to the client's model provider. For real keys, run `tender sinks add` instead, which reads them from files. The hub stores them encrypted, and no tool, route or log shows them again.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `false` |
+
+A second call with the same name fails.
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The new sink's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
+| `type` | string | Yes | `otlp` or `webhook`. |
+| `config` | object | Yes | For `otlp`, `endpoint`, the collector's OTLP/HTTP logs URL, and `headers`, a secret object of HTTP headers. For `webhook`, `url` and `secret`, at least 16 characters; leave `secret` out and the hub makes one. |
+| `enabled` | boolean | No | Whether daemons send to it. The default is `true`. |
+| `sources` | object | No | Which logs go: `journal` with `units` and `min_priority`, and `services` with `names`. An empty or left-out list means all, and a source left out sends nothing. Leave `sources` out for every unit's journal from `info` up and every container. |
+| `machines` | array | No | The machines that send to it, by name. Leave it out for every machine. |
+
+#### Returns
+
+The sink, as `list_log_sinks` shows it, with an empty `status`. For a `webhook` sink without a `secret` input, the result also has `secret`, the one the hub made, shown only this once. Give it to whoever runs the receiver, which checks each batch's signature with it.
+
+#### Limits
+
+None. Logs from before the sink was added aren't sent.
+
+#### Example call
+
+```json
+{
+  "name": "add_log_sink",
+  "arguments": {
+    "name": "hook",
+    "type": "webhook",
+    "config": {"url": "https://logs.example.com/tender"},
+    "sources": {"journal": {"units": ["nginx.service"], "min_priority": "warning"}, "services": {"names": ["web"]}},
+    "machines": ["apps"]
+  }
+}
+```
+
+#### Example result
+
+```json
+{
+  "id": 2,
+  "name": "hook",
+  "type": "webhook",
+  "config": {
+    "secret": "***",
+    "secret_set": true,
+    "url": "https://logs.example.com/tender"
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": ["nginx.service"], "min_priority": "warning"},
+    "services": {"names": ["web"]}
+  },
+  "machines": ["apps"],
+  "status": [],
+  "created_at": "2026-11-15T11:32:08Z",
+  "updated_at": "2026-11-15T11:32:08Z",
+  "secret": "<secret>"
+}
+```
+
+#### Errors
+
+1. `Log sink names are lowercase letters, digits and hyphens, up to 63 characters.`
+2. `type must be one of otlp, webhook.`
+3. `config is required: the otlp sink's endpoint, headers.`
+4. `config.endpoint is required: an http or https URL, such as https://otel.example.com:4318/v1/logs.`
+5. `config has token, which a otlp sink doesn't take. It takes endpoint, headers.`
+6. A sentence naming the field that isn't valid, such as `config.secret must be at least 16 characters. Leave it out and the hub makes one.` or `config.headers can't set Content-Type: Tender sets it.`
+7. `config.secret is "***", which is how the hub hides a secret. Give the secret itself.`
+8. `sources.journal.min_priority must be one of emerg, alert, crit, err, warning, notice, info, debug.`
+9. `machines has "db", which is not a machine. Run tender machines list to see the names, or leave machines empty for all.`
+10. `A log sink called hook already exists. Choose another name, or change that one.`
+11. `This process has no TENDER_ENCRYPTION_KEY, so it can't store or read log sink secrets. Set it to the hub's key and run the command again.` This happens only over stdio.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/logs/sinks` | `tender sinks add NAME --type TYPE [OPTIONS]` |
+
+### `update_log_sink`
+
+Changes a sink's config, whether it is enabled, its sources or its machines. Anything you leave out stays as it is.
+
+New secrets you pass go through the AI conversation. The name and the type can't change.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | The sink's name, as `list_log_sinks` shows it. |
+| `config` | object | No | The config fields to change. `null` removes an optional field, and a secret given as `"***"` stays as it is, so you can pass back what `list_log_sinks` shows. |
+| `enabled` | boolean | No | Whether daemons send to it. |
+| `sources` | object | No | The sources, as for `add_log_sink`. They replace the old ones as a whole, so a source left out sends nothing. |
+| `machines` | array | No | The machines that send to it, replacing the list. An empty list is every machine. |
+
+#### Returns
+
+The sink, as `list_log_sinks` shows it.
+
+#### Limits
+
+None. Daemons pick the change up within a minute.
+
+#### Example call
+
+```json
+{"name": "update_log_sink", "arguments": {"sink": "otel", "sources": {"journal": {"min_priority": "warning"}}}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 1,
+  "name": "otel",
+  "type": "otlp",
+  "config": {
+    "endpoint": "https://otel.example.com:4318/v1/logs",
+    "headers": "***",
+    "headers_set": true
+  },
+  "enabled": true,
+  "sources": {
+    "journal": {"units": [], "min_priority": "warning"},
+    "services": null
+  },
+  "machines": [],
+  "status": [],
+  "created_at": "2026-11-15T11:30:41Z",
+  "updated_at": "2026-11-15T12:30:02Z"
+}
+```
+
+#### Errors
+
+1. `Log sink "otel" doesn't exist.`
+2. `Give config, enabled, sources or machines to change.`
+3. The sentences of `add_log_sink` for a sink that isn't valid, such as `config.endpoint is required: ...` after `{"endpoint": null}`.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/logs/sinks/{sink}` | `tender sinks update NAME [OPTIONS]` |
+
+### `remove_log_sink`
+
+Removes a sink.
+
+> [!WARNING]
+> Daemons stop sending to the sink within a minute and delete the logs they buffered for it, which are then lost. The logs already sent stay at the sink.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sink` | string | Yes | The sink's name, as `list_log_sinks` shows it. |
+
+#### Returns
+
+`removed`, the name of the sink that was removed.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "remove_log_sink", "arguments": {"sink": "otel"}}
+```
+
+#### Example result
+
+```json
+{"removed": "otel"}
+```
+
+#### Errors
+
+1. `Log sink "otel" doesn't exist.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/logs/sinks/{sink}` | `tender sinks remove NAME` |
 
 ## Next steps
 
