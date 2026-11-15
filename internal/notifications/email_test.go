@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/config"
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 )
 
 // received is what the fake SMTP server was given.
@@ -151,12 +152,12 @@ func TestSendEmails(t *testing.T) {
 	data := emailData{
 		Machine: "code", Title: "backup failed", Severity: "critical", Color: "#b00020", Tool: "list_backup_history", Hub: "hub1",
 		Content: "The last backup on code failed at 2026-11-14 02:05 UTC: <b>exit status 1</b> & more\nsecond line",
-		Since:   "2026-11-14 02:05 UTC", Duration: "3 hours 12 minutes", ResolvedAt: "2026-11-14 05:17 UTC",
+		Since:   "2026-11-14 02:05 UTC",
 	}
 	for _, c := range []struct{ kind, subject, text string }{
-		{kindOpened, "code: backup failed", "You'll get one more email when this is resolved.\n\nSent by the Tender hub on hub1.\n"},
-		{kindEscalated, "code: backup failed, now critical", "This was a warning and is now critical. It has been open since 2026-11-14 02:05 UTC."},
-		{kindResolved, "code: backup failed, resolved", "This is resolved as of 2026-11-14 05:17 UTC. It was open for 3 hours 12 minutes."},
+		{channels.PhaseOpened, "code: backup failed", "You'll get one more email when this is resolved.\n\nSent by the Tender hub on hub1.\n"},
+		{channels.PhaseEscalated, "code: backup failed, now critical", "This got worse and is now critical, as of 2026-11-14 02:05 UTC."},
+		{channels.PhaseResolved, "code: backup failed, resolved", "This is resolved as of 2026-11-14 02:05 UTC."},
 	} {
 		t.Run(c.kind, func(t *testing.T) {
 			msg, err := render(c.kind, data)
@@ -174,7 +175,7 @@ func TestSendEmails(t *testing.T) {
 			if !strings.Contains(text, c.text) {
 				t.Errorf("text part lacks %q:\n%s", c.text, text)
 			}
-			if c.kind != kindResolved && !strings.Contains(text, "exit status 1</b> & more\nsecond line") {
+			if c.kind != channels.PhaseResolved && !strings.Contains(text, "exit status 1</b> & more\nsecond line") {
 				t.Errorf("text part changed the content:\n%s", text)
 			}
 			for _, part := range []string{subject, text, html} {
@@ -182,7 +183,7 @@ func TestSendEmails(t *testing.T) {
 					t.Errorf("placeholder left in %q", part)
 				}
 			}
-			if c.kind != kindResolved && !strings.Contains(html, "&lt;b&gt;exit status 1&lt;/b&gt; &amp; more") {
+			if c.kind != channels.PhaseResolved && !strings.Contains(html, "&lt;b&gt;exit status 1&lt;/b&gt; &amp; more") {
 				t.Errorf("html part didn't escape the content:\n%s", html)
 			}
 			for _, bad := range []string{"http://", "https://", "<img", "<link", "<script"} {
@@ -208,8 +209,8 @@ func TestSendTestEmailAndHeaders(t *testing.T) {
 	}
 	got := <-s.got
 	subject, text, html := parseEmail(t, got)
-	if subject != "Tender test email" || text != "This is a test from the Tender hub on hub1. If you can read it, alert emails reach you.\n" ||
-		!strings.Contains(html, "If you can read it, alert emails reach you.") {
+	if subject != "Tender test email" || text != "This is a test from the Tender hub on hub1. If you can read it, notification emails reach you.\n" ||
+		!strings.Contains(html, "If you can read it, notification emails reach you.") {
 		t.Errorf("got %q, %q, %q", subject, text, html)
 	}
 	if user := mustDecode(t, got.auth); user != "\x00api_token\x00right" {

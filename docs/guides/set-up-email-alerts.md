@@ -1,6 +1,6 @@
 # Set up email alerts
 
-Send alerts by email through your SMTP server to everyone who should hear when a backup fails or a service stops.
+Send notifications by email through your SMTP server to everyone who should hear when a backup fails or a service stops.
 
 ## Prerequisites
 
@@ -26,17 +26,17 @@ The installer keeps the hub's key and every other setting, writes the SMTP setti
 
 ## Add an email channel
 
-1. Add a channel for each address that should get alerts:
+1. Add a channel for each address that should get notifications:
 
    ```sh
    tender channels add ops --type email --to ops@example.com
    ```
 
    ```text
-   Added channel ops. It gets every alert from warning up. Check that it arrives with: tender channels test ops
+   Added channel ops. It gets the notifications of * from warning up. Check that it arrives with: tender channels test ops
    ```
 
-   To get `info` alerts too, add `--min-severity info`. For only the worst, use `--min-severity critical`.
+   To get `info` notifications too, add `--min-severity info`. For only the worst, use `--min-severity critical`. To get only some events, add `--events`, such as `--events 'backup.*,machine.silent'`.
 
 2. Send it a test:
 
@@ -51,10 +51,10 @@ The installer keeps the hub's key and every other setting, writes the SMTP setti
 
 3. Check that the email with the subject `Tender test email` arrived. Look in the spam folder too.
 
-Remove a channel with `tender channels remove ops`. To send alerts to Slack, a webhook or a program of your own as well, see [Adapters](../adapters.md).
+Remove a channel with `tender channels remove ops`. To send notifications to Slack, a webhook or a program of your own as well, see [Adapters](../adapters.md).
 
 ## Next steps
 
-1. [Alerts](../alerts.md) explains each alert and when it opens.
+1. [Notifications](../notifications.md) explains each event and when it fires and resolves.
 2. [Adapters](../adapters.md) adds Slack, webhook and exec channels.
-3. [Control a service](control-a-service.md) to turn one service's alerts off.
+3. [Control a service](control-a-service.md) to turn one service's notifications off.

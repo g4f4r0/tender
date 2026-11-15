@@ -980,7 +980,7 @@ None.
 
 ### `list_notifications`
 
-Lists alerts, newest first, optionally of one machine, status or severity.
+Lists notifications, newest first, optionally of one machine, status or severity, or only the open problems. A notification is one message: a problem adds one when it starts, such as `service.down`, one when it gets worse, `service.down.escalated`, and one when it clears, `service.down.resolved`.
 
 #### Annotations
 
@@ -993,14 +993,15 @@ Lists alerts, newest first, optionally of one machine, status or severity.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | No | Only this machine's notifications. Leave it out for every machine. |
-| `status` | string | No | Only notifications with this status: `pending`, `sent` or `resolved`. |
+| `open` | boolean | No | `true` returns only the open problems: the latest notification of each problem that hasn't resolved. |
+| `status` | string | No | Only notifications with this status: `pending`, `sent` or `failed`. |
 | `severity` | string | No | Only notifications with this severity: `info`, `warning` or `critical`. |
 | `limit` | integer | No | The most notifications to return, from 1 to 500. The default is 50. |
 | `cursor` | string | No | `next_cursor` from the previous page. |
 
 #### Returns
 
-`data`, the notifications, each with `id`, `machine` (the machine it is about), `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence), `channel` (the channel a `channel_failing` alert is about, else `null`), the timestamps, and `deliveries`: each event sent to each channel, with `channel`, `event`, `status` (`pending`, `delivered` or `failed`), `attempts` and `error`. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) explains the statuses and lists the types.
+`data`, the notifications, each with `id`, `machine` (the machine it is about), `service` (the Docker service it is about, else `null`), `channel` (the channel a `channel.failing` notification is about, else `null`), `event`, `severity`, `message` (what happened, in one sentence), `status` (`pending`; `sent` once a channel delivered it; `failed` once every channel failed), `sent_at`, the timestamps, and `deliveries`: one per channel, with `channel`, `status` (`pending`, `delivered` or `failed`), `attempts` and `error`. [Notifications](notifications.md) explains the statuses and lists the events.
 
 #### Limits
 
@@ -1021,19 +1022,19 @@ At most 500 notifications a page.
       "id": 3,
       "machine": "apps",
       "service": "web",
-      "type": "service_memory_high",
-      "severity": "warning",
-      "status": "resolved",
-      "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
       "channel": null,
+      "event": "service.memory_high",
+      "severity": "warning",
+      "message": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "status": "sent",
+      "sent_at": "2026-11-15T11:35:36Z",
       "created_at": "2026-11-15T11:35:35Z",
-      "updated_at": "2026-11-15T11:36:35Z",
+      "updated_at": "2026-11-15T11:35:36Z",
       "deliveries": [
         {
           "id": 7,
           "notification_id": 3,
           "channel": "ops",
-          "event": "opened",
           "status": "delivered",
           "attempts": 1,
           "error": null,
@@ -1050,7 +1051,7 @@ At most 500 notifications a page.
 #### Errors
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
-2. `status must be pending, sent or resolved.`
+2. `status must be pending, sent or failed.`
 3. `severity must be info, warning or critical.`
 4. `limit must be a whole number from 1 to 500.`
 
@@ -1058,11 +1059,11 @@ At most 500 notifications a page.
 
 | REST route | CLI command |
 | --- | --- |
-| `GET /v1/notifications`, `GET /v1/machines/{machine}/notifications` and `GET /v1/machines/{machine}/notifications/{id}` | `tender status`, which shows the open alerts. |
+| `GET /v1/notifications`, `GET /v1/machines/{machine}/notifications` and `GET /v1/machines/{machine}/notifications/{id}` | `tender notifications list`, and `tender status`, which shows the open problems. |
 
 ### `list_channels`
 
-Lists the channels alerts go to, in the order they were added.
+Lists the channels notifications go to, in the order they were added.
 
 #### Annotations
 
@@ -1076,7 +1077,7 @@ None.
 
 #### Returns
 
-`data`, the channels, each with `id`, `name`, `type` (`email`, `slack`, `webhook` or `exec`), `config`, `enabled`, `min_severity` (the least severe alert it gets) and the timestamps. A secret in `config` shows as `"***"`, with `<name>_set` set to `true`.
+`data`, the channels, each with `id`, `name`, `type` (`email`, `slack`, `webhook` or `exec`), `config`, `enabled`, `min_severity` (the least severe notification it gets), `events` (the events it gets, such as `["*"]` or `["service.*", "backup.failed"]`) and the timestamps. A secret in `config` shows as `"***"`, with `<name>_set` set to `true`.
 
 #### Limits
 
@@ -1100,6 +1101,7 @@ None. The list isn't paged.
       "config": {"to": "ops@example.com"},
       "enabled": true,
       "min_severity": "warning",
+      "events": ["*"],
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
     },
@@ -1110,6 +1112,7 @@ None. The list isn't paged.
       "config": {"webhook_url": "***", "webhook_url_set": true},
       "enabled": true,
       "min_severity": "critical",
+      "events": ["*"],
       "created_at": "2026-11-15T11:28:02Z",
       "updated_at": "2026-11-15T11:28:02Z"
     }
@@ -1129,7 +1132,7 @@ None besides the hub's own failure.
 
 ### `add_channel`
 
-Adds a channel that gets every alert at least as severe as its `min_severity`, from now on.
+Adds a channel that gets every notification of its `events` at least as severe as its `min_severity`, from now on.
 
 #### Annotations
 
@@ -1146,12 +1149,13 @@ A second call with the same name fails.
 | `name` | string | Yes | Lowercase letters, digits and hyphens, such as `ops-slack`. |
 | `type` | string | Yes | `email`, `slack`, `webhook` or `exec`. |
 | `config` | object | Yes | The type's config, all strings: `{"to": "ops@example.com"}`, `{"webhook_url": "https://hooks.slack.com/services/..."}`, `{"url": "https://..."}` or `{"command": "my-adapter"}`. [Adapters](adapters.md#channel-types) explains each. |
-| `enabled` | boolean | No | Whether it gets alerts. The default is `true`. |
+| `enabled` | boolean | No | Whether it gets notifications. The default is `true`. |
 | `min_severity` | string | No | `info`, `warning` or `critical`. The default is `warning`. |
+| `events` | array | No | The events it gets: `*` for every one, an area such as `service.*`, or an event such as `backup.failed`. The default is `["*"]`. |
 
 #### Returns
 
-The channel, as `list_channels` shows it. For a `webhook` channel, `config.secret` is the signing secret the hub made, shown this once: pass it to whoever runs the receiver. Call `send_test_notification` to check that alerts arrive.
+The channel, as `list_channels` shows it. For a `webhook` channel, `config.secret` is the signing secret the hub made, shown this once: pass it to whoever runs the receiver. Call `send_test_notification` to check that notifications arrive.
 
 #### Limits
 
@@ -1173,6 +1177,7 @@ An exec channel's `command` names a program root installed in `/etc/tender/adapt
   "config": {"secret": "whsec_kq0W2jq7a8Lx3n8vR1tYb5sU9eFh4cGd6pJm0zXwQ2E", "secret_set": true, "url": "https://pager.example.com/tender"},
   "enabled": true,
   "min_severity": "warning",
+  "events": ["*"],
   "created_at": "2026-11-15T11:30:11Z",
   "updated_at": "2026-11-15T11:30:11Z"
 }
@@ -1185,6 +1190,7 @@ An exec channel's `command` names a program root installed in `/etc/tender/adapt
 3. `to must be one bare address such as ops@example.com.`
 4. `command must be the name of a program in /etc/tender/adapters, such as my-adapter: letters, digits, dots, dashes and underscores, with no slash and no "..".`
 5. `Leave secret out: the hub makes it and shows it once.`
+6. `webhook_url must be a Slack incoming webhook URL, which starts with https://hooks.slack.com/. Copy it from the app's Incoming Webhooks page.`
 
 #### Covers
 
@@ -1194,7 +1200,7 @@ An exec channel's `command` names a program root installed in `/etc/tender/adapt
 
 ### `update_channel`
 
-Changes a channel's config, turns it on or off, or changes its `min_severity`. Anything left out stays as it is.
+Changes a channel's config, turns it on or off, or changes its `min_severity` or `events`. Anything left out stays as it is.
 
 #### Annotations
 
@@ -1210,6 +1216,7 @@ Changes a channel's config, turns it on or off, or changes its `min_severity`. A
 | `config` | object | No | Config keys to change. A secret can be replaced, never read. |
 | `enabled` | boolean | No | `true` to turn it on, `false` to turn it off. |
 | `min_severity` | string | No | `info`, `warning` or `critical`. |
+| `events` | array | No | The events it gets, replacing the list. |
 
 #### Returns
 
@@ -1235,6 +1242,7 @@ The channel, as `list_channels` shows it. Turning a channel off drops what it st
   "config": {"webhook_url": "***", "webhook_url_set": true},
   "enabled": true,
   "min_severity": "warning",
+  "events": ["*"],
   "created_at": "2026-11-15T11:28:02Z",
   "updated_at": "2026-11-15T11:41:17Z"
 }
@@ -1254,7 +1262,7 @@ The channel, as `list_channels` shows it. Turning a channel off drops what it st
 
 ### `remove_channel`
 
-Removes a channel, so it gets no more alerts, with its record of deliveries.
+Removes a channel, so it gets no more notifications, with its record of deliveries.
 
 #### Annotations
 
@@ -1270,7 +1278,7 @@ Removes a channel, so it gets no more alerts, with its record of deliveries.
 
 #### Returns
 
-`removed`, naming the channel that was removed. Alerts are still recorded when no channel is left.
+`removed`, naming the channel that was removed. Notifications are still recorded when no channel is left.
 
 #### Limits
 
@@ -1300,7 +1308,7 @@ None.
 
 ### `send_test_notification`
 
-Sends the test event to every enabled channel, or to one, to check that alerts arrive.
+Sends a test notification, event `notification.test`, to every enabled channel, or to one, to check that notifications arrive.
 
 #### Annotations
 
@@ -1318,7 +1326,7 @@ It sends to the channels, which reaches outside the hub. Each call sends again.
 
 #### Returns
 
-`data`, one delivery per channel, with `id`, `notification_id` (`null` for a test), `channel`, `event` (`test`), `status` (`delivered` or `failed`), `attempts`, `error`, which says why one failed, and the timestamps. A test that gets through resolves the channel's `channel_failing` alert.
+`data`, one delivery per channel, with `id`, `notification_id` (the test's notification), `channel`, `status` (`delivered` or `failed`), `attempts`, `error`, which says why one failed, and the timestamps. A test that gets through resolves the channel's `channel.failing` problem.
 
 #### Limits
 
@@ -1337,9 +1345,8 @@ Each channel is tried once, all at once, for at most 10 seconds, or 30 for email
   "data": [
     {
       "id": 9,
-      "notification_id": null,
+      "notification_id": 5,
       "channel": "ops",
-      "event": "test",
       "status": "delivered",
       "attempts": 1,
       "error": null,
@@ -1483,11 +1490,11 @@ Turns alerts on or off for one service. Alerts are on for every new service.
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
 | `service` | string | Yes | The service's name, its container name, as `list_services` shows it. |
-| `enabled` | boolean | Yes | `true` to get alerts for this service, `false` to stop them and resolve its open alerts. |
+| `enabled` | boolean | Yes | `true` to get alerts for this service, `false` to stop them and resolve its open problems. |
 
 #### Returns
 
-The service, as `list_services` shows it. With alerts off, its open alerts resolve within a minute. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
+The service, as `list_services` shows it. With alerts off, its open problems resolve within a minute. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
 #### Limits
 

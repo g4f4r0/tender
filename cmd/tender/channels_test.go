@@ -11,7 +11,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 )
+
+// The tests' fake receivers listen on loopback, and stand in for Slack, which only tests may do.
+func TestMain(m *testing.M) {
+	channels.AllowLocalForTests(true)
+	os.Exit(m.Run())
+}
 
 // The channels commands against a real hub, with a fake Slack and a fake webhook receiver.
 func TestChannelsCommands(t *testing.T) {
@@ -39,11 +47,11 @@ func TestChannelsCommands(t *testing.T) {
 		return out
 	}
 
-	if out := must("list"); !strings.HasPrefix(out, "No channels yet, so alerts are only recorded.") {
+	if out := must("list"); !strings.HasPrefix(out, "No channels yet, so notifications are only recorded.") {
 		t.Errorf("empty list = %q", out)
 	}
 	if out := must("add", "ops", "--type", "email", "--to", "ops@example.com"); out !=
-		"Added channel ops. It gets every alert from warning up. Check that it arrives with: tender channels test ops\n" {
+		"Added channel ops. It gets the notifications of * from warning up. Check that it arrives with: tender channels test ops\n" {
 		t.Errorf("add email = %q", out)
 	}
 	// A Slack URL is asked for with typing hidden, or read from a file; never taken on the command line.
@@ -53,7 +61,16 @@ func TestChannelsCommands(t *testing.T) {
 	if len(a.labels) != 1 || a.labels[0] != "Slack webhook URL" {
 		t.Errorf("asked %q", a.labels)
 	}
-	out := must("add", "hook", "--type", "webhook", "--url", fake.URL+"/in")
+	out := must("add", "hook", "--type", "webhook", "--url", fake.URL+"/in", "--events", "service.*, backup.failed")
+	if !strings.Contains(out, "It gets the notifications of service.*,backup.failed from warning up.") {
+		t.Errorf("add webhook = %q", out)
+	}
+	if _, err := run("add", "x", "--type", "email", "--to", "x@example.com", "--events", ","); err == nil || !strings.Contains(err.Error(), "at least one pattern") {
+		t.Errorf("empty --events: %v", err)
+	}
+	if _, err := run("add", "x", "--type", "email", "--to", "x@example.com", "--events", "nope"); err == nil || !strings.Contains(err.Error(), "events") {
+		t.Errorf("bad --events: %v", err)
+	}
 	if !strings.Contains(out, "Its signing secret, made by the hub and shown only now:\n  whsec_") {
 		t.Errorf("add webhook = %q", out)
 	}
@@ -68,8 +85,8 @@ func TestChannelsCommands(t *testing.T) {
 	}
 
 	list := must("list")
-	for _, want := range []string{"NAME   TYPE      SENDS TO", "ops    email     ops@example.com", "chat   slack     Slack webhook (secret)", "critical",
-		"hook   webhook   " + fake.URL + "/in"} {
+	for _, want := range []string{"NAME   TYPE      SENDS TO", "EVENTS", "ops    email     ops@example.com", "chat   slack     Slack webhook (secret)", "critical",
+		"hook   webhook   " + fake.URL + "/in", "service.*,backup.failed"} {
 		if !strings.Contains(list, want) {
 			t.Errorf("list lacks %q:\n%s", want, list)
 		}
@@ -79,8 +96,11 @@ func TestChannelsCommands(t *testing.T) {
 		t.Errorf("show:\n%s", show)
 	}
 
-	if out := must("update", "ops", "--min-severity", "critical", "--off"); out != "Updated channel ops: alerts off, from critical up.\n" {
+	if out := must("update", "ops", "--min-severity", "critical", "--off"); out != "Updated channel ops: off, the notifications of * from critical up.\n" {
 		t.Errorf("update = %q", out)
+	}
+	if out := must("update", "hook", "--events", "*"); !strings.Contains(out, "the notifications of * from warning up") {
+		t.Errorf("update events = %q", out)
 	}
 	newURL := filepath.Join(t.TempDir(), "url")
 	if err := os.WriteFile(newURL, []byte(fake.URL+"/services/NEW-KEY\n"), 0o600); err != nil {
@@ -101,14 +121,14 @@ func TestChannelsCommands(t *testing.T) {
 	}
 	slackStatus = 404
 	out, err := run("test", "chat")
-	if !errors.Is(err, errTestFailed) || !strings.Contains(out, "failed: the Slack webhook answered 404") || strings.Contains(out, "NEW-KEY") {
+	if !errors.Is(err, errTestFailed) || !strings.Contains(out, "failed: HTTP 404 Not Found") || strings.Contains(out, "NEW-KEY") {
 		t.Errorf("failing test: %v\n%s", err, out)
 	}
 	if out := must("test", "ops"); !strings.Contains(out, "ops       delivered") || len(box.to) != 1 {
 		t.Errorf("test ops:\n%s", out)
 	}
 
-	if out := must("remove", "chat"); out != "Removed channel chat. It gets no more alerts.\n" {
+	if out := must("remove", "chat"); out != "Removed channel chat. It gets no more notifications.\n" {
 		t.Errorf("remove = %q", out)
 	}
 	if _, err := run("remove", "chat"); err == nil || !strings.Contains(err.Error(), `Channel "chat" doesn't exist.`) {

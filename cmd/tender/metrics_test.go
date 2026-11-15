@@ -37,7 +37,7 @@ func TestMetrics(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
-	if res.StatusCode != 200 || res.Header.Get("Content-Type") != metrics.ContentType || !strings.Contains(string(body), "# TYPE tender_alerts_open gauge") {
+	if res.StatusCode != 200 || res.Header.Get("Content-Type") != metrics.ContentType || !strings.Contains(string(body), "# TYPE tender_problems_open gauge") {
 		t.Fatalf("GET /metrics: %d %q\n%s", res.StatusCode, res.Header.Get("Content-Type"), body)
 	}
 
@@ -64,9 +64,9 @@ func TestMetrics(t *testing.T) {
 		`tender_backup_snapshots{machine="g4f4r0-code"} 2`,
 		`tender_backup_snapshots{machine="g4f4r0-apps"} 0`,
 		`tender_backup_last_run_failed{machine="g4f4r0-code"} 1`,
-		`tender_alerts_open{type="backup_failed",severity="critical"} 1`,
-		`tender_alerts_open{type="disk_full",severity="warning"} 0`,
-		`tender_alerts_open{type="hub_restarted",severity="info"} 1`,
+		`tender_problems_open{event="backup.failed",severity="critical"} 1`,
+		`tender_problems_open{event="disk.full",severity="warning"} 0`,
+		`tender_problems_open{event="hub.restarted",severity="info"} 1`,
 	} {
 		if !strings.Contains(page, "\n"+want+"\n") {
 			t.Errorf("no line %s", want)

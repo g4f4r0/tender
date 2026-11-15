@@ -32,11 +32,13 @@ func (i identity) Lookup(ctx context.Context, name string) (int64, error) {
 }
 
 // newHub serves the routes over seeded rows: ids 1 to 5, created at times 100 to 500.
-//  1. a, backup_failed, critical, sent
-//  2. a, disk_full, warning, pending
-//  3. b, backup_failed, critical, resolved
-//  4. none, hub_restarted, info, sent
-//  5. a, backup_failed, critical, resolved
+//  1. a, backup.failed, critical, sent
+//  2. a, disk.full, warning, pending
+//  3. b, backup.failed.resolved, critical, failed
+//  4. none, hub.restarted, info, sent
+//  5. a, backup.failed.resolved, critical, sent
+//
+// The open problems are 2 and 4: 5 resolved 1, and 3 is a resolved one.
 func newHub(t *testing.T) *httptest.Server { return newHubSending(t, nil) }
 
 // newHubSending is newHub with the test route sending email through sender.
@@ -69,12 +71,12 @@ func newHubDB(t *testing.T, sender notifications.Sender) (*httptest.Server, *db.
 	if err := d.Migrate(context.Background(), notifications.Migrations, server.Migrations); err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.Write.Exec(`INSERT INTO notifications (id, machine_id, type, severity, status, content, created_at, updated_at) VALUES
-		(1, 1, 'backup_failed', 'critical', 'sent', 'first', 100, 110),
-		(2, 1, 'disk_full', 'warning', 'pending', 'second', 200, 200),
-		(3, 2, 'backup_failed', 'critical', 'resolved', 'third', 300, 310),
-		(4, NULL, 'hub_restarted', 'info', 'sent', 'fourth', 400, 400),
-		(5, 1, 'backup_failed', 'critical', 'resolved', 'fifth', 500, 510)`)
+	_, err = d.Write.Exec(`INSERT INTO notifications (id, machine_id, event, severity, status, message, sent_at, created_at, updated_at) VALUES
+		(1, 1, 'backup.failed', 'critical', 'sent', 'first', 110, 100, 110),
+		(2, 1, 'disk.full', 'warning', 'pending', 'second', NULL, 200, 200),
+		(3, 2, 'backup.failed.resolved', 'critical', 'failed', 'third', NULL, 300, 310),
+		(4, NULL, 'hub.restarted', 'info', 'sent', 'fourth', 400, 400, 400),
+		(5, 1, 'backup.failed.resolved', 'critical', 'sent', 'fifth', 510, 500, 510)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,12 +140,17 @@ func TestList(t *testing.T) {
 		want       []int64
 	}{
 		{"all, newest first", "/v1/notifications", []int64{5, 4, 3, 2, 1}},
-		{"status", "/v1/notifications?status=resolved", []int64{5, 3}},
+		{"status", "/v1/notifications?status=sent", []int64{5, 4, 1}},
+		{"failed", "/v1/notifications?status=failed", []int64{3}},
 		{"severity", "/v1/notifications?severity=critical", []int64{5, 3, 1}},
-		{"status and severity", "/v1/notifications?status=sent&severity=critical", []int64{1}},
+		{"status and severity", "/v1/notifications?status=sent&severity=critical", []int64{5, 1}},
 		{"no match", "/v1/notifications?status=pending&severity=info", []int64{}},
+		{"open problems", "/v1/notifications?open=true", []int64{4, 2}},
+		{"open false", "/v1/notifications?open=false", []int64{5, 4, 3, 2, 1}},
+		{"open and severity", "/v1/notifications?open=true&severity=warning", []int64{2}},
 		{"one machine", "/v1/machines/a/notifications", []int64{5, 2, 1}},
-		{"one machine and status", "/v1/machines/a/notifications?status=resolved", []int64{5}},
+		{"one machine, open", "/v1/machines/a/notifications?open=true", []int64{2}},
+		{"one machine and status", "/v1/machines/a/notifications?status=pending", []int64{2}},
 		{"machine without any", "/v1/machines/c/notifications", []int64{}},
 	} {
 		var l server.List[notifications.Notification]
@@ -185,7 +192,8 @@ func TestListPages(t *testing.T) {
 func TestListRejectsBadQueries(t *testing.T) {
 	srv := newHub(t)
 	for path, want := range map[string]int{
-		"/v1/notifications?status=open":     422,
+		"/v1/notifications?status=resolved": 422,
+		"/v1/notifications?open=yes":        422,
 		"/v1/notifications?severity=fatal":  422,
 		"/v1/notifications?limit=0":         400,
 		"/v1/notifications?limit=501":       400,
@@ -209,8 +217,8 @@ func TestGet(t *testing.T) {
 	if code := get(t, srv, "/v1/machines/a/notifications/1", true, &n); code != 200 {
 		t.Fatalf("GET: %d", code)
 	}
-	if n.ID != 1 || n.Machine == nil || *n.Machine != "a" || n.Type != "backup_failed" || n.Severity != "critical" ||
-		n.Status != "sent" || n.Content != "first" || n.CreatedAt.Unix() != 100 || n.UpdatedAt.Unix() != 110 {
+	if n.ID != 1 || n.Machine == nil || *n.Machine != "a" || n.Event != "backup.failed" || n.Severity != "critical" ||
+		n.Status != "sent" || n.Message != "first" || n.SentAt == nil || n.SentAt.Unix() != 110 || n.CreatedAt.Unix() != 100 || n.UpdatedAt.Unix() != 110 {
 		t.Errorf("got %+v", n)
 	}
 	// Notification 3 belongs to machine b, 4 to no machine.

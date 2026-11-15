@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services"
 )
@@ -309,8 +311,11 @@ func (h *fakeHub) removeDestination(w http.ResponseWriter, r *http.Request) {
 func (h *fakeHub) listAlerts(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var match []notifications.Notification
-	for _, a := range h.alerts {
-		if q.Get("status") == "" || a.Status == q.Get("status") {
+	for i, a := range h.alerts { // newest first
+		open := !strings.HasSuffix(a.Event, ".resolved") && !slices.ContainsFunc(h.alerts[:i], func(b notifications.Notification) bool {
+			return channels.Base(b.Event) == channels.Base(a.Event) && *b.Machine == *a.Machine
+		})
+		if (q.Get("status") == "" || a.Status == q.Get("status")) && (q.Get("open") != "true" || open) {
 			match = append(match, a)
 		}
 	}

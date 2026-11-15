@@ -45,6 +45,7 @@ func TestChannelRoutes(t *testing.T) {
 	var c notifications.Channel
 	res := send(t, srv, "POST", "/v1/notifications/channels", `{"name":"ops","type":"email","config":{"to":"ops@example.com"}}`, &c)
 	if res.StatusCode != 201 || c.ID == 0 || c.Type != "email" || !c.Enabled || c.MinSeverity != "warning" || c.Config["to"] != "ops@example.com" ||
+		!slices.Equal(c.Events, []string{"*"}) ||
 		res.Header.Get("Location") != "/v1/notifications/channels/ops" {
 		t.Fatalf("add email: %d %+v %q", res.StatusCode, c, res.Header.Get("Location"))
 	}
@@ -105,18 +106,33 @@ func TestChannelRoutes(t *testing.T) {
 		{"exec path", `{"name":"x","type":"exec","config":{"command":"../bin/sh"}}`, 422},
 		{"exec missing", `{"name":"x","type":"exec","config":{"command":"nope"}}`, 422},
 		{"bad severity", `{"name":"x","type":"email","config":{"to":"x@example.com"},"min_severity":"loud"}`, 422},
+		{"no events", `{"name":"x","type":"email","config":{"to":"x@example.com"},"events":[]}`, 422},
+		{"bad event pattern", `{"name":"x","type":"email","config":{"to":"x@example.com"},"events":["service*"]}`, 422},
+		{"phase in a pattern", `{"name":"x","type":"email","config":{"to":"x@example.com"},"events":["service.down.resolved"]}`, 422},
+		{"unknown event", `{"name":"x","type":"email","config":{"to":"x@example.com"},"events":["pager.on_fire"]}`, 422},
+		{"slack elsewhere", `{"name":"x","type":"slack","config":{"webhook_url":"https://example.com/services/T/B/X"}}`, 0},
+		{"webhook to loopback", `{"name":"x","type":"webhook","config":{"url":"http://127.0.0.1:8080/in"}}`, 0},
+		{"public plain http", `{"name":"x","type":"webhook","config":{"url":"http://93.184.216.34/in"}}`, 422},
 		{"config not strings", `{"name":"x","type":"email","config":{"to":5}}`, 422},
 		{"unknown field", `{"name":"x","type":"email","config":{"to":"x@example.com"},"nope":1}`, 400},
 	} {
+		if c.want == 0 {
+			continue // the tests allow loopback and any Slack host; channels_test.go covers these
+		}
 		if res := send(t, srv, "POST", "/v1/notifications/channels", c.body, &p); res.StatusCode != c.want || p.Detail == "" {
 			t.Errorf("%s: %d %q, want %d with a sentence", c.name, res.StatusCode, p.Detail, c.want)
 		}
 	}
 
 	// PATCH merges: a secret is replaced, never read; *** is refused; others stay.
-	res = patch(t, srv, "/v1/notifications/channels/chat", `{"config":{"webhook_url":"https://hooks.slack.com/services/T/B/SLACK-KEY-2"},"min_severity":"info"}`, &c)
-	if res.StatusCode != 200 || c.Config["webhook_url"] != "***" || c.MinSeverity != "info" || !c.Enabled {
+	res = patch(t, srv, "/v1/notifications/channels/chat", `{"config":{"webhook_url":"https://hooks.slack.com/services/T/B/SLACK-KEY-2"},"min_severity":"info",
+		"events":["service.*","backup.failed"]}`, &c)
+	if res.StatusCode != 200 || c.Config["webhook_url"] != "***" || c.MinSeverity != "info" || !c.Enabled ||
+		!slices.Equal(c.Events, []string{"service.*", "backup.failed"}) {
 		t.Errorf("patch slack: %d %+v", res.StatusCode, c)
+	}
+	if res := patch(t, srv, "/v1/notifications/channels/chat", `{"events":["nope"]}`, &p); res.StatusCode != 422 || !strings.Contains(p.Detail, "events") {
+		t.Errorf("patch bad events: %d %q", res.StatusCode, p.Detail)
 	}
 	if res := patch(t, srv, "/v1/notifications/channels/chat", `{"config":{"webhook_url":"***"}}`, &p); res.StatusCode != 422 || !strings.Contains(p.Detail, "secret") {
 		t.Errorf("patch ***: %d %q", res.StatusCode, p.Detail)
@@ -179,17 +195,17 @@ func TestTestRoute(t *testing.T) {
 	status := map[string]string{}
 	for _, d := range res.Data {
 		status[d.Channel] = d.Status
-		if d.Event != "test" || d.NotificationID != nil || d.Attempts != 1 {
-			t.Errorf("delivery %+v", d)
+		if d.NotificationID != res.Data[0].NotificationID || d.NotificationID == 0 || d.Attempts != 1 {
+			t.Errorf("delivery %+v, want one test notification", d)
 		}
-		if d.Channel == "dead" && (d.Error == nil || !strings.Contains(*d.Error, "answered 404") || strings.Contains(*d.Error, "KEY-IN-URL")) {
+		if d.Channel == "dead" && (d.Error == nil || *d.Error != "HTTP 404 Not Found") {
 			t.Errorf("dead: %v", d.Error)
 		}
 	}
 	if status["a"] != "delivered" || status["hook"] != "delivered" || status["dead"] != "failed" {
 		t.Errorf("statuses %v", status)
 	}
-	if len(box.to) != 1 || !slices.Equal(box.to[0], []string{"a@example.com"}) || !strings.Contains(string(got), `"event":"test"`) {
+	if len(box.to) != 1 || !slices.Equal(box.to[0], []string{"a@example.com"}) || !strings.Contains(string(got), `"event":"notification.test"`) {
 		t.Errorf("sent %v, webhook got %s", box.to, got)
 	}
 

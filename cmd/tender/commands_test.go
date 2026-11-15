@@ -288,7 +288,7 @@ func TestBackups(t *testing.T) {
 func TestStatus(t *testing.T) {
 	h := newFakeHub(t)
 	a := &answers{}
-	if out := mustRun(t, h, a, "status"); out != "No machines yet. Add one with: tender machines add NAME\n\nNo open alerts.\n" {
+	if out := mustRun(t, h, a, "status"); out != "No machines yet. Add one with: tender machines add NAME\n\nNo open problems.\n" {
 		t.Errorf("empty status = %q", out)
 	}
 	mustRun(t, h, a, "machines", "add", "web-1")
@@ -296,13 +296,15 @@ func TestStatus(t *testing.T) {
 	seen := h.now.Add(-90 * time.Second)
 	h.machines["web-1"].seen = &seen
 	h.history["web-1"] = &backups.History{Type: backups.TypeBackup, Status: backups.StatusFailed, CreatedAt: h.now.Add(-26 * time.Hour)}
+	web1, db1 := "web-1", "db-1"
 	long := "The last backup on web-1 failed at 2026-11-13 10:00 UTC: " + strings.Repeat("restic said no. ", 10)
 	h.alerts = []notifications.Notification{
-		{ID: 1, Type: "backup_stale", Severity: "warning", Status: "pending", Content: "db-1 has never completed a backup.", CreatedAt: h.now.Add(-30 * time.Minute)},
-		{ID: 2, Type: "backup_failed", Severity: "critical", Status: "sent", Content: long, CreatedAt: h.now.Add(-2 * time.Hour)},
-		{ID: 3, Type: "machine_silent", Severity: "critical", Status: "resolved", Content: "old news", CreatedAt: h.now.Add(-9 * time.Hour)},
+		{ID: 4, Machine: &db1, Event: "backup.stale", Severity: "warning", Status: "pending", Message: "db-1 has never completed a backup.", CreatedAt: h.now.Add(-30 * time.Minute)},
+		{ID: 3, Machine: &web1, Event: "backup.failed.escalated", Severity: "critical", Status: "sent", Message: long, CreatedAt: h.now.Add(-2 * time.Hour)},
+		{ID: 2, Machine: &web1, Event: "machine.silent.resolved", Severity: "critical", Status: "sent", Message: "Resolved: old news", CreatedAt: h.now.Add(-8 * time.Hour)},
+		{ID: 1, Machine: &web1, Event: "machine.silent", Severity: "critical", Status: "sent", Message: "old news", CreatedAt: h.now.Add(-9 * time.Hour)},
 	}
-	h.pageSize = 1 // one alert per page: status must follow next_cursor
+	h.pageSize = 1 // one notification per page: status must follow next_cursor
 	h.addServices(t, "web-1", services.Service{Name: "app", State: "running"}, services.Service{Name: "worker", State: "exited"},
 		services.Service{Name: "cron", State: "running"}, services.Service{Name: "gone", State: services.StateRemoved})
 	h.addServices(t, "db-1")
@@ -312,16 +314,16 @@ func TestStatus(t *testing.T) {
 		"MACHINE   LAST SEEN      LAST BACKUP   STATUS   SERVICES\n",
 		"web-1     1 minute ago   1 day ago     failed   2/3 running\n",
 		"db-1      never          never         -        Docker unreachable\n",
-		"Open alerts: 2\n",
-		"warning    30 minutes ago   db-1 has never completed a backup.\n",
-		"critical   2 hours ago      The last backup on web-1 failed at 2026-11-13 10:00 UTC: restic said no. restic said no. restic s...\n",
+		"Open problems: 2\n",
+		"warning    30 minutes ago   backup.stale    db-1 has never completed a backup.\n",
+		"critical   2 hours ago      backup.failed   The last backup on web-1 failed at 2026-11-13 10:00 UTC: restic said no. restic said no. restic s...\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "old news") {
-		t.Error("a resolved alert is shown as open")
+		t.Error("a resolved problem is shown as open")
 	}
 
 	// A hub from before services has no /v1/services: the status leaves that column out.

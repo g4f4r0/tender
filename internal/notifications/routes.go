@@ -99,7 +99,15 @@ func (s *Store) list(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	q := r.URL.Query()
-	items, err := s.List(r.Context(), server.MachineID(r.Context()), q.Get("status"), q.Get("severity"), page)
+	f := Filter{Status: q.Get("status"), Severity: q.Get("severity")}
+	switch q.Get("open") {
+	case "", "false":
+	case "true":
+		f.Open = true
+	default:
+		return server.Invalid("open must be true or false.")
+	}
+	items, err := s.List(r.Context(), server.MachineID(r.Context()), f, page)
 	if err != nil {
 		return err
 	}

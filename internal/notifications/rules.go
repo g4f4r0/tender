@@ -6,23 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-// Notification types.
-const (
-	TypeMachineSilent = "machine_silent"
-	TypeBackupFailed  = "backup_failed"
-	TypeBackupStale   = "backup_stale"
-	TypeDiskFull      = "disk_full"
-
-	TypeServiceDown       = "service_down"
-	TypeServiceRestarting = "service_restarting"
-	TypeServiceUnhealthy  = "service_unhealthy"
-	TypeServiceMemoryHigh = "service_memory_high"
-	TypeDockerUnreachable = "docker_unreachable"
-
-	// TypeChannelFailing is about a channel, not a machine: its deliveries have failed for an hour.
-	TypeChannelFailing = "channel_failing"
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 )
 
 // The thresholds of the rules.
@@ -61,6 +46,11 @@ type Machine struct {
 
 	Services []Service // the Docker services its daemon reports
 
+	// Findings are the problems other domains find on the machine now, such as log shipping
+	// that fails. The hub's wiring fills them; each event must be registered. A problem resolves
+	// once its finding is gone.
+	Findings []Finding
+
 	// What the daemon's latest report said about the machine's Docker engine: running,
 	// unreachable, or empty before any report, and how many reports in a row said unreachable.
 	Docker                   string
@@ -77,7 +67,7 @@ const (
 	deadState   = "dead"
 )
 
-// keeps reports whether an open alert about m stays open though its finding doesn't hold now.
+// keeps reports whether an open problem of m stays open though its finding doesn't hold now.
 //
 // A silent machine's Docker and service alerts, and service alerts while its Docker is
 // unreachable, are about a state nobody can see. A service alert also stays while the latest
@@ -94,8 +84,9 @@ func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 		if silent || m.Docker == dockerUnreachable || m.dockerSilent(now) {
 			return true
 		}
-		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.typ == n.Type })
-	case n.Type == TypeDockerUnreachable:
+		base := channels.Base(n.Event)
+		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.event == base })
+	case channels.Base(n.Event) == EventDockerUnreachable:
 		return silent
 	}
 	return false
@@ -137,10 +128,19 @@ type Run struct {
 	Time   time.Time
 }
 
-// finding is a condition that holds now. service is set for an alert about a Docker service.
+// Finding is a problem another domain finds on a machine now: a registered event, its severity
+// and message, and the Docker service it is about, if any.
+type Finding struct {
+	Event    string
+	Severity string
+	Message  string
+	Service  string
+}
+
+// finding is a condition that holds now. service is set for a problem of a Docker service.
 type finding struct {
-	typ, severity, content string
-	service                string
+	event, severity, content string
+	service                  string
 }
 
 // evaluate returns the conditions that hold for m at now.
@@ -156,7 +156,7 @@ func evaluate(m Machine, now time.Time) []finding {
 		if m.LastSeen != nil {
 			content = fmt.Sprintf("%s hasn't reported to the hub since %s (%s ago).", m.Name, formatTime(lastSeen), formatDuration(now.Sub(lastSeen)))
 		}
-		out = append(out, finding{TypeMachineSilent, SeverityCritical, content, ""})
+		out = append(out, finding{EventMachineSilent, SeverityCritical, content, ""})
 	}
 
 	if m.HasBackupSettings {
@@ -167,7 +167,7 @@ func evaluate(m Machine, now time.Time) []finding {
 			} else {
 				content += "."
 			}
-			out = append(out, finding{TypeBackupFailed, SeverityCritical, content, ""})
+			out = append(out, finding{EventBackupFailed, SeverityCritical, content, ""})
 		}
 
 		since := m.LastCompletedBackup // never completed: count from when the settings were made
@@ -183,7 +183,7 @@ func evaluate(m Machine, now time.Time) []finding {
 			if !m.LastCompletedBackup.IsZero() {
 				content = fmt.Sprintf("%s has had no completed backup since %s (%s ago).", m.Name, formatTime(since), formatDuration(age))
 			}
-			out = append(out, finding{TypeBackupStale, severity, content, ""})
+			out = append(out, finding{EventBackupStale, severity, content, ""})
 		}
 	}
 
@@ -193,19 +193,25 @@ func evaluate(m Machine, now time.Time) []finding {
 			severity = SeverityCritical
 		}
 		percent := strconv.FormatFloat(m.DiskUsedPercent, 'f', 1, 64)
-		out = append(out, finding{TypeDiskFull, severity, fmt.Sprintf("The disk on %s is %s%% full.", m.Name, strings.TrimSuffix(percent, ".0")), ""})
+		out = append(out, finding{EventDiskFull, severity, fmt.Sprintf("The disk on %s is %s%% full.", m.Name, strings.TrimSuffix(percent, ".0")), ""})
+	}
+
+	for _, f := range m.Findings {
+		if t, ok := eventType(f.Event); ok && t.Name == f.Event && slices.Contains(t.Severities, f.Severity) {
+			out = append(out, finding{f.Event, f.Severity, f.Message, f.Service})
+		}
 	}
 
 	// A silent machine already alerts; its services, whose state is as old as its last report, don't.
-	if len(out) > 0 && out[0].typ == TypeMachineSilent {
+	if len(out) > 0 && out[0].event == EventMachineSilent {
 		return out
 	}
 	switch {
 	case m.DockerUnreachableReports >= serviceReports:
-		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
+		out = append(out, finding{EventDockerUnreachable, SeverityCritical,
 			fmt.Sprintf("Docker on %s can't be reached: %s. Its services' states are unknown until it is back.", m.Name, dockerWhy(m.DockerReason)), ""})
 	case m.dockerSilent(now):
-		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
+		out = append(out, finding{EventDockerUnreachable, SeverityCritical,
 			fmt.Sprintf("Docker on %s hasn't been reported since %s, though the machine still reports. Its services' states are unknown until it is back.",
 				m.Name, formatTime(*m.DockerReportedAt)), ""})
 	}
@@ -253,21 +259,21 @@ func evaluateService(machine string, s Service, reports int) []finding {
 		} else if s.ExitCode != nil {
 			content = fmt.Sprintf("The service %s on %s stopped with exit code %d.", s.Name, machine, *s.ExitCode)
 		}
-		out = append(out, finding{TypeServiceDown, SeverityCritical, content, s.Name})
+		out = append(out, finding{EventServiceDown, SeverityCritical, content, s.Name})
 	}
 	if s.RestartingReports >= reports {
 		content := fmt.Sprintf("The service %s on %s keeps restarting. Docker has restarted it %s.", s.Name, machine, plural(s.RestartCount, "time"))
-		out = append(out, finding{TypeServiceRestarting, SeverityCritical, content, s.Name})
+		out = append(out, finding{EventServiceRestarting, SeverityCritical, content, s.Name})
 	}
 	if s.UnhealthyReports >= reports {
 		content := fmt.Sprintf("The service %s on %s is unhealthy: its health check fails.", s.Name, machine)
-		out = append(out, finding{TypeServiceUnhealthy, SeverityWarning, content, s.Name})
+		out = append(out, finding{EventServiceUnhealthy, SeverityWarning, content, s.Name})
 	}
 	// Only a service with a memory limit: the services domain has no machine total to compare with.
 	if s.MemoryHighReports >= reports && s.MemoryBytes != nil && s.MemoryLimitBytes != nil {
 		content := fmt.Sprintf("The service %s on %s uses %s, %d%% of its %s memory limit.", s.Name, machine,
 			formatBytes(*s.MemoryBytes), int(100*float64(*s.MemoryBytes)/float64(*s.MemoryLimitBytes)), formatBytes(*s.MemoryLimitBytes))
-		out = append(out, finding{TypeServiceMemoryHigh, SeverityWarning, content, s.Name})
+		out = append(out, finding{EventServiceMemoryHigh, SeverityWarning, content, s.Name})
 	}
 	return out
 }

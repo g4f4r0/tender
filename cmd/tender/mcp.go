@@ -11,7 +11,6 @@ import (
 
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
-	"github.com/g4f4r0/tender/internal/notifications"
 )
 
 // runMCP serves the MCP tools over stdio from the hub's existing database, for a local client
@@ -46,7 +45,7 @@ func runMCP(args []string, log *slog.Logger) error {
 		return err
 	}
 
-	notifications.AdaptersDir = os.Getenv(envAdaptersDir)
+	testAdaptersDir(os.Getenv, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

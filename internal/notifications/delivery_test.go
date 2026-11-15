@@ -22,7 +22,7 @@ type endpoint struct {
 	*httptest.Server
 	mu     sync.Mutex
 	status int
-	got    []string // "event alert-type", or the Slack text's first line
+	got    []string // the event's name, or the Slack text's first line
 	bodies [][]byte
 }
 
@@ -40,7 +40,7 @@ func newEndpoint(t *testing.T, status int) *endpoint {
 		var ev channels.Event
 		var slack struct{ Text string }
 		if json.Unmarshal(body, &ev) == nil && ev.Version == 1 {
-			e.got = append(e.got, ev.Event+" "+ev.Alert.Type)
+			e.got = append(e.got, ev.Event)
 		} else if json.Unmarshal(body, &slack) == nil {
 			first, _, _ := strings.Cut(slack.Text, "\n")
 			e.got = append(e.got, first)
@@ -72,8 +72,8 @@ func (r *rig) add(name, typ string, cfg map[string]string, minSeverity string) C
 // deliveries lists every delivery as "channel event status attempts", in order.
 func (r *rig) deliveries() []string {
 	r.t.Helper()
-	rows, err := r.db.Read.Query(`SELECT c.name, d.event, d.status, d.attempts FROM notification_deliveries d
-		JOIN notification_channels c ON c.id = d.channel_id ORDER BY d.id`)
+	rows, err := r.db.Read.Query(`SELECT c.name, n.event, d.status, d.attempts FROM notification_deliveries d
+		JOIN notification_channels c ON c.id = d.channel_id JOIN notifications n ON n.id = d.notification_id ORDER BY d.id`)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -99,13 +99,16 @@ func (r *rig) wantDeliveries(want ...string) {
 // adaptersDir makes a folder of exec adapters for the test.
 func adaptersDir(t *testing.T) string {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	old := AdaptersDir
 	AdaptersDir = dir
 	t.Cleanup(func() { AdaptersDir = old })
 	return dir
 }
 
-// Every type gets the alert; one failing channel neither delays nor repeats the others.
+// Every type gets the notification; one failing channel neither delays nor repeats the others.
 func TestEveryChannelOnItsOwn(t *testing.T) {
 	dir := adaptersDir(t)
 	r := newRig(t)
@@ -119,40 +122,43 @@ func TestEveryChannelOnItsOwn(t *testing.T) {
 	r.add("run", TypeExec, map[string]string{"command": "log-it"}, "")
 
 	r.tick(0, silent())
-	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
-	r.wantDeliveries("one opened delivered 1", "hook opened pending 1", "chat opened delivered 1", "run opened delivered 1")
-	if got := chat.events(); !slices.Equal(got, []string{"*Critical: machine_silent on a* (opened)"}) {
+	r.want([]string{"machine.silent critical sent"}, "a: not reporting")
+	opened := []string{"one machine.silent delivered 1", "hook machine.silent pending 1", "chat machine.silent delivered 1", "run machine.silent delivered 1"}
+	r.wantDeliveries(opened...)
+	if got := chat.events(); !slices.Equal(got, []string{"*Critical: machine.silent on a*"}) {
 		t.Errorf("slack got %q", got)
 	}
 	logged, _ := os.ReadFile(out)
 	var ev channels.Event
-	if err := json.Unmarshal(logged, &ev); err != nil || ev.Event != "opened" || ev.Alert.Type != "machine_silent" || ev.Hub != "https://hub1.example.com" ||
-		ev.Alert.Machine == nil || *ev.Alert.Machine != "a" {
+	if err := json.Unmarshal(logged, &ev); err != nil || ev.Event != "machine.silent" || ev.Notification.Event != "machine.silent" ||
+		ev.Hub != "https://hub1.example.com" || ev.Notification.Machine == nil || *ev.Notification.Machine != "a" {
 		t.Errorf("exec got %s: %v", logged, err)
 	}
 
 	// 30 seconds on, the webhook isn't due (1 minute), and nothing goes again to the others.
 	r.tick(30*time.Second, silent())
-	r.wantDeliveries("one opened delivered 1", "hook opened pending 1", "chat opened delivered 1", "run opened delivered 1")
+	r.wantDeliveries(opened...)
 	// It is back: the next try, a minute after the first, delivers it, once.
 	hook.set(200)
 	r.tick(time.Minute, silent())
 	r.tick(2*time.Minute, silent())
-	r.wantDeliveries("one opened delivered 1", "hook opened delivered 2", "chat opened delivered 1", "run opened delivered 1")
-	if got := hook.events(); !slices.Equal(got, []string{"opened machine_silent"}) {
+	opened[1] = "hook machine.silent delivered 2"
+	r.wantDeliveries(opened...)
+	if got := hook.events(); !slices.Equal(got, []string{"machine.silent"}) {
 		t.Errorf("webhook got %q", got)
 	}
 
-	// The alert resolves: every channel gets the resolved event.
+	// The problem resolves: every channel gets machine.silent.resolved.
 	r.tick(3*time.Minute, quiet(3*time.Minute))
-	r.wantDeliveries("one opened delivered 1", "hook opened delivered 2", "chat opened delivered 1", "run opened delivered 1",
-		"one resolved delivered 1", "hook resolved delivered 1", "chat resolved delivered 1", "run resolved delivered 1")
+	r.wantDeliveries(append(opened, "one machine.silent.resolved delivered 1", "hook machine.silent.resolved delivered 1",
+		"chat machine.silent.resolved delivered 1", "run machine.silent.resolved delivered 1")...)
 	var last channels.Event
 	hook.mu.Lock()
 	_ = json.Unmarshal(hook.bodies[len(hook.bodies)-1], &last)
 	hook.mu.Unlock()
-	if last.Alert.ResolvedAt == nil || !last.Alert.ResolvedAt.Equal(t0.Add(3*time.Minute)) {
-		t.Errorf("resolved_at %v", last.Alert.ResolvedAt)
+	if n := last.Notification; last.Event != "machine.silent.resolved" || n.ID != 2 || !n.CreatedAt.Equal(t0.Add(3*time.Minute)) ||
+		n.Message != "Resolved: a has never reported to the hub." {
+		t.Errorf("resolved: %+v", last)
 	}
 
 	// No secret reached the log.
@@ -161,7 +167,7 @@ func TestEveryChannelOnItsOwn(t *testing.T) {
 	}
 }
 
-// A 4xx other than 429 fails at once with the answer; a 5xx is retried with the backoff until 24 hours.
+// A 4xx other than 429 fails at once with its status; a 5xx is retried with the backoff until 24 hours.
 func TestDeliveryFailures(t *testing.T) {
 	r := newRig(t)
 	gone, busy := newEndpoint(t, 410), newEndpoint(t, 500)
@@ -172,33 +178,32 @@ func TestDeliveryFailures(t *testing.T) {
 		r.tick(time.Duration(m)*time.Minute, silent())
 	}
 	// busy: tries at 0, 1, 3, 8, 18 and 48 minutes.
-	r.wantDeliveries("one opened delivered 1", "gone opened failed 1", "busy opened pending 6")
+	r.wantDeliveries("one machine.silent delivered 1", "gone machine.silent failed 1", "busy machine.silent pending 6")
 	var why string
-	if err := r.db.Read.QueryRow(`SELECT error FROM notification_deliveries WHERE id = 2`).Scan(&why); err != nil ||
-		why != "the webhook answered 410: down for maintenance" {
+	if err := r.db.Read.QueryRow(`SELECT error FROM notification_deliveries WHERE id = 2`).Scan(&why); err != nil || why != "HTTP 410 Gone" {
 		t.Errorf("error %q, %v", why, err)
 	}
 	// Every 30 minutes until 24 hours have passed, then failed for good.
 	r.tick(24*time.Hour+time.Minute, silent())
-	r.wantDeliveries("one opened delivered 1", "gone opened failed 1", "busy opened failed 7")
+	r.wantDeliveries("one machine.silent delivered 1", "gone machine.silent failed 1", "busy machine.silent failed 7")
 }
 
-// An alert's events reach a channel in order: a newer one waits while an older one is pending.
-// One that resolves before a channel got it drops what that channel still owed.
+// A channel gets its notifications in order: a newer one waits while an older one is pending. A
+// problem that resolves before a channel got any of it drops what that channel still owed.
 func TestOrderAndResolveBeforeDelivered(t *testing.T) {
 	r := newRig(t)
 	hook := newEndpoint(t, 500)
 	r.add("hook", TypeWebhook, map[string]string{"url": hook.URL}, "")
 	r.tick(0, staleAfter(0, 26))
 	r.tick(time.Hour, staleAfter(time.Hour, 50)) // escalates: one got opened, hook still owes it
-	r.wantDeliveries("one opened delivered 1", "hook opened pending 2", "one escalated delivered 1", "hook escalated pending 0")
+	r.wantDeliveries("one backup.stale delivered 1", "hook backup.stale pending 2", "one backup.stale.escalated delivered 1", "hook backup.stale.escalated pending 0")
 	hook.set(200)
 	r.tick(time.Hour+2*time.Minute, staleAfter(time.Hour+2*time.Minute, 50))
-	if got := hook.events(); !slices.Equal(got, []string{"opened backup_stale", "escalated backup_stale"}) {
+	if got := hook.events(); !slices.Equal(got, []string{"backup.stale", "backup.stale.escalated"}) {
 		t.Errorf("hook got %q, want opened then escalated", got)
 	}
 
-	// A second alert that hook can't get before it resolves: hook gets neither event.
+	// A second problem that hook can't get before it resolves: hook gets neither notification.
 	r2 := newRig(t)
 	hook2 := newEndpoint(t, 500)
 	r2.add("hook", TypeWebhook, map[string]string{"url": hook2.URL}, "")
@@ -206,13 +211,14 @@ func TestOrderAndResolveBeforeDelivered(t *testing.T) {
 	hook2.set(200)
 	r2.tick(30*time.Second, quiet(30*time.Second))
 	r2.tick(5*time.Minute, quiet(5*time.Minute))
-	r2.wantDeliveries("one opened delivered 1", "hook opened failed 1", "one resolved delivered 1")
+	r2.wantDeliveries("one machine.silent delivered 1", "hook machine.silent failed 1", "one machine.silent.resolved delivered 1")
 	if got := hook2.events(); len(got) != 0 {
 		t.Errorf("hook got %q", got)
 	}
 }
 
-// A channel gets alerts from its min_severity up, and an escalation into its range.
+// A channel gets notifications from its min_severity up, an escalation into its range, and the
+// resolved one after.
 func TestMinSeverity(t *testing.T) {
 	r := newRig(t)
 	pager := newEndpoint(t, 200)
@@ -220,7 +226,7 @@ func TestMinSeverity(t *testing.T) {
 	r.tick(0, staleAfter(0, 26)) // warning
 	r.tick(24*time.Hour, staleAfter(24*time.Hour, 50))
 	r.tick(25*time.Hour, staleAfter(25*time.Hour, 1))
-	if got := pager.events(); !slices.Equal(got, []string{"escalated backup_stale", "resolved backup_stale"}) {
+	if got := pager.events(); !slices.Equal(got, []string{"backup.stale.escalated", "backup.stale.resolved"}) {
 		t.Errorf("pager got %q", got)
 	}
 }
@@ -237,13 +243,13 @@ func TestChannelOff(t *testing.T) {
 	}
 	hook.set(200)
 	r.tick(5*time.Minute, quiet(5*time.Minute))
-	r.wantDeliveries("one opened delivered 1", "hook opened failed 1", "one resolved delivered 1")
+	r.wantDeliveries("one machine.silent delivered 1", "hook machine.silent failed 1", "one machine.silent.resolved delivered 1")
 	if len(hook.events()) != 0 {
 		t.Errorf("a channel that is off got %q", hook.events())
 	}
 }
 
-// channel_failing opens when a channel's deliveries have failed for an hour, goes to every other
+// channel.failing fires when a channel's deliveries have failed for an hour, goes to every other
 // channel, never the failing one, and resolves once one gets through.
 func TestChannelFailing(t *testing.T) {
 	r := newRig(t)
@@ -253,37 +259,37 @@ func TestChannelFailing(t *testing.T) {
 	r.add("chat", TypeSlack, map[string]string{"webhook_url": chat.URL}, SeverityCritical)
 	r.tick(0, silent())
 	r.tick(59*time.Minute, silent())
-	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
+	r.want([]string{"machine.silent critical sent"}, "a: not reporting")
 	r.tick(61*time.Minute, silent())
-	r.want([]string{"machine_silent critical sent", "channel_failing warning sent"}, "a: not reporting", "Tender: a notification channel is failing")
+	r.want([]string{"machine.silent critical sent", "channel.failing warning sent"}, "a: not reporting", "Tender: a notification channel is failing")
 	var content string
 	var channel *string
-	if err := r.db.Read.QueryRow(`SELECT content, channel FROM notifications WHERE type = 'channel_failing'`).Scan(&content, &channel); err != nil {
+	if err := r.db.Read.QueryRow(`SELECT message, channel FROM notifications WHERE event = 'channel.failing'`).Scan(&content, &channel); err != nil {
 		t.Fatal(err)
 	}
-	if channel == nil || *channel != "hook" || !strings.Contains(content, "The webhook channel hook has failed to deliver alerts since 2026-11-14 03:30 UTC") ||
-		!strings.Contains(content, "answered 503") {
-		t.Errorf("channel %v, content %q", channel, content)
+	if channel == nil || *channel != "hook" || !strings.Contains(content, "The webhook channel hook has failed to deliver notifications since 2026-11-14 03:30 UTC") ||
+		!strings.Contains(content, "HTTP 503 Service Unavailable") {
+		t.Errorf("channel %v, message %q", channel, content)
 	}
 	// It reached chat, though chat takes critical only, and not hook.
-	if got := chat.events(); !slices.Equal(got, []string{"*Critical: machine_silent on a* (opened)", "*Warning: channel_failing* (opened)"}) {
+	if got := chat.events(); !slices.Equal(got, []string{"*Critical: machine.silent on a*", "*Warning: channel.failing*"}) {
 		t.Errorf("chat got %q", got)
 	}
-	if strings.Contains(strings.Join(hook.events(), " "), "channel_failing") {
-		t.Error("the failing channel got its own alert")
+	if strings.Contains(strings.Join(hook.events(), " "), "channel.failing") {
+		t.Error("the failing channel got its own notification")
 	}
-	ns, err := r.engine.store.List(t.Context(), 0, "", "", mustPage(t))
-	if err != nil || ns[0].Type != TypeChannelFailing || ns[0].Machine != nil || len(ns[0].Deliveries) != 2 {
+	ns, err := r.engine.store.List(t.Context(), 0, Filter{}, mustPage(t))
+	if err != nil || ns[0].Event != EventChannelFailing || ns[0].Machine != nil || len(ns[0].Deliveries) != 2 {
 		t.Errorf("list: %+v %v", ns, err)
 	}
 
-	// The webhook is back: its next try delivers, and channel_failing resolves.
+	// The webhook is back: its next try delivers, and channel.failing resolves.
 	// Its tries are at 0, 1, 3, 8, 18, 48 and 78 minutes, then 108; the rules see the success at their next run.
 	hook.set(200)
 	r.tick(108*time.Minute, silent())
-	r.want([]string{"machine_silent critical sent", "channel_failing warning sent"}, "a: not reporting", "Tender: a notification channel is failing")
+	r.want([]string{"machine.silent critical sent", "channel.failing warning sent"}, "a: not reporting", "Tender: a notification channel is failing")
 	r.tick(109*time.Minute, silent())
-	r.want([]string{"machine_silent critical sent", "channel_failing warning resolved"}, "a: not reporting",
+	r.want([]string{"machine.silent critical sent", "channel.failing warning sent", "channel.failing.resolved warning sent"}, "a: not reporting",
 		"Tender: a notification channel is failing", "Tender: a notification channel is failing, resolved")
 }
 

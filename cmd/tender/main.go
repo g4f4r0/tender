@@ -29,7 +29,7 @@ Usage: tender COMMAND [options]
 
 Work with the hub, from any machine that can reach it:
 ` + table([]row{
-	{"status", "Show the machines, their last backup, services and the open alerts"},
+	{"status", "Show the machines, their last backup, services and open problems"},
 	{"machines COMMAND", "list, add, remove, rotate-token"},
 	{"destinations COMMAND", "list, add, remove"},
 	{"backups COMMAND", "status, set, unset"},
@@ -37,6 +37,7 @@ Work with the hub, from any machine that can reach it:
 	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
 	{"actions COMMAND", "list, show"},
 	{"channels COMMAND", "list, add, show, update, remove, test"},
+	{"notifications COMMAND", "list"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
@@ -71,6 +72,8 @@ var hubCommands = map[string]func([]string, session) error{
 	"logs":         runLogs,
 	"actions":      runActions,
 	"channels":     runChannels,
+
+	"notifications": runNotifications,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.

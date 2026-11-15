@@ -9,19 +9,28 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
 
 func event() Event {
 	machine, service := "apps", "web"
-	return Event{Version: Version, Event: EventOpened, Hub: "https://hub.example.com", Alert: Alert{
-		ID: 12, Type: "service_down", Severity: "critical", Machine: &machine, Service: &service,
+	return Event{Version: Version, Event: "service.down", Hub: "https://hub.example.com", Notification: Notification{
+		ID: 12, Event: "service.down", Severity: "critical", Machine: &machine, Service: &service,
 		Message: "The service web on apps stopped with exit code 1.", CreatedAt: time.Date(2026, 11, 15, 3, 31, 0, 0, time.UTC),
 	}}
+}
+
+// The tests' fake endpoints listen on loopback, which only tests may reach.
+func TestMain(m *testing.M) {
+	AllowLocalForTests(true)
+	os.Exit(m.Run())
 }
 
 // receiver is a fake endpoint that answers status with body and keeps what it got.
@@ -59,17 +68,17 @@ func TestWebhookSignsTheEventContract(t *testing.T) {
 	if err := json.Unmarshal(r.body, &got); err != nil {
 		t.Fatal(err)
 	}
-	alert := got["alert"].(map[string]any)
-	if got["version"] != 1.0 || got["event"] != "opened" || got["hub"] != "https://hub.example.com" || len(got) != 4 {
+	n := got["notification"].(map[string]any)
+	if got["version"] != 1.0 || got["event"] != "service.down" || got["hub"] != "https://hub.example.com" || len(got) != 4 {
 		t.Errorf("event: %s", r.body)
 	}
-	for _, k := range []string{"id", "type", "severity", "machine", "service", "message", "created_at", "resolved_at"} {
-		if _, ok := alert[k]; !ok {
-			t.Errorf("alert has no %s: %s", k, r.body)
+	for _, k := range []string{"id", "event", "severity", "machine", "service", "channel", "message", "created_at"} {
+		if _, ok := n[k]; !ok {
+			t.Errorf("notification has no %s: %s", k, r.body)
 		}
 	}
-	if len(alert) != 8 || alert["resolved_at"] != nil || alert["created_at"] != "2026-11-15T03:31:00Z" {
-		t.Errorf("alert: %v", alert)
+	if len(n) != 8 || n["channel"] != nil || n["event"] != "service.down" || n["created_at"] != "2026-11-15T03:31:00Z" {
+		t.Errorf("notification: %v", n)
 	}
 	// The signature verifies as the docs say: HMAC-SHA256 of "<t>.<body>".
 	sig := r.header.Get("Tender-Signature")
@@ -104,8 +113,9 @@ func TestWebhookStatuses(t *testing.T) {
 		if IsPermanent(err) != c.permanent {
 			t.Errorf("%d: permanent %v, want %v", c.status, IsPermanent(err), c.permanent)
 		}
-		if !strings.Contains(err.Error(), "answered "+itoa(c.status)+": nope") || len(err.Error()) > 1100 {
-			t.Errorf("%d: error %d bytes: %.80s", c.status, len(err.Error()), err)
+		// The error is the status alone: the answer's body is never kept or shown.
+		if want := "HTTP " + itoa(c.status) + " " + http.StatusText(c.status); err.Error() != want {
+			t.Errorf("%d: error %.80q, want %q", c.status, err, want)
 		}
 		if strings.Contains(err.Error(), r.URL) {
 			t.Errorf("%d: the error shows the URL: %v", c.status, err)
@@ -160,7 +170,7 @@ func TestWebhookCheckAndMake(t *testing.T) {
 func TestSlackMessage(t *testing.T) {
 	r := newReceiver(t, 200, "ok")
 	ev := event()
-	ev.Alert.Message = "a <b> & c"
+	ev.Notification.Message = "a <b> & c"
 	if err := (Slack{}).Send(context.Background(), Config{"webhook_url": r.URL}, ev); err != nil {
 		t.Fatal(err)
 	}
@@ -168,19 +178,28 @@ func TestSlackMessage(t *testing.T) {
 	if err := json.Unmarshal(r.body, &got); err != nil {
 		t.Fatal(err)
 	}
-	want := "*Critical: service_down on apps* (opened)\na &lt;b&gt; &amp; c\nAlert 12, open since 2026-11-15 03:31 UTC. Tender hub: https://hub.example.com"
+	want := "*Critical: service.down on apps*\na &lt;b&gt; &amp; c\nNotification 12, 2026-11-15 03:31 UTC. Tender hub: https://hub.example.com"
 	if got["text"] != want || len(got) != 1 {
 		t.Errorf("text %q\nwant %q", got["text"], want)
 	}
 	r.status, r.answer = 403, "invalid_token"
 	err := (Slack{}).Send(context.Background(), Config{"webhook_url": r.URL}, ev)
-	if !IsPermanent(err) || !strings.Contains(err.Error(), "invalid_token") {
+	if !IsPermanent(err) || err.Error() != "HTTP 403 Forbidden" {
 		t.Errorf("403: %v", err)
 	}
 	ev.Event = EventTest
 	if !strings.Contains(SlackText(ev), "This is a test") {
 		t.Error(SlackText(ev))
 	}
+}
+
+// adaptersDir is an adapters folder that only its owner can change.
+func adaptersDir(t *testing.T) string {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // adapter writes a program into dir.
@@ -195,7 +214,7 @@ func adapter(t *testing.T, dir, name, script string, mode os.FileMode) {
 }
 
 func TestExecPathRules(t *testing.T) {
-	dir := t.TempDir()
+	dir := adaptersDir(t)
 	e := Exec{Dir: dir, AnyOwner: true}
 	adapter(t, dir, "good", "cat >/dev/null\n", 0o755)
 	adapter(t, dir, "notexec", "", 0o644)
@@ -238,7 +257,7 @@ func TestExecPathRules(t *testing.T) {
 }
 
 func TestExecRuns(t *testing.T) {
-	dir := t.TempDir()
+	dir := adaptersDir(t)
 	out := filepath.Join(t.TempDir(), "got")
 	e := Exec{Dir: dir, AnyOwner: true}
 	t.Setenv("TENDER_ENCRYPTION_KEY", "must-not-leak")
@@ -249,7 +268,7 @@ func TestExecRuns(t *testing.T) {
 	got, _ := os.ReadFile(out)
 	first, _, _ := strings.Cut(string(got), "\n")
 	var ev Event
-	if err := json.Unmarshal([]byte(first), &ev); err != nil || ev.Alert.ID != 12 || ev.Version != 1 {
+	if err := json.Unmarshal([]byte(first), &ev); err != nil || ev.Notification.ID != 12 || ev.Version != 1 {
 		t.Errorf("stdin: %v %q", err, first)
 	}
 	if strings.Contains(string(got), "must-not-leak") {
@@ -283,5 +302,137 @@ func TestExecRuns(t *testing.T) {
 	err = e.Send(context.Background(), Config{"command": "hangs"}, event())
 	if err == nil || !strings.Contains(err.Error(), "didn't finish within") || time.Since(start) > 3*time.Second {
 		t.Errorf("hangs: %v after %s", err, time.Since(start))
+	}
+}
+
+// local turns the tests' loopback allowance off for one test.
+func local(t *testing.T) {
+	AllowLocalForTests(false)
+	t.Cleanup(func() { AllowLocalForTests(true) })
+}
+
+func TestAddressRules(t *testing.T) {
+	local(t)
+	for addr, want := range map[string][2]bool{ // {over https, over plain http}
+		"127.0.0.1":          {false, false},
+		"::1":                {false, false},
+		"::ffff:127.0.0.1":   {false, false},
+		"169.254.169.254":    {false, false},
+		"fe80::1":            {false, false},
+		"224.0.0.1":          {false, false},
+		"ff02::1":            {false, false},
+		"0.0.0.0":            {false, false},
+		"::":                 {false, false},
+		"10.1.2.3":           {true, true},
+		"172.16.0.9":         {true, true},
+		"192.168.1.20":       {true, true},
+		"fd12::5":            {true, true},
+		"100.101.102.103":    {true, true},
+		"fd7a:115c:a1e0::53": {true, true},
+		"93.184.216.34":      {true, false},
+		"2606:4700::1111":    {true, false},
+	} {
+		ip := netip.MustParseAddr(addr)
+		if got := refused(ip, false) == ""; got != want[0] {
+			t.Errorf("%s over https: allowed %v, want %v", addr, got, want[0])
+		}
+		if got := refused(ip, true) == ""; got != want[1] {
+			t.Errorf("%s over http: allowed %v, want %v", addr, got, want[1])
+		}
+	}
+}
+
+func TestWebhookRefusesLocalAddresses(t *testing.T) {
+	local(t)
+	r := newReceiver(t, 204, "")
+	_, port, _ := strings.Cut(strings.TrimPrefix(r.URL, "http://"), ":")
+	// The check is on the address a name resolves to when the hub dials, so a name that leads to
+	// loopback is refused as surely as the address itself.
+	for _, target := range []string{
+		r.URL, "http://localhost:" + port, "https://localhost:" + port, "http://[::ffff:127.0.0.1]:" + port,
+		"https://169.254.169.254/latest/meta-data", "http://93.184.216.34/hook",
+	} {
+		err := (Webhook{}).Send(context.Background(), Config{"url": target, "secret": secret}, event())
+		if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "doesn't send to") {
+			t.Errorf("%s: %v, want a refusal", target, err)
+		}
+	}
+	if r.body != nil {
+		t.Errorf("the receiver got %s", r.body)
+	}
+	for _, bad := range []string{"http://127.0.0.1/x", "https://[::1]/x", "http://169.254.169.254/", "http://93.184.216.34/hook"} {
+		if err := (Webhook{}).Check(Config{"url": bad, "secret": secret}); err == nil {
+			t.Errorf("%s passed the check", bad)
+		}
+	}
+	for _, good := range []string{"http://100.101.102.103:9000/hook", "http://192.168.1.20/hook", "https://example.com/hook"} {
+		if err := (Webhook{}).Check(Config{"url": good, "secret": secret}); err != nil {
+			t.Errorf("%s: %v", good, err)
+		}
+	}
+	for _, c := range []*http.Client{httpsClient, plainClient} {
+		if c.Transport.(*http.Transport).Proxy != nil {
+			t.Error("a proxy could see the events")
+		}
+	}
+}
+
+func TestSlackNeedsSlacksHost(t *testing.T) {
+	local(t)
+	r := newReceiver(t, 200, "ok")
+	if err := (Slack{}).Check(Config{"webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX"}); err != nil {
+		t.Error(err)
+	}
+	for _, bad := range []string{"http://hooks.slack.com/services/T/B/X", "https://hooks.slack.com.example.com/services/T/B/X", "https://example.com/services/T/B/X", r.URL} {
+		if err := (Slack{}).Check(Config{"webhook_url": bad}); err == nil || !strings.Contains(err.Error(), "https://hooks.slack.com/") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	err := (Slack{}).Send(context.Background(), Config{"webhook_url": r.URL}, event())
+	if !IsPermanent(err) || r.body != nil {
+		t.Errorf("send to %s: %v, got %s", r.URL, err, r.body)
+	}
+}
+
+func TestExecFolderRules(t *testing.T) {
+	dir := adaptersDir(t)
+	adapter(t, dir, "good", "cat >/dev/null\n", 0o755)
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	// AnyOwner relaxes only who owns the folder: one that others can write to is still refused.
+	err := Exec{Dir: dir, AnyOwner: true}.Check(Config{"command": "good"})
+	if err == nil || !strings.Contains(err.Error(), "can be changed by others") || !strings.Contains(err.Error(), "chmod go-w "+dir) {
+		t.Errorf("open folder: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Exec{Dir: dir, AnyOwner: true}).Check(Config{"command": "good"}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestExecDeliveredWithAChildLeftRunning(t *testing.T) {
+	dir := adaptersDir(t)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	// The child keeps standard output open after the adapter exits 0.
+	adapter(t, dir, "forks", "cat >/dev/null\nsleep 30 &\necho $! >"+pidFile+"\nexit 0\n", 0o755)
+	err := Exec{Dir: dir, AnyOwner: true}.Send(context.Background(), Config{"command": "forks"}, event())
+	if err != nil {
+		t.Errorf("exit 0: %v, want delivered", err)
+	}
+	raw, _ := os.ReadFile(pidFile)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if pid <= 0 {
+		t.Fatalf("pid %q", raw)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatal("the adapter's child still runs after the delivery")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

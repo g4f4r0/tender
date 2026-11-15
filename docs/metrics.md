@@ -1,6 +1,6 @@
 # Metrics
 
-The hub serves its machines, services, backups and open alerts at `GET /metrics` in the Prometheus text format, for Prometheus, Grafana Agent or an OpenTelemetry collector to scrape.
+The hub serves its machines, services, backups and open problems at `GET /metrics` in the Prometheus text format, for Prometheus, Grafana Agent or an OpenTelemetry collector to scrape.
 
 This page explains how to scrape the hub and what each metric holds. Nothing is pushed: a scraper reads the page when it wants.
 
@@ -83,13 +83,13 @@ The machine numbers come from its latest reading, which the daemon sends once a 
 | `tender_backup_snapshots` | `machine` | How many snapshots the machine has. |
 | `tender_backup_last_run_failed` | `machine` | `1` when the newest backup run failed, else `0`. |
 
-### Alerts
+### Problems
 
 | Metric | Labels | What it holds |
 | --- | --- | --- |
-| `tender_alerts_open` | `type`, `severity` | How many alerts are open, `pending` or `sent`. Every type has a series at every severity, `0` included. |
+| `tender_problems_open` | `event`, `severity` | How many problems are open: ones whose latest notification is not a `.resolved` one. `event` is the base event, such as `service.down`, and `severity` is the latest notification's. Every event has a series at every severity, `0` included. Tests are not problems. |
 
-[Alerts](alerts.md) lists every type.
+[Notifications](notifications.md#events) lists every event.
 
 ### Log shipping
 
@@ -101,10 +101,10 @@ The log-shipping counters are listed here once log shipping lands.
 
 1. A machine without a snapshot for 26 hours: `tender_backup_last_age_seconds > 26 * 3600`.
 2. Services that stopped: `tender_service_state{state="exited"} == 1`.
-3. Any critical alert: `sum(tender_alerts_open{severity="critical"}) > 0`.
+3. Any critical problem: `sum(tender_problems_open{severity="critical"}) > 0`.
 
 ## Next steps
 
 1. [REST API](api.md#get-metrics) has the route's reference.
-2. [Alerts](alerts.md) explains when each alert opens.
-3. [Adapters](adapters.md) sends alerts to Slack, a webhook or your own program.
+2. [Notifications](notifications.md) explains when each event fires and resolves.
+3. [Adapters](adapters.md) sends notifications to Slack, a webhook or your own program.

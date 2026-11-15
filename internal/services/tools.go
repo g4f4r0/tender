@@ -16,7 +16,7 @@ type listInput struct {
 type alertsInput struct {
 	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
 	Service string `json:"service" jsonschema:"service name, the container name, as list_services shows it"`
-	Enabled bool   `json:"enabled" jsonschema:"true to get alerts for this service, false to stop them and resolve its open alerts"`
+	Enabled bool   `json:"enabled" jsonschema:"true to get alerts for this service, false to stop them and resolve its open problems"`
 }
 
 // RegisterTools adds the services tools to s. They use the same store methods as the REST routes.
@@ -48,7 +48,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 
 	mcp.AddWrite(m, "set_service_alerts", "Turn a service's alerts on or off",
 		"Turn alerts on or off for one service. Alerts are on for every new service: an email when it stops, keeps restarting, "+
-			"turns unhealthy or uses more than 90% of its memory limit. Off, its open alerts resolve within a minute. The switch follows the service's name, so it stays when "+
+			"turns unhealthy or uses more than 90% of its memory limit. Off, its open problems resolve within a minute. The switch follows the service's name, so it stays when "+
 			"the container is made again. The result is the service, as list_services shows it.",
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in alertsInput) (Service, error) {

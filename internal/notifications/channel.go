@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -24,8 +25,9 @@ const (
 	TypeExec    = "exec"
 )
 
-// AdaptersDir overrides the folder of the exec adapters, for tests only. Empty means
-// /etc/tender/adapters, whose programs must be root's.
+// AdaptersDir overrides the folder of the exec adapters, for tests only: the hub sets it from
+// TENDER_TEST_ADAPTERS_DIR. Empty means /etc/tender/adapters, which with its programs must be
+// root's. Set, the folder and its programs may be another user's, but still only theirs to change.
 var AdaptersDir string
 
 // adapters returns every built-in channel type. Email goes through sender, nil when email is off.
@@ -144,7 +146,7 @@ func (s *Store) unseal(name, typ, raw string, open bool) (channels.Config, error
 	return cfg, nil
 }
 
-const channelColumns = `id, name, type, config, enabled, min_severity, created_at, updated_at`
+const channelColumns = `id, name, type, config, enabled, min_severity, events, created_at, updated_at`
 
 // loadChannels returns the channels that where selects, by id, with their secrets open when open.
 func (s *Store) loadChannels(ctx context.Context, q querier, open bool, where string, args ...any) ([]stored, error) {
@@ -157,10 +159,13 @@ func (s *Store) loadChannels(ctx context.Context, q querier, open bool, where st
 	var out []stored
 	for rows.Next() {
 		var c stored
-		var raw string
+		var raw, events string
 		var created, updated int64
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &raw, &c.Enabled, &c.MinSeverity, &created, &updated); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &raw, &c.Enabled, &c.MinSeverity, &events, &created, &updated); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal([]byte(events), &c.Events); err != nil {
+			return nil, fmt.Errorf("the events of channel %s are damaged: %w", c.Name, err)
 		}
 		c.CreatedAt, c.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 		out, raws = append(out, c), append(raws, raw)
@@ -212,7 +217,7 @@ func (s *Store) Channel(ctx context.Context, name string) (Channel, error) {
 }
 
 func validSeverity(v string) error {
-	if severityRank(v) == 0 && v != SeverityInfo {
+	if !validSeverityName(v) {
 		return server.Invalid("min_severity must be info, warning or critical.")
 	}
 	return nil
@@ -245,6 +250,9 @@ func (s *Store) AddChannel(ctx context.Context, in ChannelInput) (Channel, error
 	if in.MinSeverity == "" {
 		in.MinSeverity = SeverityWarning
 	}
+	if in.Events == nil {
+		in.Events = []string{"*"}
+	}
 	enabled := in.Enabled == nil || *in.Enabled
 	cfg := channels.Config{}
 	for k, v := range in.Config {
@@ -260,9 +268,15 @@ func (s *Store) AddChannel(ctx context.Context, in ChannelInput) (Channel, error
 	if err := validSeverity(in.MinSeverity); err != nil {
 		return Channel{}, err
 	}
+	if err := checkEvents(in.Events); err != nil {
+		return Channel{}, err
+	}
+	events, err := json.Marshal(in.Events)
+	if err != nil {
+		return Channel{}, err
+	}
 	var made []string
 	if m, ok := a.(channels.Maker); ok {
-		var err error
 		if made, err = m.Make(cfg); err != nil {
 			return Channel{}, server.Invalid("%s", err.Error())
 		}
@@ -276,8 +290,8 @@ func (s *Store) AddChannel(ctx context.Context, in ChannelInput) (Channel, error
 	}
 	now := time.Now().Unix()
 	res, err := s.db.Write.ExecContext(ctx,
-		`INSERT INTO notification_channels (name, type, config, enabled, min_severity, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, in.Name, in.Type, raw, enabled, in.MinSeverity, now, now)
+		`INSERT INTO notification_channels (name, type, config, enabled, min_severity, events, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, in.Name, in.Type, raw, enabled, in.MinSeverity, string(events), now, now)
 	if err != nil {
 		return Channel{}, err
 	}
@@ -294,11 +308,17 @@ func (s *Store) AddChannel(ctx context.Context, in ChannelInput) (Channel, error
 	return s.public(c, made), nil
 }
 
-// PatchChannel changes a channel's config, switch or min_severity. A secret can be replaced but
-// never read. Turning a channel off fails what it still owed, so it sends nothing stale later.
+// PatchChannel changes a channel's config, switch, min_severity or events. A secret can be
+// replaced but never read. Turning a channel off fails what it still owed, so it sends nothing
+// stale later. Turning it on or off starts its record of failing again.
 func (s *Store) PatchChannel(ctx context.Context, name string, p ChannelPatch) (Channel, error) {
 	if p.MinSeverity != nil {
 		if err := validSeverity(*p.MinSeverity); err != nil {
+			return Channel{}, err
+		}
+	}
+	if p.Events != nil {
+		if err := checkEvents(p.Events); err != nil {
 			return Channel{}, err
 		}
 	}
@@ -333,39 +353,86 @@ func (s *Store) PatchChannel(ctx context.Context, name string, p ChannelPatch) (
 	if err != nil {
 		return Channel{}, err
 	}
+	switched := p.Enabled != nil && *p.Enabled != c.Enabled
 	if p.Enabled != nil {
 		c.Enabled = *p.Enabled
 	}
 	if p.MinSeverity != nil {
 		c.MinSeverity = *p.MinSeverity
 	}
+	if p.Events != nil {
+		c.Events = p.Events
+	}
+	events, err := json.Marshal(c.Events)
+	if err != nil {
+		return Channel{}, err
+	}
 	now := time.Now()
 	c.UpdatedAt = now.UTC().Truncate(time.Second)
-	if _, err := tx.ExecContext(ctx, `UPDATE notification_channels SET config = ?, enabled = ?, min_severity = ?, updated_at = ? WHERE id = ?`,
-		raw, c.Enabled, c.MinSeverity, now.Unix(), c.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE notification_channels SET config = ?, enabled = ?, min_severity = ?, events = ?, updated_at = ?,
+		failing_since = CASE WHEN ? THEN NULL ELSE failing_since END, last_error = CASE WHEN ? THEN NULL ELSE last_error END WHERE id = ?`,
+		raw, c.Enabled, c.MinSeverity, string(events), now.Unix(), switched, switched, c.ID); err != nil {
 		return Channel{}, err
 	}
 	if !c.Enabled {
+		ids, err := owedBy(ctx, tx, c.ID)
+		if err != nil {
+			return Channel{}, err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET status = 'failed', error = 'The channel was turned off before this was delivered.',
 			updated_at = ? WHERE channel_id = ? AND status = 'pending'`, now.Unix(), c.ID); err != nil {
+			return Channel{}, err
+		}
+		if err := refreshAll(ctx, tx, ids, now); err != nil {
 			return Channel{}, err
 		}
 	}
 	return s.public(c, nil), tx.Commit()
 }
 
-// DeleteChannel removes a channel and its deliveries.
+// owedBy lists the notifications with a pending delivery to the channel channelID.
+func owedBy(ctx context.Context, tx *sql.Tx, channelID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT notification_id FROM notification_deliveries WHERE channel_id = ? AND status = 'pending'`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	return scanIDs(rows)
+}
+
+func refreshAll(ctx context.Context, tx *sql.Tx, ids []int64, now time.Time) error {
+	for _, id := range ids {
+		if err := refresh(ctx, tx, id, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteChannel removes a channel and its deliveries. What it still owed no longer holds up the
+// status of those notifications.
 func (s *Store) DeleteChannel(ctx context.Context, name string) error {
-	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM notification_channels WHERE name = ?`, name)
+	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
+	defer func() { _ = tx.Rollback() }()
+	var id int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM notification_channels WHERE name = ?`, name).Scan(&id); errors.Is(err, sql.ErrNoRows) {
 		return server.NotFound("Channel %q doesn't exist. List the channels to see their names.", name)
+	} else if err != nil {
+		return err
 	}
-	return nil
+	ids, err := owedBy(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM notification_channels WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if err := refreshAll(ctx, tx, ids, time.Now()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CheckKey is an error unless the store's key opens every channel's secrets.

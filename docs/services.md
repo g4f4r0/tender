@@ -32,7 +32,7 @@ When the daemon can't read a running container's stats in time, it sends the con
 
 ### Removed services
 
-When a report no longer has a container, the hub keeps the service with the state `removed` and sets `removed_at`. Its counts of reports in a row start again, so its open alerts resolve. A start, stop, restart or logs action on it gets `409` with `Service "web" was removed: Docker on this machine no longer has its container.` The lists show it as removed, with when.
+When a report no longer has a container, the hub keeps the service with the state `removed` and sets `removed_at`. Its counts of reports in a row start again, so its open problems resolve. A start, stop, restart or logs action on it gets `409` with `Service "web" was removed: Docker on this machine no longer has its container.` The lists show it as removed, with when.
 
 A container back under the same name takes the service back, with its settings such as `alerts_enabled`. The hub deletes a service 7 days after `removed_at`.
 
@@ -50,7 +50,7 @@ When the daemon can't reach Docker, it reports `{"docker": "unreachable"}` with 
 
 Until the daemon has seen Docker answer on this machine, only a socket that refuses connections or doesn't answer counts as unreachable; a missing socket or any other failure means the machine has no Docker, and the daemon reports nothing. The daemon remembers that it saw Docker in the file `docker-seen` in its state folder, `/var/lib/tender/daemon`, so a restart doesn't forget it.
 
-The hub keeps the last list and sets the `state` of every service that isn't removed to `unknown`, with `exit_code`, memory and CPU `null`, until Docker answers again. `GET /v1/services`, `GET /v1/machines/{machine}/services` and `list_services` return `docker_reason`, which is `null` while Docker runs. [Alerts](alerts.md#service-alerts) explains the `docker_unreachable` alert.
+The hub keeps the last list and sets the `state` of every service that isn't removed to `unknown`, with `exit_code`, memory and CPU `null`, until Docker answers again. `GET /v1/services`, `GET /v1/machines/{machine}/services` and `list_services` return `docker_reason`, which is `null` while Docker runs. [Notifications](notifications.md#service-events) explains the `docker.unreachable` event.
 
 ## How actions reach a machine
 
@@ -128,4 +128,4 @@ Its services then show `"runtime": "docker"`, because the daemon speaks Docker's
 
 1. [Control a service](guides/control-a-service.md) to restart a container or read its logs.
 2. [Read a machine's logs](guides/read-machine-logs.md) to search the journal.
-3. [Alerts](alerts.md) explains when a service alerts.
+3. [Notifications](notifications.md#service-events) explains when a service has a problem.

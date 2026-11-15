@@ -63,4 +63,4 @@ A hub that answers but refuses the machine's token is different. After `tender m
 
 1. [Restore files](guides/restore-files.md) from a snapshot.
 2. [Add a machine](guides/add-a-machine.md) to back up another server.
-3. [Alerts](alerts.md) explains `backup_failed` and `backup_stale`.
+3. [Notifications](notifications.md#events) explains `backup.failed` and `backup.stale`.

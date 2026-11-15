@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
 )
 
@@ -139,6 +140,28 @@ func TestDocsCoverEveryRouteAndTool(t *testing.T) {
 	for _, tool := range toolNames(t) {
 		if !strings.Contains(string(mcpDoc), "### `"+tool+"`") {
 			t.Errorf("docs/mcp.md has no section ### `%s`", tool)
+		}
+	}
+}
+
+// docs/notifications.md lists every event the hub can fire, its own and the other domains', with
+// its severities, so a new event can't go undocumented.
+func TestDocsListEveryEvent(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/notifications.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range notifications.Events() {
+		i := strings.Index(string(doc), "| `"+e.Name+"` |")
+		if i < 0 {
+			t.Errorf("docs/notifications.md's event table has no row for `%s`", e.Name)
+			continue
+		}
+		row, _, _ := strings.Cut(string(doc[i:]), "\n")
+		for _, s := range e.Severities {
+			if !strings.Contains(row, s) {
+				t.Errorf("the row of `%s` doesn't say it can be %s: %s", e.Name, s, row)
+			}
 		}
 	}
 }

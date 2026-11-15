@@ -3,22 +3,22 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 	"github.com/g4f4r0/tender/internal/services"
 )
 
-// maxAlertRunes cuts an alert to one line of the summary; the email has the whole text.
-const maxAlertRunes = 100
+// maxLineRunes cuts a message to one line of a table; the notification has the whole text.
+const maxLineRunes = 100
 
 func runStatus(args []string, s session) error {
 	fs := newFlagSet("status", "[--hub URL]",
-		"Show the hub's summary: each machine, when it last reported, its last backup, how many of its services run and the open alerts.")
+		"Show the hub's summary: each machine, when it last reported, its last backup, how many of its services run and the open problems.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -44,15 +44,10 @@ func runStatus(args []string, s session) error {
 	if err != nil && withServices {
 		return err
 	}
-	var alerts []notifications.Notification
-	for _, status := range []string{notifications.StatusPending, notifications.StatusSent} {
-		got, err := listAll[notifications.Notification](hub, "/v1/notifications?limit=500&status="+status)
-		if err != nil {
-			return err
-		}
-		alerts = append(alerts, got...)
+	problems, err := listAll[notifications.Notification](hub, "/v1/notifications?limit=500&open=true")
+	if err != nil {
+		return err
 	}
-	sort.SliceStable(alerts, func(i, j int) bool { return alerts[i].CreatedAt.After(alerts[j].CreatedAt) })
 
 	if len(ms) == 0 {
 		say(s.out, "No machines yet. Add one with: tender machines add NAME")
@@ -105,24 +100,24 @@ func runStatus(args []string, s session) error {
 	}
 
 	say(s.out, "")
-	if len(alerts) == 0 {
-		say(s.out, "No open alerts.")
+	if len(problems) == 0 {
+		say(s.out, "No open problems.")
 		return nil
 	}
-	say(s.out, "Open alerts: %d", len(alerts))
-	rows := make([][]string, len(alerts))
-	for i, a := range alerts {
-		rows[i] = []string{a.Severity, ago(s.now(), a.CreatedAt), oneLine(a.Content)}
+	say(s.out, "Open problems: %d", len(problems))
+	rows := make([][]string, len(problems))
+	for i, n := range problems {
+		rows[i] = []string{n.Severity, ago(s.now(), n.CreatedAt), channels.Base(n.Event), oneLine(n.Message)}
 	}
-	printTable(s.out, []string{"SEVERITY", "SINCE", "ALERT"}, rows)
+	printTable(s.out, []string{"SEVERITY", "SINCE", "EVENT", "PROBLEM"}, rows)
 	return nil
 }
 
-// oneLine is the first line of text, cut to maxAlertRunes with "..." when it is longer.
+// oneLine is the first line of text, cut to maxLineRunes with "..." when it is longer.
 func oneLine(text string) string {
 	line, _, more := strings.Cut(strings.TrimSpace(text), "\n")
-	if utf8.RuneCountInString(line) > maxAlertRunes {
-		line, more = string([]rune(line)[:maxAlertRunes-3]), true
+	if utf8.RuneCountInString(line) > maxLineRunes {
+		line, more = string([]rune(line)[:maxLineRunes-3]), true
 	}
 	if more {
 		line = strings.TrimRight(line, " .,:;") + "..."

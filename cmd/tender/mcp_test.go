@@ -86,10 +86,10 @@ func seeded(t *testing.T) *db.DB {
 			t.Fatalf("history %d: %v", i, err)
 		}
 	}
-	must(t, d, `INSERT INTO notifications (id, machine_id, type, severity, status, content, created_at, updated_at) VALUES
-		(1, 1, 'backup_failed', 'critical', 'sent', 'Backup failed on g4f4r0-code', 100, 100),
-		(2, 1, 'disk_full', 'warning', 'resolved', 'Disk was full', 200, 250),
-		(3, NULL, 'hub_restarted', 'info', 'sent', 'The hub restarted', 300, 300)`)
+	must(t, d, `INSERT INTO notifications (id, machine_id, event, severity, status, message, sent_at, created_at, updated_at) VALUES
+		(1, 1, 'backup.failed', 'critical', 'sent', 'Backup failed on g4f4r0-code', 100, 100, 100),
+		(2, 1, 'disk.full.resolved', 'warning', 'failed', 'Resolved: Disk was full', NULL, 200, 250),
+		(3, NULL, 'hub.restarted', 'info', 'sent', 'The hub restarted', 300, 300, 300)`)
 	return d
 }
 
@@ -282,6 +282,7 @@ func TestToolsMatchREST(t *testing.T) {
 		{"list_destinations", nil, "/v1/backups/destinations"},
 		{"list_notifications", nil, "/v1/notifications"},
 		{"list_notifications", map[string]any{"machine": "g4f4r0-code", "severity": "critical"}, "/v1/machines/g4f4r0-code/notifications?severity=critical"},
+		{"list_notifications", map[string]any{"open": true}, "/v1/notifications?open=true"},
 	} {
 		var got any
 		structured(t, callTool(t, cs, c.tool, c.args), &got)
@@ -402,6 +403,8 @@ func TestListNotifications(t *testing.T) {
 		{map[string]any{"severity": "warning"}, []int64{2}},
 		{map[string]any{"machine": "g4f4r0-apps"}, []int64{}},
 		{map[string]any{"limit": 1}, []int64{3}},
+		{map[string]any{"open": true}, []int64{3, 1}},
+		{map[string]any{"open": true, "machine": "g4f4r0-code"}, []int64{1}},
 	} {
 		var l struct {
 			Data []struct {
@@ -418,7 +421,7 @@ func TestListNotifications(t *testing.T) {
 			t.Errorf("list_notifications %v = %v, want %v", c.args, got, c.want)
 		}
 	}
-	for _, args := range []map[string]any{{"status": "open"}, {"severity": "fatal"}} {
+	for _, args := range []map[string]any{{"status": "resolved"}, {"severity": "fatal"}} {
 		if res := callTool(t, cs, "list_notifications", args); !res.IsError {
 			t.Errorf("%v: want a tool error", args)
 		}

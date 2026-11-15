@@ -153,13 +153,23 @@ func logsKeep(getenv func(string) string) (time.Duration, error) {
 }
 
 // Settings for tests only: the folder of the exec adapters, and how long a channel's deliveries
-// fail before channel_failing opens.
+// fail before channel.failing fires.
 const (
-	envAdaptersDir  = "TENDER_ADAPTERS_DIR"
-	envFailingAfter = "TENDER_CHANNEL_FAILING_AFTER"
+	envTestAdaptersDir = "TENDER_TEST_ADAPTERS_DIR"
+	envFailingAfter    = "TENDER_CHANNEL_FAILING_AFTER"
 )
 
-// failingAfter is how long a channel's deliveries fail before channel_failing: an hour, or envFailingAfter.
+// testAdaptersDir sets the exec adapters' folder from TENDER_TEST_ADAPTERS_DIR, and warns when
+// it is set: its programs need not be root's, which is for tests only.
+func testAdaptersDir(getenv func(string) string, log *slog.Logger) {
+	notifications.AdaptersDir = getenv(envTestAdaptersDir)
+	if notifications.AdaptersDir != "" {
+		log.Warn("exec adapters run from a test folder whose programs need not belong to root. Unset "+envTestAdaptersDir+
+			" outside tests, so only root's programs in /etc/tender/adapters run", "folder", notifications.AdaptersDir)
+	}
+}
+
+// failingAfter is how long a channel's deliveries fail before channel.failing: an hour, or envFailingAfter.
 func failingAfter(getenv func(string) string) (time.Duration, error) {
 	v := getenv(envFailingAfter)
 	if v == "" {
@@ -214,7 +224,7 @@ func serveHub(args []string, log *slog.Logger) error {
 	if _, err := failingAfter(os.Getenv); err != nil {
 		return err
 	}
-	notifications.AdaptersDir = os.Getenv(envAdaptersDir)
+	testAdaptersDir(os.Getenv, log)
 	sender := mailSender(cfg.SMTP)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

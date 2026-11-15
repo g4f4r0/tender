@@ -25,24 +25,24 @@ func TestEvaluateServices(t *testing.T) {
 	}{
 		{"running", Service{Name: "web", State: "running", AlertsEnabled: true}, []string{}},
 		{"down in one report", down(1), []string{}},
-		{"down in two reports", down(2), []string{"service_down:critical"}},
-		{"down in five reports", down(5), []string{"service_down:critical"}},
+		{"down in two reports", down(2), []string{"service.down:critical"}},
+		{"down in five reports", down(5), []string{"service.down:critical"}},
 		{"down, alerts off", func() Service { s := down(2); s.AlertsEnabled = false; return s }(), []string{}},
 		{"stopped by Tender", func() Service { s := down(3); s.StoppedByTender = true; return s }(), []string{}},
 		{"finished: exit 0, policy no", Service{Name: "job", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "no", AlertsEnabled: true, DownReports: 9}, []string{}},
 		{"finished: exit 0, policy on-failure", Service{Name: "job", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "on-failure", AlertsEnabled: true, DownReports: 9}, []string{}},
-		{"exit 0, policy always", Service{Name: "web", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "always", AlertsEnabled: true, DownReports: 2}, []string{"service_down:critical"}},
-		{"exit 0, policy unless-stopped", Service{Name: "web", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "unless-stopped", AlertsEnabled: true, DownReports: 2}, []string{"service_down:critical"}},
-		{"exit 1, policy no", Service{Name: "job", State: "exited", ExitCode: ptr(int64(1)), RestartPolicy: "no", AlertsEnabled: true, DownReports: 2}, []string{"service_down:critical"}},
+		{"exit 0, policy always", Service{Name: "web", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "always", AlertsEnabled: true, DownReports: 2}, []string{"service.down:critical"}},
+		{"exit 0, policy unless-stopped", Service{Name: "web", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "unless-stopped", AlertsEnabled: true, DownReports: 2}, []string{"service.down:critical"}},
+		{"exit 1, policy no", Service{Name: "job", State: "exited", ExitCode: ptr(int64(1)), RestartPolicy: "no", AlertsEnabled: true, DownReports: 2}, []string{"service.down:critical"}},
 		{"down streak, but its state is unknown now", Service{Name: "web", State: "unknown", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}, []string{}},
 		{"restarting in one report", Service{Name: "web", State: "restarting", AlertsEnabled: true, RestartingReports: 1}, []string{}},
 		{"restarting in two reports", Service{Name: "web", State: "restarting", AlertsEnabled: true, RestartingReports: 2, RestartCount: 7},
-			[]string{"service_restarting:critical"}},
+			[]string{"service.restarting:critical"}},
 		{"unhealthy in one report", Service{Name: "web", State: "running", AlertsEnabled: true, UnhealthyReports: 1}, []string{}},
 		{"unhealthy in two reports", Service{Name: "web", State: "running", AlertsEnabled: true, UnhealthyReports: 2},
-			[]string{"service_unhealthy:warning"}},
+			[]string{"service.unhealthy:warning"}},
 		{"restarting and unhealthy", Service{Name: "web", State: "running", AlertsEnabled: true, RestartingReports: 2, UnhealthyReports: 2},
-			[]string{"service_restarting:critical", "service_unhealthy:warning"}},
+			[]string{"service.restarting:critical", "service.unhealthy:warning"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -55,7 +55,7 @@ func TestEvaluateServices(t *testing.T) {
 	// A silent machine alerts as silent, not for its services.
 	m := silent()
 	m.Services = []Service{down(2)}
-	if got := summary(evaluate(m, t0)); !slices.Equal(got, []string{"machine_silent:critical"}) {
+	if got := summary(evaluate(m, t0)); !slices.Equal(got, []string{"machine.silent:critical"}) {
 		t.Errorf("silent machine findings = %v", got)
 	}
 
@@ -74,10 +74,10 @@ func TestEvaluateServices(t *testing.T) {
 	}
 }
 
-// serviceRows lists every notification as "type service status".
+// serviceRows lists every notification as "event service status".
 func (r *rig) serviceRows() []string {
 	r.t.Helper()
-	rows, err := r.db.Read.Query(`SELECT type, coalesce(service, '-'), status FROM notifications ORDER BY id`)
+	rows, err := r.db.Read.Query(`SELECT event, coalesce(service, '-'), status FROM notifications ORDER BY id`)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestServiceAlerts(t *testing.T) {
 	// Two down services are two alerts, each emailed once.
 	r.tick(0, up(0, web, worker))
 	r.tick(time.Minute, up(time.Minute, web, worker))
-	if got, want := r.serviceRows(), []string{"service_down web sent", "service_down worker sent"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.down web sent", "service.down worker sent"}; !slices.Equal(got, want) {
 		t.Errorf("rows = %q, want %q", got, want)
 	}
 	if want := []string{"a: web stopped", "a: worker stopped"}; !slices.Equal(r.sender.subjects, want) {
@@ -117,20 +117,21 @@ func TestServiceAlerts(t *testing.T) {
 	m.LastSeen = ptr(t0.Add(time.Minute))
 	m.Services = []Service{web, worker}
 	r.tick(20*time.Minute, m)
-	if got, want := r.serviceRows(), []string{"service_down web sent", "service_down worker sent", "machine_silent - sent"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.down web sent", "service.down worker sent", "machine.silent - sent"}; !slices.Equal(got, want) {
 		t.Errorf("silent rows = %q, want %q", got, want)
 	}
 
-	// Back, with alerts off for web: web's alert resolves, worker's stays.
+	// Back, with alerts off for web: web's problem resolves, worker's stays.
 	web.AlertsEnabled = false
 	r.tick(21*time.Minute, up(21*time.Minute, web, worker))
-	if got, want := r.serviceRows(), []string{"service_down web resolved", "service_down worker sent", "machine_silent - resolved"}; !slices.Equal(got, want) {
+	want := []string{"service.down web sent", "service.down worker sent", "machine.silent - sent", "service.down.resolved web sent", "machine.silent.resolved - sent"}
+	if got := r.serviceRows(); !slices.Equal(got, want) {
 		t.Errorf("rows after alerts off = %q, want %q", got, want)
 	}
 
-	// worker is removed: its alert resolves too.
+	// worker is removed: its problem resolves too.
 	r.tick(22*time.Minute, up(22*time.Minute, web))
-	if got, want := r.serviceRows(), []string{"service_down web resolved", "service_down worker resolved", "machine_silent - resolved"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), append(want, "service.down.resolved worker sent"); !slices.Equal(got, want) {
 		t.Errorf("rows after removal = %q, want %q", got, want)
 	}
 	if want := "a: worker stopped, resolved"; r.sender.subjects[len(r.sender.subjects)-1] != want {
@@ -139,8 +140,8 @@ func TestServiceAlerts(t *testing.T) {
 
 	// Machine alerts still have no service.
 	var n int
-	if err := r.db.Read.QueryRow(`SELECT count(*) FROM notifications WHERE type = 'machine_silent' AND service IS NULL`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("machine_silent rows without a service = %d, %v", n, err)
+	if err := r.db.Read.QueryRow(`SELECT count(*) FROM notifications WHERE event = 'machine.silent' AND service IS NULL`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("machine.silent rows without a service = %d, %v", n, err)
 	}
 }
 
@@ -151,7 +152,7 @@ func TestServiceAlertListsItsService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, ok := ns[key{TypeServiceUnhealthy, "a", "web", ""}]
+	n, ok := ns[key{EventServiceUnhealthy, "a", "web", ""}]
 	if !ok || n.Service == nil || *n.Service != "web" || n.Severity != SeverityWarning {
 		t.Errorf("open = %+v", ns)
 	}
@@ -179,7 +180,7 @@ func TestServiceAlertsAcrossAnOutage(t *testing.T) {
 		m := up(after, down(reports))
 		m.Docker = "running"
 		r.tick(after, m)
-		if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - resolved"}; !slices.Equal(got, want) {
+		if got, want := r.serviceRows(), []string{"service.down web sent", "docker.unreachable - sent", "docker.unreachable.resolved - sent"}; !slices.Equal(got, want) {
 			t.Errorf("back, down in %d report(s): rows = %q, want %q", reports, got, want)
 		}
 	}
@@ -187,7 +188,7 @@ func TestServiceAlertsAcrossAnOutage(t *testing.T) {
 		t.Errorf("emails = %q, want %q", r.sender.subjects, want)
 	}
 	r.tick(4*time.Minute, up(4*time.Minute, Service{Name: "web", State: "running", AlertsEnabled: true}))
-	if got := r.serviceRows(); got[0] != "service_down web resolved" {
+	if got := r.serviceRows(); got[3] != "service.down.resolved web sent" {
 		t.Errorf("running again: rows = %q", got)
 	}
 
@@ -196,7 +197,7 @@ func TestServiceAlertsAcrossAnOutage(t *testing.T) {
 	off := unknown
 	off.AlertsEnabled = false
 	r.tick(6*time.Minute, unreachable(6*time.Minute, off))
-	if got := r.serviceRows(); got[2] != "service_down web resolved" {
+	if got := r.serviceRows(); len(got) != 7 || got[4] != "service.down web sent" || got[6] != "service.down.resolved web sent" {
 		t.Errorf("alerts off while Docker is unreachable: rows = %q", got)
 	}
 }
@@ -212,7 +213,7 @@ func TestMemoryHigh(t *testing.T) {
 		want []string
 	}{
 		{"one report", svc(1, &gib), []string{}},
-		{"two reports", svc(2, &gib), []string{"service_memory_high:warning"}},
+		{"two reports", svc(2, &gib), []string{"service.memory_high:warning"}},
 		{"no limit", svc(2, nil), []string{}},
 		{"alerts off", func() Service { s := svc(2, &gib); s.AlertsEnabled = false; return s }(), []string{}},
 	} {
@@ -229,7 +230,7 @@ func TestMemoryHigh(t *testing.T) {
 	r.tick(0, up(0, svc(2, &gib)))
 	below := svc(0, &gib)
 	r.tick(time.Minute, up(time.Minute, below))
-	if got, want := r.serviceRows(), []string{"service_memory_high web resolved"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.memory_high web sent", "service.memory_high.resolved web sent"}; !slices.Equal(got, want) {
 		t.Errorf("rows = %q, want %q", got, want)
 	}
 	if want := []string{"a: web memory high", "a: web memory high, resolved"}; !slices.Equal(r.sender.subjects, want) {
@@ -245,10 +246,10 @@ func TestEvaluateDocker(t *testing.T) {
 		reports int
 		want    []string
 	}{
-		{"running", "running", 0, []string{"service_down:critical"}},
+		{"running", "running", 0, []string{"service.down:critical"}},
 		{"unreachable once", "unreachable", 1, []string{}},
-		{"unreachable twice", "unreachable", 2, []string{"docker_unreachable:critical"}},
-		{"before any report", "", 0, []string{"service_down:critical"}},
+		{"unreachable twice", "unreachable", 2, []string{"docker.unreachable:critical"}},
+		{"before any report", "", 0, []string{"service.down:critical"}},
 	} {
 		m := up(0, down)
 		m.Docker, m.DockerUnreachableReports = c.docker, c.reports
@@ -258,7 +259,7 @@ func TestEvaluateDocker(t *testing.T) {
 	}
 	m := silent()
 	m.Docker, m.DockerUnreachableReports = "unreachable", 5
-	if got := summary(evaluate(m, t0)); !slices.Equal(got, []string{"machine_silent:critical"}) {
+	if got := summary(evaluate(m, t0)); !slices.Equal(got, []string{"machine.silent:critical"}) {
 		t.Errorf("silent machine with Docker unreachable = %v", got)
 	}
 }
@@ -275,7 +276,7 @@ func TestDockerUnreachableAlert(t *testing.T) {
 	// One report: nothing yet. Two: one machine alert; web's alert stays open though its state is unknown.
 	r.tick(time.Minute, unreachable(time.Minute, 1))
 	r.tick(2*time.Minute, unreachable(2*time.Minute, 2))
-	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.down web sent", "docker.unreachable - sent"}; !slices.Equal(got, want) {
 		t.Errorf("rows = %q, want %q", got, want)
 	}
 	if want := []string{"a: web stopped", "a: Docker unreachable"}; !slices.Equal(r.sender.subjects, want) {
@@ -288,20 +289,21 @@ func TestDockerUnreachableAlert(t *testing.T) {
 	// The machine goes silent: both stay as they are.
 	m := unreachable(2*time.Minute, 2)
 	r.tick(20*time.Minute, m)
-	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent", "machine_silent - sent"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.down web sent", "docker.unreachable - sent", "machine.silent - sent"}; !slices.Equal(got, want) {
 		t.Errorf("silent rows = %q, want %q", got, want)
 	}
 
 	// Docker answers again, web runs: both resolve.
 	web.State, web.DownReports = "running", 0
 	r.tick(21*time.Minute, up(21*time.Minute, web))
-	if got, want := r.serviceRows(), []string{"service_down web resolved", "docker_unreachable - resolved", "machine_silent - resolved"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.down web sent", "docker.unreachable - sent", "machine.silent - sent",
+		"service.down.resolved web sent", "docker.unreachable.resolved - sent", "machine.silent.resolved - sent"}; !slices.Equal(got, want) {
 		t.Errorf("rows after Docker is back = %q, want %q", got, want)
 	}
 }
 
 // A daemon that still sends usage but stopped sending services reports, after it had sent them,
-// has lost Docker without saying so: after 5 minutes that is docker_unreachable, and the services'
+// has lost Docker without saying so: after 5 minutes that is docker.unreachable, and the services'
 // states are unknown. A machine whose usage stopped too is just silent.
 func TestDockerReportsStop(t *testing.T) {
 	down := Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}
@@ -310,10 +312,10 @@ func TestDockerReportsStop(t *testing.T) {
 		reported, lastSeen time.Duration // before t0
 		want               []string
 	}{
-		{"fresh", time.Minute, 0, []string{"service_down:critical"}},
-		{"4 minutes old", 4 * time.Minute, 0, []string{"service_down:critical"}},
-		{"5 minutes old, usage fresh", 5 * time.Minute, 30 * time.Second, []string{"docker_unreachable:critical"}},
-		{"usage stopped as well", 6 * time.Minute, 6 * time.Minute, []string{"service_down:critical"}},
+		{"fresh", time.Minute, 0, []string{"service.down:critical"}},
+		{"4 minutes old", 4 * time.Minute, 0, []string{"service.down:critical"}},
+		{"5 minutes old, usage fresh", 5 * time.Minute, 30 * time.Second, []string{"docker.unreachable:critical"}},
+		{"usage stopped as well", 6 * time.Minute, 6 * time.Minute, []string{"service.down:critical"}},
 	} {
 		m := up(-c.lastSeen, down)
 		m.Docker, m.DockerReportedAt = "running", ptr(t0.Add(-c.reported))
@@ -329,12 +331,12 @@ func TestDockerReportsStop(t *testing.T) {
 	m.Docker, m.DockerReportedAt = "running", ptr(t0)
 	m.Services[0].State = "running"
 	r.tick(6*time.Minute, m)
-	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent"}; !slices.Equal(got, want) {
+	if got, want := r.serviceRows(), []string{"service.down web sent", "docker.unreachable - sent"}; !slices.Equal(got, want) {
 		t.Errorf("rows = %q, want %q", got, want)
 	}
 }
 
-// The docker_unreachable alert says why Docker can't be reached, as the daemon said.
+// The docker.unreachable alert says why Docker can't be reached, as the daemon said.
 func TestDockerUnreachableSaysWhy(t *testing.T) {
 	for reason, want := range map[string]string{
 		"refused":           "its socket refuses connections, so Docker is stopped",

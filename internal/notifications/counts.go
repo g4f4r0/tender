@@ -3,50 +3,54 @@ package notifications
 import (
 	"context"
 	"slices"
+
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 )
 
-// OpenCount is how many alerts of one type and severity are open: pending or sent, not resolved.
+// OpenCount is how many problems of one event are open at one severity.
 type OpenCount struct {
-	Type     string
-	Severity string
+	Event    string // the base event, such as service.down
+	Severity string // the severity of each problem's latest notification
 	Count    int
 }
 
-// OpenAlerts counts the open alerts of every type at every severity, zeros included, so a missing
-// series never stands for none. It is sorted by type, then severity from info to critical.
-func (s *Store) OpenAlerts(ctx context.Context) ([]OpenCount, error) {
-	rows, err := s.db.Read.QueryContext(ctx,
-		`SELECT type, severity, count(*) FROM notifications WHERE status != ? GROUP BY type, severity`, StatusResolved)
+// OpenProblems counts the open problems of every registered event at every severity, zeros
+// included, so a missing series never stands for none. It is sorted by event, then severity
+// from info to critical. Tests are not problems.
+func (s *Store) OpenProblems(ctx context.Context) ([]OpenCount, error) {
+	rows, err := s.db.Read.QueryContext(ctx, `SELECT n.event, n.severity, count(*) FROM notifications n WHERE `+latestOpen+` GROUP BY n.event, n.severity`)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	got := map[[2]string]int{}
 	for rows.Next() {
-		var typ, sev string
+		var event, sev string
 		var n int
-		if err := rows.Scan(&typ, &sev, &n); err != nil {
+		if err := rows.Scan(&event, &sev, &n); err != nil {
 			return nil, err
 		}
-		got[[2]string{typ, sev}] = n
+		got[[2]string{channels.Base(event), sev}] += n
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	types := make([]string, 0, len(typeText))
-	for t := range typeText {
-		types = append(types, t)
-	}
-	for k := range got { // a type a newer hub wrote, after a downgrade
-		if _, ok := typeText[k[0]]; !ok && !slices.Contains(types, k[0]) {
-			types = append(types, k[0])
+	var events []string
+	for _, t := range Events() {
+		if t.Name != EventTest {
+			events = append(events, t.Name)
 		}
 	}
-	slices.Sort(types)
-	out := make([]OpenCount, 0, len(types)*3)
-	for _, t := range types {
+	for k := range got { // an event a newer hub wrote, after a downgrade
+		if !slices.Contains(events, k[0]) {
+			events = append(events, k[0])
+		}
+	}
+	slices.Sort(events)
+	out := make([]OpenCount, 0, len(events)*3)
+	for _, e := range events {
 		for _, sev := range []string{SeverityInfo, SeverityWarning, SeverityCritical} {
-			out = append(out, OpenCount{Type: t, Severity: sev, Count: got[[2]string{t, sev}]})
+			out = append(out, OpenCount{Event: e, Severity: sev, Count: got[[2]string{e, sev}]})
 		}
 	}
 	return out, nil

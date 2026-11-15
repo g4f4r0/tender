@@ -3,6 +3,8 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,13 +16,23 @@ type Slack struct{}
 // Fields: webhook_url, a secret.
 func (Slack) Fields() []Field { return []Field{{Name: "webhook_url", Secret: true, Required: true}} }
 
-// Check needs an http or https webhook_url.
+// Check needs a webhook_url on https://hooks.slack.com/, so the key in it only ever goes to Slack.
 func (Slack) Check(cfg Config) error {
-	return checkURL(cfg["webhook_url"], "webhook_url")
+	if allowLocal.Load() {
+		return checkURL(cfg["webhook_url"], "webhook_url")
+	}
+	u, err := url.Parse(cfg["webhook_url"])
+	if err != nil || u.Scheme != "https" || u.Host != "hooks.slack.com" || u.User != nil {
+		return errors.New("webhook_url must be a Slack incoming webhook URL, which starts with https://hooks.slack.com/. Copy it from the app's Incoming Webhooks page.")
+	}
+	return nil
 }
 
 // Send posts ev as a Slack message.
-func (Slack) Send(ctx context.Context, cfg Config, ev Event) error {
+func (s Slack) Send(ctx context.Context, cfg Config, ev Event) error {
+	if err := s.Check(cfg); err != nil {
+		return &Permanent{err}
+	}
 	body, err := json.Marshal(map[string]string{"text": SlackText(ev)})
 	if err != nil {
 		return err
@@ -30,29 +42,25 @@ func (Slack) Send(ctx context.Context, cfg Config, ev Event) error {
 
 // SlackText is the message for ev in Slack's mrkdwn, such as:
 //
-//	*Critical: service_down on apps* (opened)
+//	*Critical: service.down on apps*
 //	The service web on apps stopped with exit code 1.
-//	Alert 12, open since 2026-11-15 03:31 UTC. Tender hub: https://hub.example.com
+//	Notification 12, 2026-11-15 03:31 UTC. Tender hub: https://hub.example.com
 func SlackText(ev Event) string {
-	a := ev.Alert
+	n := ev.Notification
 	if ev.Event == EventTest {
-		return "This is a test from the Tender hub at " + slackEscape(ev.Hub) + ". If you can read it, alerts reach this channel."
+		return "This is a test from the Tender hub at " + slackEscape(ev.Hub) + ". If you can read it, notifications reach this channel."
 	}
-	head := a.Severity + ": " + a.Type
-	if a.Severity != "" {
+	head := n.Severity + ": " + n.Event
+	if n.Severity != "" {
 		head = strings.ToUpper(head[:1]) + head[1:]
 	}
-	if a.Machine != nil {
-		head += " on " + *a.Machine
+	if n.Machine != nil {
+		head += " on " + *n.Machine
 	}
 	var b strings.Builder
-	b.WriteString("*" + slackEscape(head) + "* (" + ev.Event + ")\n")
-	b.WriteString(slackEscape(a.Message) + "\n")
-	when := "open since " + formatTime(a.CreatedAt)
-	if ev.Event == EventResolved && a.ResolvedAt != nil {
-		when = "resolved at " + formatTime(*a.ResolvedAt)
-	}
-	b.WriteString("Alert " + strconv.FormatInt(a.ID, 10) + ", " + when + ". Tender hub: " + slackEscape(ev.Hub))
+	b.WriteString("*" + slackEscape(head) + "*\n")
+	b.WriteString(slackEscape(n.Message) + "\n")
+	b.WriteString("Notification " + strconv.FormatInt(n.ID, 10) + ", " + formatTime(n.CreatedAt) + ". Tender hub: " + slackEscape(ev.Hub))
 	return b.String()
 }
 

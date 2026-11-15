@@ -125,7 +125,7 @@ The first backup starts within a minute, and the next ones follow the schedule.
    MACHINE   LAST SEEN   LAST BACKUP   STATUS      SERVICES
    apps      just now    just now      completed   1/2 running
 
-   No open alerts.
+   No open problems.
    ```
 
    A large machine's first backup takes longer. `STATUS` shows `in_progress` until it ends.

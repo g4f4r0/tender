@@ -116,7 +116,12 @@ func TestSchemaConstraints(t *testing.T) {
 		"destinations need their credentials":      `INSERT INTO backup_destinations (name, type, endpoint, bucket, created_at, updated_at) VALUES ('y', 's3', 'e2', 'b', 1, 1)`,
 		"retention must be positive":               `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 1, '30 3 * * *', 0, 1, 1)`,
 		"settings need an existing destination":    `INSERT INTO backup_settings (machine_id, destination_id, schedule, retention_days, created_at, updated_at) VALUES (1, 99, '30 3 * * *', 30, 1, 1)`,
-		"severity must be a known word":            `INSERT INTO notifications (type, severity, status, content, created_at, updated_at) VALUES ('disk_full', 'high', 'pending', 'c', 1, 1)`,
+		"severity must be a known word":            `INSERT INTO notifications (event, severity, status, message, created_at, updated_at) VALUES ('disk.full', 'high', 'pending', 'c', 1, 1)`,
+		"status must be a known word":              `INSERT INTO notifications (event, severity, status, message, created_at, updated_at) VALUES ('disk.full', 'warning', 'resolved', 'c', 1, 1)`,
+		"a sent notification has sent_at":          `INSERT INTO notifications (event, severity, status, message, created_at, updated_at) VALUES ('disk.full', 'warning', 'sent', 'c', 1, 1)`,
+		"only a sent one has sent_at":              `INSERT INTO notifications (event, severity, status, message, sent_at, created_at, updated_at) VALUES ('disk.full', 'warning', 'pending', 'c', 1, 1, 1)`,
+		"a delivery has a notification":            `INSERT INTO notification_deliveries (channel_id, status, created_at, updated_at) VALUES (1, 'pending', 1, 1)`,
+		"a channel's events are a JSON list":       `INSERT INTO notification_channels (name, type, config, events, created_at, updated_at) VALUES ('x', 'email', '{}', '"*"', 1, 1)`,
 		"machine names are unique":                 `INSERT INTO machines (name, token_hash, created_at, updated_at) VALUES ('g4f4r0-apps', x'01', 1, 1)`,
 	}
 	for name, query := range bad {
@@ -273,18 +278,17 @@ func TestDestinationSecretsMigrationKeepsRows(t *testing.T) {
 	}
 }
 
-func TestOneUnresolvedNotificationPerTypeAndMachine(t *testing.T) {
+// base is the event without .escalated or .resolved: the problem it is about.
+func TestNotificationBase(t *testing.T) {
 	d := schema(t)
-	must(t, d, `INSERT INTO machines (id, name, token_hash, created_at, updated_at) VALUES (1, 'g4f4r0-ci', x'00', 1, 1)`)
-	insert := `INSERT INTO notifications (machine_id, type, severity, status, content, created_at, updated_at) VALUES (?, ?, 'warning', 'pending', 'c', 1, 1)`
-
-	for _, machine := range []any{1, nil} {
-		must(t, d, insert, machine, "disk_full")
-		if err := exec(t, d, insert, machine, "disk_full"); err == nil {
-			t.Errorf("machine %v: a second unresolved disk_full was accepted", machine)
-		}
-		must(t, d, `UPDATE notifications SET status = 'resolved' WHERE type = 'disk_full' AND machine_id IS ?`, machine)
-		must(t, d, insert, machine, "disk_full")
+	must(t, d, `INSERT INTO notifications (event, severity, status, message, created_at, updated_at) VALUES
+		('disk.full', 'warning', 'pending', 'c', 1, 1), ('disk.full.escalated', 'critical', 'pending', 'c', 1, 1),
+		('disk.full.resolved', 'critical', 'pending', 'c', 1, 1), ('notification.test', 'info', 'pending', 'c', 1, 1)`)
+	if n := rows(t, d, `SELECT count(*) FROM notifications WHERE base = 'disk.full'`); n != 3 {
+		t.Errorf("%d notifications of disk.full, want 3", n)
+	}
+	if n := rows(t, d, `SELECT count(*) FROM notifications WHERE base = 'notification.test'`); n != 1 {
+		t.Errorf("the test's base is not its event")
 	}
 }
 

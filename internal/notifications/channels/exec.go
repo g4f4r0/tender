@@ -54,6 +54,9 @@ func (e Exec) path(name string) (string, error) {
 		return "", errors.New("command must be the name of a program in " + e.dir() + ", such as my-adapter: letters, digits, dots, " +
 			"dashes and underscores, with no slash and no \"..\".")
 	}
+	if err := e.checkDir(); err != nil {
+		return "", err
+	}
 	p := filepath.Join(e.dir(), name)
 	info, err := os.Stat(p)
 	switch {
@@ -72,6 +75,27 @@ func (e Exec) path(name string) (string, error) {
 		return "", fmt.Errorf("%s doesn't belong to root, so others than root could change it. Run: sudo chown root:root %s", p, p)
 	}
 	return p, nil
+}
+
+// checkDir is an error unless only root, or with AnyOwner only its owner, can change the
+// adapters folder: whoever can write to it can swap a program.
+func (e Exec) checkDir() error {
+	d := e.dir()
+	info, err := os.Stat(d)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("there is no %s. As root on the hub, run: sudo install -d -m 755 %s", d, d)
+	case err != nil:
+		return fmt.Errorf("the hub can't read %s: %v.", d, errors.Unwrap(err))
+	case !info.IsDir():
+		return fmt.Errorf("%s is not a folder. As root on the hub, make it one: sudo install -d -m 755 %s", d, d)
+	case info.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("%s can be changed by others than its owner. Run: sudo chmod go-w %s", d, d)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != 0 && !e.AnyOwner {
+		return fmt.Errorf("%s doesn't belong to root, so others than root could change it. Run: sudo chown root:root %s", d, d)
+	}
+	return nil
 }
 
 // Send runs the program with the event on its standard input, at most SendTimeout, in a clean
@@ -98,7 +122,12 @@ func (e Exec) Send(ctx context.Context, cfg Config, ev Event) error {
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
 	err = cmd.Run()
-	if err == nil {
+	// Whatever the program left running, such as a child that holds its output open, stops now.
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// Exit 0 is delivered, even when a child kept the output open past WaitDelay.
+	if err == nil || (errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success()) {
 		return nil
 	}
 	name := cfg["command"]

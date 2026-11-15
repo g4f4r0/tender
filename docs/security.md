@@ -56,12 +56,12 @@ The daemon keeps the last settings it got from the hub, readable only by itself,
 
 ## What an exec adapter can do
 
-An exec channel runs a program on the hub for each alert, as [Adapters](adapters.md#write-an-exec-adapter) explains. The API can only name a program in `/etc/tender/adapters`, never give a path or arguments:
+An exec channel runs a program on the hub for each notification, as [Adapters](adapters.md#write-an-exec-adapter) explains. The API can only name a program in `/etc/tender/adapters`, never give a path or arguments:
 
-1. The hub runs a program only when it is a file in `/etc/tender/adapters`, owned by root and not writable by its group or others. Only root on the hub can install or change one.
+1. The hub runs a program only when it is a file in `/etc/tender/adapters`, and the folder and the file are owned by root and not writable by their group or others. Only root on the hub can install or change one. `TENDER_TEST_ADAPTERS_DIR` points the hub at another folder whose owner need not be root, for tests only; the hub logs a warning at startup while it is set.
 2. It runs as the hub's `tender` user, inside the hub's systemd sandbox, with no capabilities and no way to gain privileges.
 3. Its environment holds only `PATH` and `LANG`: the hub doesn't pass it `TENDER_ENCRYPTION_KEY`, the SMTP password or any other setting.
-4. It has 10 seconds per event, after which the hub kills it and every process it started. The hub keeps at most 64 KiB of its output.
+4. It has 10 seconds per notification, after which the hub kills it and every process it started. Once it exits, the hub stops anything it left running too. The hub keeps at most 64 KiB of its output.
 
 > [!WARNING]
 > An exec adapter runs as the hub's own user, so it can read whatever the hub can, such as its database and the hub process's own environment, which holds the encryption key. Install only programs you trust, as you would for root.
@@ -74,7 +74,7 @@ Service logs and the journal can hold tokens, passwords or customer data that an
 2. The hub clears the output of every completed logs action 1 hour after it finishes. A failed logs action holds why it failed, not logs, so it keeps its output.
 3. Cleared logs leave no bytes in the hub's database files, `hub.db`, `hub.db-wal` and `hub.db-shm`. The hub runs SQLite with `secure_delete`, which zeroes what a write frees, and after a pass that clears logs it empties the write-ahead log with `wal_checkpoint(TRUNCATE)`. A checkpoint that a reader holds up is tried again by the next minute's pass.
 4. The daemon never writes logs to disk. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
-5. Logs never go into the hub's or the daemon's own logs, into alerts, or into the events that channels get.
+5. Logs never go into the hub's or the daemon's own logs, into notifications, or into the events that channels get.
 
 An AI client that reads logs sends them to its model provider. Ask for the narrowest logs you need, with `--unit`, `--priority` and `--since`.
 

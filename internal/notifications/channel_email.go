@@ -52,28 +52,27 @@ func emailFor(ev channels.Event, hub string) (Message, error) {
 	if ev.Event == channels.EventTest {
 		return TestMessage(hub)
 	}
-	a := ev.Alert
-	text := typeText[a.Type]
-	title := text.title
-	if a.Service != nil {
-		title = *a.Service + " " + title
-	}
+	n := ev.Notification
+	t, _ := eventType(n.Event)
+	title := t.Title
 	if title == "" {
-		title = a.Type
+		title = channels.Base(n.Event)
+	}
+	if n.Service != nil {
+		title = *n.Service + " " + title
 	}
 	data := emailData{
-		Title: title, Content: a.Message, Severity: a.Severity,
-		Since: formatTime(a.CreatedAt), Tool: text.tool, Hub: hub, Color: "#b00020",
+		Title: title, Content: n.Message, Severity: n.Severity,
+		Since: formatTime(n.CreatedAt), Tool: t.Tool, Hub: hub, Color: "#b00020",
 	}
-	if a.Machine != nil {
-		data.Machine = *a.Machine
+	if data.Tool == "" {
+		data.Tool = "list_notifications"
 	}
-	if a.ResolvedAt != nil {
-		data.ResolvedAt = formatTime(*a.ResolvedAt)
-		data.Duration = formatDuration(a.ResolvedAt.Sub(a.CreatedAt))
+	if n.Machine != nil {
+		data.Machine = *n.Machine
 	}
-	if a.Severity == SeverityWarning {
+	if n.Severity != SeverityCritical {
 		data.Color = "#8a5a00"
 	}
-	return render(ev.Event, data)
+	return render(channels.Phase(n.Event), data)
 }

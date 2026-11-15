@@ -1,6 +1,6 @@
 # CLI
 
-The `tender` command manages the hub, its machines, backups, services and alerts, and installs Tender on a machine.
+The `tender` command manages the hub, its machines, backups, services and notifications, and installs Tender on a machine.
 
 ## Prerequisites
 
@@ -52,7 +52,7 @@ Add `--help` to any command for its usage, or run `tender help` for the list of 
 
 ### `tender status`
 
-Shows every machine, when it last reported, its last backup, how many of its services run, and the open alerts.
+Shows every machine, when it last reported, its last backup, how many of its services run, and the open problems.
 
 #### Usage
 
@@ -76,12 +76,12 @@ tender status
 MACHINE   LAST SEEN      LAST BACKUP   STATUS      SERVICES
 apps      1 minute ago   just now      completed   1/2 running
 
-Open alerts: 1
-SEVERITY   SINCE      ALERT
-warning    just now   The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.
+Open problems: 1
+SEVERITY   SINCE      EVENT                 PROBLEM
+warning    just now   service.memory_high   The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.
 ```
 
-`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed services. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. An alert longer than 100 characters, or longer than one line, ends in `...`; its email has the whole text. With no open alerts, the list ends with `No open alerts.`
+`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed services. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. Each open problem shows its latest notification, as [Notifications](notifications.md#how-a-notification-works) explains. A message longer than 100 characters, or longer than one line, ends in `...`; the notification has the whole text. With no open problems, the list ends with `No open problems.`
 
 #### Errors
 
@@ -188,7 +188,7 @@ The install command shows `HUB_URL` when you reached the hub at `127.0.0.1` or `
 Removes a machine and its history from the hub.
 
 > [!WARNING]
-> There is no undo. The machine's token stops working, and its settings, backup history, services, actions and alerts are deleted from the hub. Its backups stay in the destination.
+> There is no undo. The machine's token stops working, and its settings, backup history, services, actions and notifications are deleted from the hub. Its backups stay in the destination.
 
 #### Usage
 
@@ -791,7 +791,7 @@ tender services alerts apps web off
 ```
 
 ```text
-Alerts for web on apps are off. Its open alerts resolve within a minute.
+Alerts for web on apps are off. Its open problems resolve within a minute.
 ```
 
 #### Errors
@@ -958,7 +958,7 @@ A failed action shows why it failed instead, such as `The daemon restarted befor
 
 ## `tender channels`
 
-Choose where alerts go: email addresses, Slack, webhooks that get signed JSON, and exec adapters on the hub. Each channel gets every alert at least as severe as its `min_severity`. [Adapters](adapters.md) explains each type and the event they get.
+Choose where notifications go: email addresses, Slack, webhooks that get signed JSON, and exec adapters on the hub. Each channel gets the notifications of its `events` that are at least as severe as its `min_severity`. [Adapters](adapters.md) explains each type and the event they get, and [Notifications](notifications.md#events) lists the events.
 
 ### `tender channels list`
 
@@ -983,13 +983,13 @@ tender channels list
 ```
 
 ```text
-NAME       TYPE      SENDS TO                            MIN SEVERITY   ALERTS
-ops        email     ops@example.com                     warning        on
-chat       slack     Slack webhook (secret)              critical       on
-receiver   webhook   https://alerts.example.com/tender   warning        on
+NAME       TYPE      SENDS TO                            EVENTS                    MIN SEVERITY   ON
+ops        email     ops@example.com                     *                         warning        on
+chat       slack     Slack webhook (secret)              service.*,backup.failed   critical       on
+receiver   webhook   https://alerts.example.com/tender   *                         warning        on
 ```
 
-With no channels, it prints `No channels yet, so alerts are only recorded. Add one with: tender channels add ops --type email --to ops@example.com` and exits 0.
+With no channels, it prints `No channels yet, so notifications are only recorded. Add one with: tender channels add ops --type email --to ops@example.com` and exits 0.
 
 #### Errors
 
@@ -1008,7 +1008,7 @@ Adds a channel. An email channel needs `--to` and the hub's SMTP settings. A Sla
 #### Usage
 
 ```sh
-tender channels add NAME --type TYPE [--to EMAIL | --url URL | --webhook-url-file PATH | --command NAME] [--min-severity SEVERITY] [--off] [--hub URL]
+tender channels add NAME --type TYPE [--to EMAIL | --url URL | --webhook-url-file PATH | --command NAME] [--min-severity SEVERITY] [--events PATTERNS] [--off] [--hub URL]
 ```
 
 #### Options
@@ -1021,8 +1021,9 @@ tender channels add NAME --type TYPE [--to EMAIL | --url URL | --webhook-url-fil
 | `--webhook-url-file` | path | No | For `slack`, a file with the incoming webhook URL, instead of asking. |
 | `--url` | URL | For `webhook` | Where the hub posts the signed event. |
 | `--command` | string | For `exec` | The program's name in `/etc/tender/adapters`, never a path. |
-| `--min-severity` | string | No | The least severe alert it gets: `info`, `warning` or `critical`. The default is `warning`. |
-| `--off` | flag | No | Add it turned off, so it gets no alerts until you turn it on. |
+| `--min-severity` | string | No | The least severe notification it gets: `info`, `warning` or `critical`. The default is `warning`. |
+| `--events` | string | No | The events it gets, comma-separated: `*` for every event, an area such as `service.*`, or an event such as `backup.failed`. The default is `*`. |
+| `--off` | flag | No | Add it turned off, so it gets no notifications until you turn it on. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
@@ -1032,7 +1033,7 @@ tender channels add receiver --type webhook --url https://alerts.example.com/ten
 ```
 
 ```text
-Added channel receiver. It gets every alert from warning up. Check that it arrives with: tender channels test receiver
+Added channel receiver. It gets the notifications of * from warning up. Check that it arrives with: tender channels test receiver
 
 Its signing secret, made by the hub and shown only now:
   whsec_DegsXtcqOW0BeSvwAslbz0WjeZpZwFbB_W8oo6EHXuE
@@ -1048,6 +1049,9 @@ Other types print only the first line.
 1. `A channel called ops already exists. Choose another name, or change that one.`
 2. `there is no /etc/tender/adapters/ntfy. As root on the hub, install the program there and make it executable.`
 3. `channels add needs --type: email, slack, webhook or exec. Run "tender channels add --help" for usage.`
+4. `events: "disk.*" takes no event this hub knows. The events are listed in docs/notifications.md.` when a pattern matches no event.
+5. `url: the URL leads to 127.0.0.1, a loopback address, and the hub doesn't send to loopback, link-local, multicast or unspecified addresses. ...` when a webhook's URL is an address the hub refuses. [Where a webhook may send](adapters.md#where-a-webhook-may-send) has the rules.
+6. `webhook_url must be a Slack incoming webhook URL, which starts with https://hooks.slack.com/. Copy it from the app's Incoming Webhooks page.`
 
 #### Equivalents
 
@@ -1082,7 +1086,8 @@ tender channels show receiver
 FIELD          VALUE
 name           receiver
 type           webhook
-alerts         on
+on             on
+events         *
 min severity   warning
 secret         set (secret, never shown)
 url            https://alerts.example.com/tender
@@ -1107,7 +1112,7 @@ Changes a channel. Options left out stay as they are. Secrets are replaced from 
 #### Usage
 
 ```sh
-tender channels update NAME [--to EMAIL | --url URL | --command NAME] [--webhook-url-file PATH | --secret-file PATH] [--min-severity SEVERITY] [--on | --off] [--hub URL]
+tender channels update NAME [--to EMAIL | --url URL | --command NAME] [--webhook-url-file PATH | --secret-file PATH] [--min-severity SEVERITY] [--events PATTERNS] [--on | --off] [--hub URL]
 ```
 
 #### Options
@@ -1119,6 +1124,7 @@ tender channels update NAME [--to EMAIL | --url URL | --command NAME] [--webhook
 | `--webhook-url-file` | path | No | A file with a Slack channel's new webhook URL. |
 | `--secret-file` | path | No | A file with a webhook channel's new signing secret, 24 characters or more. |
 | `--min-severity` | string | No | `info`, `warning` or `critical`. |
+| `--events` | string | No | The events it gets, comma-separated, such as `service.*,backup.failed`. |
 | `--on`, `--off` | flag | No | Turn it on or off. |
 | `--hub` | URL | No | The hub's address. |
 
@@ -1129,12 +1135,12 @@ tender channels update ops --min-severity critical --off
 ```
 
 ```text
-Updated channel ops: alerts off, from critical up.
+Updated channel ops: off, the notifications of * from critical up.
 ```
 
 #### Errors
 
-1. `channels update needs something to change, such as --off or --min-severity critical. Run "tender channels update --help" for usage.`
+1. `channels update needs something to change, such as --off, --min-severity critical or --events 'service.*'. Run "tender channels update --help" for usage.`
 2. `channels update takes --on or --off, not both. Run "tender channels update --help" for usage.`
 
 #### Equivalents
@@ -1145,7 +1151,7 @@ Updated channel ops: alerts off, from critical up.
 
 ### `tender channels remove`
 
-Removes a channel, so it gets no more alerts. What it still owed is dropped.
+Removes a channel, so it gets no more notifications. What it still owed is dropped.
 
 #### Usage
 
@@ -1167,7 +1173,7 @@ tender channels remove chat
 ```
 
 ```text
-Removed channel chat. It gets no more alerts.
+Removed channel chat. It gets no more notifications.
 ```
 
 #### Errors
@@ -1182,7 +1188,7 @@ Removed channel chat. It gets no more alerts.
 
 ### `tender channels test`
 
-Sends a test event to every enabled channel, or to one named channel even when it is off, and says how each went. Each waits at most 10 seconds, or 30 for email. It exits 1 when any channel failed.
+Sends a `notification.test` notification to every enabled channel, or to one named channel even when it is off, and says how each went. Each waits at most 10 seconds, or 30 for email. It exits 1 when any channel failed.
 
 #### Usage
 
@@ -1206,7 +1212,7 @@ tender channels test
 ```text
 CHANNEL    RESULT
 ops        delivered
-chat       failed: the Slack webhook answered 404: no_team
+chat       failed: HTTP 404 Not Found
 receiver   delivered
 ```
 
@@ -1222,6 +1228,56 @@ A failed channel is followed by `the test didn't reach every channel. Fix the ch
 | REST route | MCP tool |
 | --- | --- |
 | `POST /v1/notifications/test` | `send_test_notification` |
+
+## `tender notifications`
+
+See what the hub told its channels. A notification is one message: a problem adds one when it starts, such as `service.down`, one when it gets worse, `service.down.escalated`, and one when it clears, `service.down.resolved`. [Notifications](notifications.md) explains them and lists every event.
+
+### `tender notifications list`
+
+Lists notifications, newest first: of every machine, or of one. With `--open`, it lists the open problems instead, each by the latest notification of a problem that hasn't resolved.
+
+#### Usage
+
+```sh
+tender notifications list [MACHINE] [--open] [--status STATUS] [--severity SEVERITY] [--limit N] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MACHINE` | string | No | Only this machine's notifications. |
+| `--open` | flag | No | Only the open problems. |
+| `--status` | string | No | Only `pending`, `sent` or `failed`. |
+| `--severity` | string | No | Only `info`, `warning` or `critical`. |
+| `--limit` | number | No | How many of the newest, from 1 to 500. The default is 50. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender notifications list apps
+```
+
+```text
+ID   ADDED           EVENT                   SEVERITY   ABOUT      STATUS   MESSAGE
+14   just now        service.down.resolved   critical   apps/web   sent     Resolved: The service web on apps stopped with exit code 1.
+12   5 minutes ago   service.down            critical   apps/web   sent     The service web on apps stopped with exit code 1.
+```
+
+`ABOUT` is the machine, the machine and service, or `channel NAME` for `channel.failing`. With none, it prints `No notifications.`, or `No open problems.` with `--open`. When there are more than `--limit`, it ends with `These are the newest 50. Raise --limit to see more.`
+
+#### Errors
+
+1. `Machine "apps" doesn't exist.`
+2. `--limit must be from 1 to 500. Run "tender notifications list --help" for usage.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/notifications` and `GET /v1/machines/{machine}/notifications` | `list_notifications` |
 
 ## `tender install`
 

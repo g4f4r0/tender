@@ -315,7 +315,7 @@ func TestServicesAlerts(t *testing.T) {
 	a := &answers{}
 	mustRun(t, h, a, "machines", "add", "apps")
 	h.addServices(t, "apps", services.Service{Name: "web-1", State: "running", AlertsEnabled: true})
-	if out := mustRun(t, h, a, "services", "alerts", "apps", "web-1", "off"); out != "Alerts for web-1 on apps are off. Its open alerts resolve within a minute.\n" {
+	if out := mustRun(t, h, a, "services", "alerts", "apps", "web-1", "off"); out != "Alerts for web-1 on apps are off. Its open problems resolve within a minute.\n" {
 		t.Errorf("off = %q", out)
 	}
 	if h.services["apps"][0].AlertsEnabled {

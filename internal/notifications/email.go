@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/config"
+	"github.com/g4f4r0/tender/internal/notifications/channels"
 )
 
 //go:embed templates/*.tmpl
@@ -33,31 +34,6 @@ var (
 	htmlTemplates = htmltemplate.Must(htmltemplate.ParseFS(templateFiles, "templates/email.html.tmpl"))
 )
 
-// The kinds of email, which name their templates.
-const (
-	kindOpened    = "opened"
-	kindEscalated = "escalated"
-	kindResolved  = "resolved"
-	kindTest      = "test"
-)
-
-// typeText is the title and the MCP tool to look closer with, per notification type.
-var typeText = map[string]struct{ title, tool string }{
-	TypeMachineSilent: {"not reporting", "list_machines"},
-	TypeBackupFailed:  {"backup failed", "list_backup_history"},
-	TypeBackupStale:   {"no recent backup", "get_backup_status"},
-	TypeDiskFull:      {"disk almost full", "get_machine_usage"},
-
-	// A service alert's title follows the service's name: "web-1 stopped".
-	TypeServiceDown:       {"stopped", "list_services"},
-	TypeServiceRestarting: {"keeps restarting", "list_services"},
-	TypeServiceUnhealthy:  {"unhealthy", "list_services"},
-	TypeServiceMemoryHigh: {"memory high", "list_services"},
-	TypeDockerUnreachable: {"Docker unreachable", "list_services"},
-
-	TypeChannelFailing: {"a notification channel is failing", "list_channels"},
-}
-
 // Message is one email, before it gets its headers.
 type Message struct {
 	Subject string
@@ -67,20 +43,19 @@ type Message struct {
 
 // emailData fills the templates. Times and durations arrive as text.
 type emailData struct {
-	Subject    string
-	Machine    string
-	Title      string
-	Content    string
-	Severity   string
-	Color      string // of the severity word in the HTML part
-	Since      string
-	Duration   string
-	ResolvedAt string
-	Tool       string
-	Hub        string
+	Subject  string
+	Machine  string
+	Title    string
+	Content  string
+	Severity string
+	Color    string // of the severity word in the HTML part
+	Since    string // when the notification was added
+	Tool     string
+	Hub      string
 }
 
-// render fills the templates of one kind of email.
+// render fills the templates of one kind of email: opened, escalated, resolved or test, the
+// phase of the notification's event.
 func render(kind string, d emailData) (Message, error) {
 	var subject, text, page bytes.Buffer
 	if err := textTemplates.ExecuteTemplate(&subject, kind+".subject", d); err != nil {
@@ -97,7 +72,7 @@ func render(kind string, d emailData) (Message, error) {
 }
 
 // TestMessage is the email POST /v1/notifications/test and the send_test_notification tool send to an email channel.
-func TestMessage(hub string) (Message, error) { return render(kindTest, emailData{Hub: hub}) }
+func TestMessage(hub string) (Message, error) { return render(channels.PhaseTest, emailData{Hub: hub}) }
 
 // Mailer sends email over SMTP with TLS from the first byte (port 465).
 type Mailer struct {

@@ -13,8 +13,8 @@ import (
 	"github.com/g4f4r0/tender/internal/server"
 )
 
-var channelsUsage = groupUsage("channels", "Choose where alerts go: email addresses, Slack, webhooks that get signed JSON, "+
-	"and exec adapters on the hub. Each channel gets every alert at least as severe as its minimum severity.", []row{
+var channelsUsage = groupUsage("channels", "Choose where notifications go: email addresses, Slack, webhooks that get signed JSON, "+
+	"and exec adapters on the hub. Each channel gets the notifications of its events at least as severe as its minimum severity.", []row{
 	{"list", "List the channels"},
 	{"add NAME --type TYPE ...", "Add a channel: email, slack, webhook or exec"},
 	{"show NAME", "Show one channel"},
@@ -58,7 +58,7 @@ func onOff(b bool) string {
 }
 
 func channelsList(args []string, s session) error {
-	fs := newFlagSet("channels list", "[--hub URL]", "List the channels alerts go to. Their secrets are never shown.")
+	fs := newFlagSet("channels list", "[--hub URL]", "List the channels notifications go to. Their secrets are never shown.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -76,21 +76,39 @@ func channelsList(args []string, s session) error {
 		return err
 	}
 	if len(list) == 0 {
-		say(s.out, "No channels yet, so alerts are only recorded. Add one with: tender channels add ops --type email --to ops@example.com")
+		say(s.out, "No channels yet, so notifications are only recorded. Add one with: tender channels add ops --type email --to ops@example.com")
 		return nil
 	}
 	rows := make([][]string, len(list))
 	for i, c := range list {
-		rows[i] = []string{c.Name, c.Type, target(c), c.MinSeverity, onOff(c.Enabled)}
+		rows[i] = []string{c.Name, c.Type, target(c), strings.Join(c.Events, ","), c.MinSeverity, onOff(c.Enabled)}
 	}
-	printTable(s.out, []string{"NAME", "TYPE", "SENDS TO", "MIN SEVERITY", "ALERTS"}, rows)
+	printTable(s.out, []string{"NAME", "TYPE", "SENDS TO", "EVENTS", "MIN SEVERITY", "ON"}, rows)
 	return nil
 }
 
 // channelFlags are the options of add and update that set config.
 type channelFlags struct {
-	to, url, command, webhookURLFile, secretFile, minSeverity *string
-	on, off                                                   *bool
+	to, url, command, webhookURLFile, secretFile, minSeverity, events *string
+	on, off                                                           *bool
+}
+
+// flagSet reports whether the flag name was given.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+// eventList splits --events, such as "service.*,backup.failed".
+func eventList(v string) []string {
+	var out []string
+	for p := range strings.SplitSeq(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func addChannelFlags(fs *flag.FlagSet, update bool) channelFlags {
@@ -99,8 +117,9 @@ func addChannelFlags(fs *flag.FlagSet, update bool) channelFlags {
 		url:            fs.String("url", "", "`URL` where a webhook channel POSTs the signed event JSON"),
 		command:        fs.String("command", "", "`NAME` the program an exec channel runs, from /etc/tender/adapters on the hub"),
 		webhookURLFile: fs.String("webhook-url-file", "", "`PATH` file with a Slack channel's incoming webhook URL, instead of asking"),
-		minSeverity:    fs.String("min-severity", "", "`SEVERITY` the least severe alert it gets: info, warning or critical (default: warning)"),
-		off:            fs.Bool("off", false, "turn it off: it gets no alerts until it is turned on"),
+		minSeverity:    fs.String("min-severity", "", "`SEVERITY` the least severe notification it gets: info, warning or critical (default: warning)"),
+		events:         fs.String("events", "", "`PATTERNS` the events it gets, comma-separated: *, an area such as service.*, or an event such as backup.failed (default: *)"),
+		off:            fs.Bool("off", false, "turn it off: it gets no notifications until it is turned on"),
 	}
 	if update {
 		f.secretFile = fs.String("secret-file", "", "`PATH` file with a new signing secret for a webhook channel, 24 characters or more")
@@ -111,7 +130,7 @@ func addChannelFlags(fs *flag.FlagSet, update bool) channelFlags {
 
 func channelsAdd(args []string, s session) error {
 	fs := newFlagSet("channels add", "NAME --type TYPE\n[--to EMAIL | --url URL | --webhook-url-file PATH | --command NAME]\n"+
-		"[--min-severity SEVERITY] [--off] [--hub URL]",
+		"[--min-severity SEVERITY] [--events PATTERNS] [--off] [--hub URL]",
 		"Add a channel. An email channel needs --to and the hub's SMTP settings. A slack channel asks for its incoming webhook "+
 			"URL with typing hidden, or reads it from --webhook-url-file, because the URL is its key. A webhook channel needs --url; "+
 			"the hub makes its signing secret and shows it once. An exec channel needs --command, a program root installed in "+
@@ -128,6 +147,11 @@ func channelsAdd(args []string, s session) error {
 		return err
 	}
 	in := notifications.ChannelInput{Name: name, Type: *typ, MinSeverity: *f.minSeverity, Config: map[string]string{}}
+	if set := flagSet(fs, "events"); set {
+		if in.Events = eventList(*f.events); len(in.Events) == 0 {
+			return usageError(fs, "--events needs at least one pattern, such as '*' or 'service.*,backup.failed'")
+		}
+	}
 	switch *typ {
 	case notifications.TypeEmail:
 		in.Config["to"] = *f.to
@@ -153,7 +177,8 @@ func channelsAdd(args []string, s session) error {
 	if err := hub.do(http.MethodPost, "/v1/notifications/channels", in, &c); err != nil {
 		return err
 	}
-	say(s.out, "Added channel %s. It gets every alert from %s up. Check that it arrives with: tender channels test %s", c.Name, c.MinSeverity, c.Name)
+	say(s.out, "Added channel %s. It gets the notifications of %s from %s up. Check that it arrives with: tender channels test %s",
+		c.Name, strings.Join(c.Events, ","), c.MinSeverity, c.Name)
 	if v, ok := c.Config["secret"].(string); ok && v != "***" {
 		say(s.out, "\nIts signing secret, made by the hub and shown only now:")
 		say(s.out, "  %s\n", v)
@@ -182,7 +207,7 @@ func channelsShow(args []string, s session) error {
 	if err := hub.do(http.MethodGet, channelPath(name), nil, &c); err != nil {
 		return err
 	}
-	rows := [][]string{{"name", c.Name}, {"type", c.Type}, {"alerts", onOff(c.Enabled)}, {"min severity", c.MinSeverity}}
+	rows := [][]string{{"name", c.Name}, {"type", c.Type}, {"on", onOff(c.Enabled)}, {"events", strings.Join(c.Events, ",")}, {"min severity", c.MinSeverity}}
 	keys := make([]string, 0, len(c.Config))
 	for k := range c.Config {
 		if !strings.HasSuffix(k, "_set") {
@@ -204,7 +229,7 @@ func channelsShow(args []string, s session) error {
 
 func channelsUpdate(args []string, s session) error {
 	fs := newFlagSet("channels update", "NAME [--to EMAIL | --url URL | --command NAME]\n[--webhook-url-file PATH | --secret-file PATH]\n"+
-		"[--min-severity SEVERITY] [--on | --off] [--hub URL]",
+		"[--min-severity SEVERITY] [--events PATTERNS]\n[--on | --off] [--hub URL]",
 		"Change a channel. Options left out stay as they are. Secrets are replaced from a file and never shown. "+
 			"Turning a channel off drops what it still owed.")
 	hubURL := hubFlag(fs)
@@ -249,14 +274,19 @@ func channelsUpdate(args []string, s session) error {
 	if set["min-severity"] {
 		p.MinSeverity = f.minSeverity
 	}
+	if set["events"] {
+		if p.Events = eventList(*f.events); len(p.Events) == 0 {
+			return usageError(fs, "--events needs at least one pattern, such as '*' or 'service.*,backup.failed'")
+		}
+	}
 	switch {
 	case *f.on && *f.off:
 		return usageError(fs, "channels update takes --on or --off, not both")
 	case *f.on || *f.off:
 		p.Enabled = f.on
 	}
-	if p.Config == nil && p.MinSeverity == nil && p.Enabled == nil {
-		return usageError(fs, "channels update needs something to change, such as --off or --min-severity critical")
+	if p.Config == nil && p.MinSeverity == nil && p.Enabled == nil && p.Events == nil {
+		return usageError(fs, "channels update needs something to change, such as --off, --min-severity critical or --events 'service.*'")
 	}
 	hub, err := newHubAPI(fs, *hubURL)
 	if err != nil {
@@ -266,12 +296,12 @@ func channelsUpdate(args []string, s session) error {
 	if err := hub.do(http.MethodPatch, channelPath(name), p, &c); err != nil {
 		return err
 	}
-	say(s.out, "Updated channel %s: alerts %s, from %s up.", c.Name, onOff(c.Enabled), c.MinSeverity)
+	say(s.out, "Updated channel %s: %s, the notifications of %s from %s up.", c.Name, onOff(c.Enabled), strings.Join(c.Events, ","), c.MinSeverity)
 	return nil
 }
 
 func channelsRemove(args []string, s session) error {
-	fs := newFlagSet("channels remove", "NAME [--hub URL]", "Remove a channel, so it gets no more alerts.")
+	fs := newFlagSet("channels remove", "NAME [--hub URL]", "Remove a channel, so it gets no more notifications.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -288,7 +318,7 @@ func channelsRemove(args []string, s session) error {
 	if err := hub.do(http.MethodDelete, channelPath(name), nil, nil); err != nil {
 		return err
 	}
-	say(s.out, "Removed channel %s. It gets no more alerts.", name)
+	say(s.out, "Removed channel %s. It gets no more notifications.", name)
 	return nil
 }
 

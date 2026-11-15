@@ -15,33 +15,60 @@ import (
 // Version is the version of the event contract, in every event's "version".
 const Version = 1
 
-// The events of the contract.
+// EventTest is the event of a test notification.
+const EventTest = "notification.test"
+
+// The phases of an event name: a problem starts as <area>.<condition>, gets worse as
+// <area>.<condition>.escalated and clears as <area>.<condition>.resolved.
 const (
-	EventOpened    = "opened"
-	EventEscalated = "escalated"
-	EventResolved  = "resolved"
-	EventTest      = "test"
+	PhaseOpened    = "opened"
+	PhaseEscalated = "escalated"
+	PhaseResolved  = "resolved"
+	PhaseTest      = "test"
 )
+
+// Phase is the phase of the event name event.
+func Phase(event string) string {
+	switch {
+	case event == EventTest:
+		return PhaseTest
+	case strings.HasSuffix(event, "."+PhaseEscalated):
+		return PhaseEscalated
+	case strings.HasSuffix(event, "."+PhaseResolved):
+		return PhaseResolved
+	}
+	return PhaseOpened
+}
+
+// Base is the event name without .escalated or .resolved: the problem it is about.
+func Base(event string) string {
+	for _, p := range []string{PhaseEscalated, PhaseResolved} {
+		if b, ok := strings.CutSuffix(event, "."+p); ok {
+			return b
+		}
+	}
+	return event
+}
 
 // Event is the event contract v1, the JSON body a webhook gets and an exec adapter reads on its
 // standard input. Log text is never in an event.
 type Event struct {
-	Version int    `json:"version"`
-	Event   string `json:"event"` // opened, escalated, resolved or test
-	Alert   Alert  `json:"alert"`
-	Hub     string `json:"hub"` // the hub's URL
+	Version      int          `json:"version"`
+	Event        string       `json:"event"` // such as service.down, service.down.resolved or notification.test
+	Notification Notification `json:"notification"`
+	Hub          string       `json:"hub"` // the hub's URL
 }
 
-// Alert is the alert an event is about.
-type Alert struct {
-	ID         int64      `json:"id"`
-	Type       string     `json:"type"`
-	Severity   string     `json:"severity"`
-	Machine    *string    `json:"machine"` // the machine it is about, or null
-	Service    *string    `json:"service"` // the Docker service it is about, or null
-	Message    string     `json:"message"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ResolvedAt *time.Time `json:"resolved_at"` // null until it resolves
+// Notification is the notification an event carries.
+type Notification struct {
+	ID        int64     `json:"id"`
+	Event     string    `json:"event"`
+	Severity  string    `json:"severity"`
+	Machine   *string   `json:"machine"` // the machine it is about, or null
+	Service   *string   `json:"service"` // the Docker service it is about, or null
+	Channel   *string   `json:"channel"` // the channel a channel.failing notification is about, or null
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Field is one key of a channel type's config. Every value is a string.

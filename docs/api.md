@@ -1171,19 +1171,20 @@ HTTP/1.1 204 No Content
 
 ## Notifications
 
-A notification is an alert about a machine, its backups, a service or a notification channel. Each event of an alert goes to every enabled channel that takes its severity, as one delivery per channel. See [Alerts](alerts.md) for each type and [Adapters](adapters.md) for the channel types.
+A notification is one message about a machine, its backups, a service or a notification channel. A problem adds one when it starts, such as `service.down`, one the first time it gets worse, `service.down.escalated`, and one when it clears, `service.down.resolved`. Each goes to every enabled channel whose `events` and `min_severity` take it, as one delivery per channel. See [Notifications](notifications.md) for each event and [Adapters](adapters.md) for the channel types.
 
 ### `GET /v1/notifications`
 
-Lists every machine's notifications, newest first.
+Lists every machine's notifications, newest first, or with `open=true`, the open problems.
 
-A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-alert-works) explains. `machine` is the machine the alert is about, and `service` is `null` for an alert that isn't about one service. `channel` names the channel a `channel_failing` alert is about, and is `null` for every other alert. `deliveries` lists each event sent to each channel, oldest first: its `channel`, `event` (`opened`, `escalated` or `resolved`), `status` (`pending`, `delivered` or `failed`), `attempts` and `error`, which says why the last try failed.
+A notification has an `event`, a `severity` and a `message`. Its `status` is `pending` until a channel delivers it, `sent` once one did, or `failed` once every channel's delivery failed, as [Notifications](notifications.md#how-a-notification-works) explains. `sent_at` is when a channel first delivered it, and `null` until then. `machine` is the machine it is about, and `service` is `null` for one that isn't about one service. `channel` names the channel a `channel.failing` notification is about, and is `null` for every other. `deliveries` lists its delivery to each channel, oldest first: its `channel`, `status` (`pending`, `delivered` or `failed`), `attempts` and `error`, which says why the last try failed.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `status` | string | No | Query. Only notifications with this status: `pending`, `sent` or `resolved`. |
+| `open` | boolean | No | Query. `true` lists only the open problems: the latest notification of each problem whose latest isn't a `.resolved` one. The default is `false`. |
+| `status` | string | No | Query. Only notifications with this status: `pending`, `sent` or `failed`. |
 | `severity` | string | No | Query. Only notifications with this severity: `info`, `warning` or `critical`. |
 | `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
 | `cursor` | string | No | Query. The `next_cursor` of the previous page. |
@@ -1203,33 +1204,22 @@ Content-Type: application/json
 {
   "data": [
     {
-      "id": 3,
+      "id": 4,
       "machine": "apps",
       "service": "web",
-      "type": "service_memory_high",
-      "severity": "warning",
-      "status": "resolved",
-      "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
       "channel": null,
-      "created_at": "2026-11-15T11:35:35Z",
-      "updated_at": "2026-11-15T11:36:35Z",
+      "event": "service.memory_high.resolved",
+      "severity": "warning",
+      "message": "Resolved: The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "status": "sent",
+      "sent_at": "2026-11-15T11:36:36Z",
+      "created_at": "2026-11-15T11:36:35Z",
+      "updated_at": "2026-11-15T11:36:36Z",
       "deliveries": [
         {
-          "id": 7,
-          "notification_id": 3,
-          "channel": "ops",
-          "event": "opened",
-          "status": "delivered",
-          "attempts": 1,
-          "error": null,
-          "created_at": "2026-11-15T11:35:35Z",
-          "updated_at": "2026-11-15T11:35:36Z"
-        },
-        {
           "id": 8,
-          "notification_id": 3,
+          "notification_id": 4,
           "channel": "ops",
-          "event": "resolved",
           "status": "delivered",
           "attempts": 1,
           "error": null,
@@ -1239,7 +1229,7 @@ Content-Type: application/json
       ]
     }
   ],
-  "next_cursor": "MTc5NDc0MjUzNToz"
+  "next_cursor": "MTc5NDc0MjU5NTo0"
 }
 ```
 
@@ -1248,13 +1238,13 @@ Content-Type: application/json
 | Status | When |
 | --- | --- |
 | `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
-| `422` | `status` or `severity` isn't one of its values. |
+| `422` | `open`, `status` or `severity` isn't one of its values. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `list_notifications` | `tender status`, which shows the open ones. |
+| `list_notifications` | `tender notifications list`, and `tender status`, which shows the open problems. |
 
 ### `GET /v1/machines/{machine}/notifications`
 
@@ -1265,7 +1255,8 @@ Lists one machine's notifications, newest first, in the same shape as [`GET /v1/
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
-| `status` | string | No | Query. `pending`, `sent` or `resolved`. |
+| `open` | boolean | No | Query. `true` lists only the machine's open problems. |
+| `status` | string | No | Query. `pending`, `sent` or `failed`. |
 | `severity` | string | No | Query. `info`, `warning` or `critical`. |
 | `limit` | integer | No | Query. How many to return, from 1 to 500. The default is 50. |
 | `cursor` | string | No | Query. The `next_cursor` of the previous page. |
@@ -1273,7 +1264,7 @@ Lists one machine's notifications, newest first, in the same shape as [`GET /v1/
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?limit=1
+curl -s 'https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?open=true&limit=1'
 ```
 
 #### Example response
@@ -1288,11 +1279,12 @@ Content-Type: application/json
       "id": 2,
       "machine": "apps",
       "service": null,
-      "type": "docker_unreachable",
-      "severity": "critical",
-      "status": "sent",
-      "content": "Docker on apps can't be reached: its socket refuses connections, so Docker is stopped. Its services' states are unknown until it is back.",
       "channel": null,
+      "event": "docker.unreachable",
+      "severity": "critical",
+      "message": "Docker on apps can't be reached: its socket refuses connections, so Docker is stopped. Its services' states are unknown until it is back.",
+      "status": "sent",
+      "sent_at": "2026-11-15T11:32:36Z",
       "created_at": "2026-11-15T11:32:35Z",
       "updated_at": "2026-11-15T11:32:36Z",
       "deliveries": [
@@ -1300,7 +1292,6 @@ Content-Type: application/json
           "id": 4,
           "notification_id": 2,
           "channel": "ops",
-          "event": "opened",
           "status": "delivered",
           "attempts": 1,
           "error": null,
@@ -1311,10 +1302,9 @@ Content-Type: application/json
           "id": 5,
           "notification_id": 2,
           "channel": "pager",
-          "event": "opened",
           "status": "pending",
           "attempts": 2,
-          "error": "the webhook answered 503: upstream unavailable",
+          "error": "HTTP 503 Service Unavailable",
           "created_at": "2026-11-15T11:32:35Z",
           "updated_at": "2026-11-15T11:33:50Z"
         }
@@ -1331,13 +1321,13 @@ Content-Type: application/json
 | --- | --- |
 | `400` | `limit` isn't a whole number from 1 to 500, or `cursor` isn't valid. |
 | `404` | The machine doesn't exist. |
-| `422` | `status` or `severity` isn't one of its values. |
+| `422` | `open`, `status` or `severity` isn't one of its values. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `list_notifications` | `tender status` |
+| `list_notifications` | `tender notifications list MACHINE` |
 
 ### `GET /v1/machines/{machine}/notifications/{id}`
 
@@ -1366,19 +1356,19 @@ Content-Type: application/json
   "id": 3,
   "machine": "apps",
   "service": "web",
-  "type": "service_memory_high",
-  "severity": "warning",
-  "status": "resolved",
-  "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
   "channel": null,
+  "event": "service.memory_high",
+  "severity": "warning",
+  "message": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+  "status": "sent",
+  "sent_at": "2026-11-15T11:35:36Z",
   "created_at": "2026-11-15T11:35:35Z",
-  "updated_at": "2026-11-15T11:36:35Z",
+  "updated_at": "2026-11-15T11:35:36Z",
   "deliveries": [
     {
       "id": 7,
       "notification_id": 3,
       "channel": "ops",
-      "event": "opened",
       "status": "delivered",
       "attempts": 1,
       "error": null,
@@ -1399,13 +1389,13 @@ Content-Type: application/json
 
 | MCP tool | CLI command |
 | --- | --- |
-| `list_notifications` | None. |
+| `list_notifications` | `tender notifications list MACHINE` |
 
 ### `GET /v1/notifications/channels`
 
-Lists the channels alerts go to, in the order you added them.
+Lists the channels notifications go to, in the order you added them.
 
-A channel has a `type` (`email`, `slack`, `webhook` or `exec`), a `config` whose keys depend on the type, `enabled`, and `min_severity`, the least severe alert it gets. A secret in `config` shows as `"***"`, with `<name>_set` set to `true`. [Adapters](adapters.md#channel-types) lists each type's config.
+A channel has a `type` (`email`, `slack`, `webhook` or `exec`), a `config` whose keys depend on the type, `enabled`, `min_severity`, the least severe notification it gets, and `events`, the patterns of the events it gets, such as `["*"]` or `["service.*", "backup.failed"]`. A secret in `config` shows as `"***"`, with `<name>_set` set to `true`. [Adapters](adapters.md#channel-types) lists each type's config.
 
 #### Parameters
 
@@ -1434,6 +1424,9 @@ Content-Type: application/json
       },
       "enabled": true,
       "min_severity": "warning",
+      "events": [
+        "*"
+      ],
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
     },
@@ -1447,6 +1440,9 @@ Content-Type: application/json
       },
       "enabled": true,
       "min_severity": "critical",
+      "events": [
+        "*"
+      ],
       "created_at": "2026-11-15T11:28:02Z",
       "updated_at": "2026-11-15T11:28:02Z"
     }
@@ -1468,7 +1464,7 @@ Content-Type: application/json
 
 ### `POST /v1/notifications/channels`
 
-Adds a channel. It gets every alert at least as severe as its `min_severity`, from now on, and any alert still owed because no channel took it.
+Adds a channel. It gets every notification of its `events` at least as severe as its `min_severity`, from now on, and the latest notification of an open problem that no channel got.
 
 For a `webhook` channel the hub makes the signing secret. This answer is the only time it shows it: give it to the receiver, which checks the `Tender-Signature` header with it, as [Adapters](adapters.md#verify-a-webhook) shows.
 
@@ -1479,8 +1475,9 @@ For a `webhook` channel the hub makes the signing secret. This answer is the onl
 | `name` | string | Yes | Body. Lowercase letters, digits and hyphens, up to 63 characters, such as `ops-slack`. |
 | `type` | string | Yes | Body. `email`, `slack`, `webhook` or `exec`. |
 | `config` | object | Yes | Body. The type's config, all strings. `email`: `{"to": "ops@example.com"}`. `slack`: `{"webhook_url": "https://hooks.slack.com/services/..."}`. `webhook`: `{"url": "https://..."}`. `exec`: `{"command": "my-adapter"}`. |
-| `enabled` | boolean | No | Body. Whether it gets alerts. The default is `true`. |
+| `enabled` | boolean | No | Body. Whether it gets notifications. The default is `true`. |
 | `min_severity` | string | No | Body. `info`, `warning` or `critical`. The default is `warning`. |
+| `events` | array | No | Body. The events it gets, each `*`, an area such as `service.*`, or an event such as `backup.failed`. An escalated or resolved notification follows its base event. The default is `["*"]`. |
 
 #### Example request
 
@@ -1508,6 +1505,9 @@ Location: /v1/notifications/channels/pager
   },
   "enabled": true,
   "min_severity": "warning",
+  "events": [
+    "*"
+  ],
   "created_at": "2026-11-15T11:30:11Z",
   "updated_at": "2026-11-15T11:30:11Z"
 }
@@ -1519,7 +1519,7 @@ Location: /v1/notifications/channels/pager
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
 | `409` | A channel with this name exists. |
-| `422` | The name, type, severity or config isn't valid: a config key the type doesn't take or lacks, an address that isn't one bare address, a URL that isn't http or https, a `secret` in a webhook's create, or an exec `command` that isn't an executable in `/etc/tender/adapters`. The detail says which. |
+| `422` | The name, type, severity, events or config isn't valid: a config key the type doesn't take or lacks, an address that isn't one bare address, a URL that isn't http or https or leads to an address the hub doesn't send to, a Slack URL not on `https://hooks.slack.com/`, a `secret` in a webhook's create, an exec `command` that isn't an executable in `/etc/tender/adapters`, or an events pattern that takes no event. The detail says which. |
 
 #### Equivalents
 
@@ -1560,6 +1560,9 @@ Content-Type: application/json
   },
   "enabled": true,
   "min_severity": "warning",
+  "events": [
+    "*"
+  ],
   "created_at": "2026-11-15T11:30:11Z",
   "updated_at": "2026-11-15T11:30:11Z"
 }
@@ -1579,9 +1582,9 @@ Content-Type: application/json
 
 ### `PATCH /v1/notifications/channels/{channel}`
 
-Changes a channel's config, turns it on or off, or changes its `min_severity`. Fields left out stay as they are. A `config` key replaces that value; a secret can be replaced but never read.
+Changes a channel's config, turns it on or off, or changes its `min_severity` or `events`. Fields left out stay as they are. A `config` key replaces that value; a secret can be replaced but never read.
 
-Turning a channel off fails what it still owed, with the error `The channel was turned off before this was delivered.`, so it sends nothing stale when it is turned on again.
+Turning a channel off fails what it still owed, with the error `The channel was turned off before this was delivered.`, so it sends nothing stale when it is turned on again. Turning it on or off also starts its count toward `channel.failing` again.
 
 #### Parameters
 
@@ -1591,6 +1594,7 @@ Turning a channel off fails what it still owed, with the error `The channel was 
 | `config` | object | No | Body. Config keys to change. `null` removes a key, which only an optional one allows. A webhook's new `secret` must be at least 24 characters. |
 | `enabled` | boolean | No | Body. `true` or `false`. |
 | `min_severity` | string | No | Body. `info`, `warning` or `critical`. |
+| `events` | array | No | Body. The events it gets, replacing the list. |
 
 #### Example request
 
@@ -1616,6 +1620,9 @@ Content-Type: application/json
   },
   "enabled": true,
   "min_severity": "warning",
+  "events": [
+    "*"
+  ],
   "created_at": "2026-11-15T11:28:02Z",
   "updated_at": "2026-11-15T11:41:17Z"
 }
@@ -1637,7 +1644,7 @@ Content-Type: application/json
 
 ### `DELETE /v1/notifications/channels/{channel}`
 
-Removes a channel and its record of deliveries. Alerts are still recorded when no channel is left.
+Removes a channel and its record of deliveries. Notifications are still recorded when no channel is left.
 
 #### Parameters
 
@@ -1671,9 +1678,9 @@ HTTP/1.1 204 No Content
 
 ### `POST /v1/notifications/test`
 
-Sends the test event to every enabled channel, or to the one you name even when it is off, once each and all at once. It answers when every channel has answered, after at most 10 seconds, or 30 for email.
+Sends a test notification, event `notification.test`, to every enabled channel, or to the one you name even when it is off, once each and all at once. It answers when every channel has answered, after at most 10 seconds, or 30 for email.
 
-Each try is kept as a delivery, so a test that gets through also resolves the channel's `channel_failing` alert. An email channel's subject is `Tender test email`.
+The test is one notification, with one delivery per channel, and `GET /v1/notifications` lists it. A test that gets through also resolves the channel's `channel.failing` problem. How each went is recorded even when the request ends first. An email channel's subject is `Tender test email`.
 
 #### Parameters
 
@@ -1697,9 +1704,8 @@ Content-Type: application/json
   "data": [
     {
       "id": 9,
-      "notification_id": null,
+      "notification_id": 5,
       "channel": "ops",
-      "event": "test",
       "status": "delivered",
       "attempts": 1,
       "error": null,
@@ -1708,12 +1714,11 @@ Content-Type: application/json
     },
     {
       "id": 10,
-      "notification_id": null,
+      "notification_id": 5,
       "channel": "pager",
-      "event": "test",
       "status": "failed",
       "attempts": 1,
-      "error": "the webhook answered 404: no such hook",
+      "error": "HTTP 404 Not Found",
       "created_at": "2026-11-15T11:42:00Z",
       "updated_at": "2026-11-15T11:42:00Z"
     }
@@ -1962,7 +1967,7 @@ Content-Type: application/json
 
 ### `PATCH /v1/machines/{machine}/services/{service}`
 
-Turns a service's alerts off or on. Turning them off resolves its open alerts.
+Turns a service's alerts off or on. Turning them off resolves its open problems.
 
 The setting follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
@@ -2242,7 +2247,7 @@ Content-Type: application/json
 
 ### `GET /metrics`
 
-Serves the machines, services, backups and open alerts in the Prometheus text format, version 0.0.4, for a scraper. [Metrics](metrics.md) lists every metric.
+Serves the machines, services, backups and open problems in the Prometheus text format, version 0.0.4, for a scraper. [Metrics](metrics.md) lists every metric.
 
 #### Parameters
 
@@ -2272,9 +2277,9 @@ tender_service_state{machine="apps",service="web",runtime="docker",state="runnin
 # HELP tender_backup_last_age_seconds How old the machine's newest snapshot is.
 # TYPE tender_backup_last_age_seconds gauge
 tender_backup_last_age_seconds{machine="apps"} 31560
-# HELP tender_alerts_open How many alerts are open, by type and severity.
-# TYPE tender_alerts_open gauge
-tender_alerts_open{type="backup_failed",severity="critical"} 0
+# HELP tender_problems_open How many problems are open, by event and the severity of their latest notification.
+# TYPE tender_problems_open gauge
+tender_problems_open{event="backup.failed",severity="critical"} 0
 ```
 
 The example shows a few lines of each kind. The real page has every metric.

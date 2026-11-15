@@ -24,7 +24,7 @@ func metricSources(d *db.DB) []metricSource {
 		machineMetrics(machines.NewStore(d)),
 		serviceMetrics(services.NewStore(d)),
 		backupMetrics(backups.NewStore(d, nil)),
-		alertMetrics(notifications.NewStore(d, nil)),
+		problemMetrics(notifications.NewStore(d, nil)),
 		// The log-shipping counters join here.
 	}
 }
@@ -155,15 +155,15 @@ func backupMetrics(s *backups.Store) metricSource {
 	}
 }
 
-func alertMetrics(s *notifications.Store) metricSource {
+func problemMetrics(s *notifications.Store) metricSource {
 	return func(ctx context.Context, _ time.Time) ([]*metrics.Family, error) {
-		counts, err := s.OpenAlerts(ctx)
+		counts, err := s.OpenProblems(ctx)
 		if err != nil {
 			return nil, err
 		}
-		open := metrics.New("tender_alerts_open", metrics.Gauge, "How many alerts are open, by type and severity.")
+		open := metrics.New("tender_problems_open", metrics.Gauge, "How many problems are open, by event and the severity of their latest notification.")
 		for _, c := range counts {
-			open.Add(float64(c.Count), "type", c.Type, "severity", c.Severity)
+			open.Add(float64(c.Count), "event", c.Event, "severity", c.Severity)
 		}
 		return []*metrics.Family{open}, nil
 	}
