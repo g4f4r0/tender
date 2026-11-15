@@ -2,7 +2,7 @@
 
 Whole-server backups for your Linux machines, one place to see how they're doing, and an MCP endpoint so your AI client can run it all for you.
 
-You install a small agent on each machine and one hub on any of them. Each night, every agent backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects results and usage from every machine, and emails you when a backup fails, a machine goes quiet or a disk fills up.
+You install a small daemon on each machine and one hub on any of them. Each night, every daemon backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects results and usage from every machine, and emails you when a backup fails, a machine goes quiet or a disk fills up.
 
 You set everything up with the `tender` command or from an AI client such as Claude Code. Root is needed only to install.
 
@@ -15,7 +15,7 @@ Tender is one static Go binary. It uses [restic](https://restic.net) underneath,
 3. CPU load, memory, disk and uptime from every machine, once a minute.
 4. Email alerts to as many people as you like: one email when something goes wrong, one if it gets worse and one when it's fixed.
 5. MCP tools for AI clients that can do everything the `tender` command does, from "did last night's backups work?" to adding a machine.
-6. Backups keep running when the hub is down. Agents use their last known settings and send their reports once the hub is back.
+6. Backups keep running when the hub is down. Daemons use their last known settings and send their reports once the hub is back.
 
 ## Requirements
 
@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sud
   --smtp-host smtp.example.com --smtp-from "Tender <alerts@example.com>" --smtp-username alerts@example.com
 ```
 
-The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. Then it writes `/etc/tender/hub.env` with a new encryption key, starts the `tender-hub` service and publishes the hub on your tailnet, such as `https://web-1.your-tailnet.ts.net`.
+The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. Then it writes `/etc/tender/hub.env` with a new encryption key, starts the `tenderhub` service and publishes the hub on your tailnet, such as `https://web-1.your-tailnet.ts.net`.
 
 Leave out the `--smtp-` options to start without email, and run the command again with them later. Running it again keeps the key and any setting you don't pass.
 
@@ -75,18 +75,18 @@ tender email test
 
 Add as many recipients as you need. `email test` sends a test email to each of them.
 
-### 5. Install the agent
+### 5. Install the daemon
 
 On the machine you're backing up:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- agent \
+curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- daemon \
   --hub https://web-1.your-tailnet.ts.net --machine web-1
 ```
 
-The installer asks for the token with typing hidden. It installs restic, creates the `tender` user, finds the filesystems to back up and starts the `tender-agent` service. The agent gets its destination, keys and schedule from the hub, so there's nothing else to copy to the machine.
+The installer asks for the token with typing hidden. It installs restic, creates the `tender` user, finds the filesystems to back up and starts the `tenderd` service. The daemon gets its destination, keys and schedule from the hub, so there's nothing else to copy to the machine.
 
-The first backup starts within a minute, and the next ones follow the schedule. Watch it with `journalctl -u tender-agent -f`, or check on every machine at once with:
+The first backup starts within a minute, and the next ones follow the schedule. Watch it with `journalctl -u tenderd -f`, or check on every machine at once with:
 
 ```sh
 tender status
@@ -149,7 +149,7 @@ Email goes out through any SMTP server with implicit TLS. The settings live in `
 | `TENDER_HOSTS` | | More names the hub answers to, comma-separated, such as `tender.example.com` behind your own proxy |
 | `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database |
 
-After editing the file by hand, run `sudo systemctl restart tender-hub`.
+After editing the file by hand, run `sudo systemctl restart tenderhub`.
 
 ## Updating
 
@@ -173,17 +173,17 @@ restic snapshots --host web-1 --tag tender
 restic restore latest --host web-1 --tag tender --target /root/restore --include /etc/nginx
 ```
 
-On a machine whose agent still runs, root can use the agent's copy of the password instead: `export RESTIC_PASSWORD_FILE=/var/lib/tender/agent/repository-password`.
+On a machine whose daemon still runs, root can use the daemon's copy of the password instead: `export RESTIC_PASSWORD_FILE=/var/lib/tender/daemon/repository-password`.
 
 Restore into an empty folder, like `/root/restore`, and copy back what you need. Restoring over a running system can break it.
 
 ## How it works
 
-The hub keeps everything in one SQLite database and listens on `127.0.0.1:8080` only. It stores bucket keys and repository passwords encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY`. It sends them to one caller only: the agent of a machine that uses that destination, signed in with its own token. No other route, MCP tool or log line ever shows them.
+The hub keeps everything in one SQLite database and listens on `127.0.0.1:8080` only. It stores bucket keys and repository passwords encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY`. It sends them to one caller only: the daemon of a machine that uses that destination, signed in with its own token. No other route, MCP tool or log line ever shows them.
 
-Each agent signs in with its own token. The hub stores only a SHA-256 hash of it, and a token works only for its own machine: it can't report for another one or get another machine's keys.
+Each daemon signs in with its own token. The hub stores only a SHA-256 hash of it, and a token works only for its own machine: it can't report for another one or get another machine's keys.
 
-The agent runs as the `tender` system user. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, but can write only to its own folder. It keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
+The daemon runs as the `tender` system user. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, but can write only to its own folder. It keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
 
 Every backup covers all real filesystems on the machine and leaves out:
 
@@ -192,7 +192,7 @@ Every backup covers all real filesystems on the machine and leaves out:
 /home/*/.cache  /home/*/.local/share/docker  **/node_modules
 ```
 
-Docker volumes live under `/var/lib/docker`, so they're left out as well. Dump application databases with their own tools into a folder that Tender backs up. You can change the paths and excludes in `/etc/tender/agent.toml`.
+Docker volumes live under `/var/lib/docker`, so they're left out as well. Dump application databases with their own tools into a folder that Tender backs up. You can change the paths and excludes in `/etc/tender/daemon.toml`.
 
 ### Where things live
 
@@ -201,10 +201,10 @@ Docker volumes live under `/var/lib/docker`, so they're left out as well. Dump a
 | `/usr/local/bin/tender` | The Tender binary |
 | `/usr/local/bin/restic` | restic 0.19.1, checked against its official SHA-256 |
 | `/etc/tender/hub.env` | The hub's encryption key and email settings, readable only by root |
-| `/etc/tender/agent.toml` | The agent's hub, machine name, backup paths and excludes |
-| `/etc/tender/credentials/hub-token` | The agent's token, readable only by root and `tender` |
+| `/etc/tender/daemon.toml` | The daemon's hub, machine name, backup paths and excludes |
+| `/etc/tender/credentials/hub-token` | The daemon's token, readable only by root and `tender` |
 | `/var/lib/tender/hub/hub.db` | The hub's database |
-| `/var/lib/tender/agent/` | The agent's state, its last settings and any reports waiting for the hub |
+| `/var/lib/tender/daemon/` | The daemon's state, its last settings and any reports waiting for the hub |
 
 ## License
 

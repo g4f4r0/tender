@@ -38,11 +38,16 @@ type fake struct {
 	commands   []string
 	userExists bool
 	serve      string // what "tailscale serve status --json" prints
+	failOnce   string // this command fails the next time it runs
 }
 
 func (f *fake) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	cmd := strings.Join(append([]string{name}, args...), " ")
 	f.commands = append(f.commands, cmd)
+	if cmd == f.failOnce {
+		f.failOnce = ""
+		return nil, errors.New("failed on purpose")
+	}
 	switch {
 	case name == "id":
 		if !f.userExists {
@@ -161,11 +166,11 @@ func (e *env) noSecret(t *testing.T, secret string) {
 	}
 }
 
-var agentOpts = AgentOptions{Hub: testHub, Machine: "code", Token: testToken}
+var daemonOpts = DaemonOptions{Hub: testHub, Machine: "code", Token: testToken}
 
-func TestAgentFreshInstall(t *testing.T) {
+func TestDaemonFreshInstall(t *testing.T) {
 	e := newEnv(t)
-	if err := e.in.Agent(context.Background(), agentOpts); err != nil {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -177,20 +182,20 @@ func TestAgentFreshInstall(t *testing.T) {
 		"chown root:tender " + creds,
 		"chown root:tender " + creds + "/hub-token",
 		"systemctl daemon-reload",
-		"systemctl enable --now tender-agent",
+		"systemctl enable --now tenderd",
 	}
 	if got := e.commands(); !reflect.DeepEqual(got, wantCommands) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(wantCommands, "\n"))
 	}
 
 	files := map[string]os.FileMode{
-		"/usr/local/bin/restic":                    0o755,
-		"/usr/local/bin/tender":                    0o755,
-		"/etc/tender/agent.toml":                   0o644,
-		"/etc/tender/credentials/hub-token":        0o640,
-		"/etc/systemd/system/tender-agent.service": 0o644,
-		"/etc/tender":                              0o755,
-		"/etc/tender/credentials":                  0o750,
+		"/usr/local/bin/restic":               0o755,
+		"/usr/local/bin/tender":               0o755,
+		"/etc/tender/daemon.toml":             0o644,
+		"/etc/tender/credentials/hub-token":   0o640,
+		"/etc/systemd/system/tenderd.service": 0o644,
+		"/etc/tender":                         0o755,
+		"/etc/tender/credentials":             0o750,
 	}
 	for p, m := range files {
 		if got := e.mode(t, p); got != m {
@@ -207,8 +212,8 @@ func TestAgentFreshInstall(t *testing.T) {
 	if got := e.read(t, "/etc/tender/credentials/hub-token"); got != testToken {
 		t.Errorf("hub-token = %q", got)
 	}
-	unit, _ := units.ReadFile("units/tender-agent.service")
-	if got := e.read(t, "/etc/systemd/system/tender-agent.service"); got != string(unit) {
+	unit, _ := units.ReadFile("units/tenderd.service")
+	if got := e.read(t, "/etc/systemd/system/tenderd.service"); got != string(unit) {
 		t.Error("the unit file differs from the embedded one")
 	}
 	fileCount := 0
@@ -221,13 +226,13 @@ func TestAgentFreshInstall(t *testing.T) {
 		t.Errorf("%d files in the root, want 5", fileCount)
 	}
 
-	cfg, err := config.LoadAgent(e.path("/etc/tender/agent.toml"))
+	cfg, err := config.LoadDaemon(e.path("/etc/tender/daemon.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Hub != testHub || cfg.Machine != "code" || !reflect.DeepEqual(cfg.Backups.Paths, []string{"/", "/boot", "/boot/efi"}) ||
 		!reflect.DeepEqual(cfg.Backups.Exclude, config.DefaultExclude) {
-		t.Errorf("agent.toml = %+v", cfg)
+		t.Errorf("daemon.toml = %+v", cfg)
 	}
 	e.noSecret(t, testToken)
 
@@ -235,8 +240,8 @@ func TestAgentFreshInstall(t *testing.T) {
 	if strings.Contains(e.out.String(), "install credential") {
 		t.Error("the next steps still send the person to the removed credential command")
 	}
-	for _, want := range []string{"Installing restic 0.19.1\n", "Created the tender user\n", "Saved the hub token\n", "Started tender-agent\n",
-		"The agent is running. It gets its destination, schedule and keys from the hub. Next:",
+	for _, want := range []string{"Installing restic 0.19.1\n", "Created the tender user\n", "Saved the hub token\n", "Started tenderd\n",
+		"The daemon is running. It gets its destination, schedule and keys from the hub. Next:",
 		`tender backups set code --destination DESTINATION --schedule "30 3 * * *" --retention-days 30`} {
 		if !strings.Contains(e.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, e.out.String())
@@ -244,10 +249,10 @@ func TestAgentFreshInstall(t *testing.T) {
 	}
 }
 
-func TestAgentSecondRunChangesNothing(t *testing.T) {
+func TestDaemonSecondRunChangesNothing(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if err := e.in.Agent(ctx, agentOpts); err != nil {
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	before := e.tree(t)
@@ -256,15 +261,15 @@ func TestAgentSecondRunChangesNothing(t *testing.T) {
 
 	// The same token, then no token at all: both leave the files alone.
 	for _, token := range []string{testToken, ""} {
-		o := agentOpts
+		o := daemonOpts
 		o.Token = token
-		if err := e.in.Agent(ctx, o); err != nil {
+		if err := e.in.Daemon(ctx, o); err != nil {
 			t.Fatal(err)
 		}
 		if after := e.tree(t); !reflect.DeepEqual(before, after) {
 			t.Errorf("token %q: the second run changed files", token)
 		}
-		want := []string{"id -u tender", "systemctl enable --now tender-agent"}
+		want := []string{"id -u tender", "systemctl enable --now tenderd"}
 		if got := e.commands(); !reflect.DeepEqual(got, want) {
 			t.Errorf("token %q: second run commands = %v, want %v", token, got, want)
 		}
@@ -274,22 +279,22 @@ func TestAgentSecondRunChangesNothing(t *testing.T) {
 	}
 }
 
-func TestAgentKeepsConfigUnlessForced(t *testing.T) {
+func TestDaemonKeepsConfigUnlessForced(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if err := e.in.Agent(ctx, agentOpts); err != nil {
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	custom := "hub = \"https://other.example.net\"\nmachine = \"mine\"\n"
-	if err := os.WriteFile(e.path("/etc/tender/agent.toml"), []byte(custom), 0o644); err != nil {
+	if err := os.WriteFile(e.path("/etc/tender/daemon.toml"), []byte(custom), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	e.commands()
 
-	if err := e.in.Agent(ctx, agentOpts); err != nil {
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.read(t, "/etc/tender/agent.toml"); got != custom {
+	if got := e.read(t, "/etc/tender/daemon.toml"); got != custom {
 		t.Errorf("existing config was replaced: %q", got)
 	}
 	for _, c := range e.commands() {
@@ -298,46 +303,46 @@ func TestAgentKeepsConfigUnlessForced(t *testing.T) {
 		}
 	}
 
-	o := agentOpts
+	o := daemonOpts
 	o.Force = true
-	if err := e.in.Agent(ctx, o); err != nil {
+	if err := e.in.Daemon(ctx, o); err != nil {
 		t.Fatal(err)
 	}
-	if cfg, err := config.LoadAgent(e.path("/etc/tender/agent.toml")); err != nil || cfg.Machine != "code" {
+	if cfg, err := config.LoadDaemon(e.path("/etc/tender/daemon.toml")); err != nil || cfg.Machine != "code" {
 		t.Errorf("forced config = %+v, %v", cfg, err)
 	}
 	// The config changed under a running service: it restarts.
 	got := e.commands()
-	if last := got[len(got)-1]; last != "systemctl restart tender-agent" {
+	if last := got[len(got)-1]; last != "systemctl restart tenderd" {
 		t.Errorf("commands = %v", got)
 	}
 }
 
-func TestAgentNewTokenRestarts(t *testing.T) {
+func TestDaemonNewTokenRestarts(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if err := e.in.Agent(ctx, agentOpts); err != nil {
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	e.commands()
-	o := agentOpts
+	o := daemonOpts
 	o.Token = "another-token"
-	if err := e.in.Agent(ctx, o); err != nil {
+	if err := e.in.Daemon(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"id -u tender", "chown root:tender " + e.path("/etc/tender/credentials/hub-token"),
-		"systemctl enable --now tender-agent", "systemctl restart tender-agent"}
+		"systemctl enable --now tenderd", "systemctl restart tenderd"}
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v, want %v", got, want)
 	}
 	e.noSecret(t, "another-token")
 }
 
-func TestAgentNeedsTokenOnFirstRun(t *testing.T) {
+func TestDaemonNeedsTokenOnFirstRun(t *testing.T) {
 	e := newEnv(t)
-	o := agentOpts
+	o := daemonOpts
 	o.Token = ""
-	if err := e.in.Agent(context.Background(), o); err == nil || !strings.Contains(err.Error(), "token") {
+	if err := e.in.Daemon(context.Background(), o); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Errorf("err = %v", err)
 	}
 	if len(e.fake.commands) != 0 {
@@ -345,15 +350,15 @@ func TestAgentNeedsTokenOnFirstRun(t *testing.T) {
 	}
 }
 
-func TestAgentRejectsBadSettingsBeforeChangingAnything(t *testing.T) {
-	for name, o := range map[string]AgentOptions{
+func TestDaemonRejectsBadSettingsBeforeChangingAnything(t *testing.T) {
+	for name, o := range map[string]DaemonOptions{
 		"hub is not a URL": {Hub: "apps", Machine: "code", Token: testToken},
 		"no machine":       {Hub: testHub, Token: testToken},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			before := e.tree(t)
-			if err := e.in.Agent(context.Background(), o); err == nil {
+			if err := e.in.Daemon(context.Background(), o); err == nil {
 				t.Fatal("no error")
 			}
 			if !reflect.DeepEqual(before, e.tree(t)) {
@@ -380,7 +385,7 @@ func TestResticChecksBeforeWriting(t *testing.T) {
 			e := newEnv(t)
 			tamper(e.in)
 			before := e.tree(t)
-			if err := e.in.Agent(context.Background(), agentOpts); err == nil {
+			if err := e.in.Daemon(context.Background(), daemonOpts); err == nil {
 				t.Fatal("no error")
 			}
 			if !reflect.DeepEqual(before, e.tree(t)) {
@@ -397,12 +402,12 @@ func TestResticChecksBeforeWriting(t *testing.T) {
 
 func TestResticSkippedWhenCurrent(t *testing.T) {
 	e := newEnv(t)
-	if err := e.in.Agent(context.Background(), agentOpts); err != nil {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 	// A dead download URL no longer matters once the right binary is in place.
 	e.in.ResticURL = "http://127.0.0.1:1/restic.bz2"
-	if err := e.in.Agent(context.Background(), agentOpts); err != nil {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -410,7 +415,7 @@ func TestResticSkippedWhenCurrent(t *testing.T) {
 func TestRefusesOtherPlatformsAndNoSystemd(t *testing.T) {
 	e := newEnv(t)
 	e.in.Platform = "linux/arm64"
-	if err := e.in.Agent(context.Background(), agentOpts); err == nil || !strings.Contains(err.Error(), "linux/amd64 only") {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err == nil || !strings.Contains(err.Error(), "linux/amd64 only") {
 		t.Errorf("err = %v", err)
 	}
 	if err := e.in.Hub(context.Background(), HubOptions{}); err == nil {
@@ -421,7 +426,7 @@ func TestRefusesOtherPlatformsAndNoSystemd(t *testing.T) {
 	if err := os.RemoveAll(e.path("/run")); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.in.Agent(context.Background(), agentOpts); err == nil || !strings.Contains(err.Error(), "systemd") {
+	if err := e.in.Daemon(context.Background(), daemonOpts); err == nil || !strings.Contains(err.Error(), "systemd") {
 		t.Errorf("err = %v", err)
 	}
 	if len(e.fake.commands) != 0 {
@@ -440,7 +445,7 @@ func TestHubFreshInstall(t *testing.T) {
 		"useradd --system --user-group --no-create-home --home-dir /var/lib/tender --shell /usr/sbin/nologin tender",
 		"chown root:tender " + creds,
 		"systemctl daemon-reload",
-		"systemctl enable --now tender-hub",
+		"systemctl enable --now tenderhub",
 		"tailscale serve status --json",
 		"tailscale serve --bg --https=443 http://127.0.0.1:8080",
 		"tailscale status --json",
@@ -448,7 +453,7 @@ func TestHubFreshInstall(t *testing.T) {
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if e.mode(t, "/etc/tender/hub.env") != 0o600 || e.mode(t, "/etc/systemd/system/tender-hub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
+	if e.mode(t, "/etc/tender/hub.env") != 0o600 || e.mode(t, "/etc/systemd/system/tenderhub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
 		t.Error("wrong modes")
 	}
 	if _, err := os.Stat(e.path("/etc/tender/hub.toml")); err == nil {
@@ -465,14 +470,14 @@ func TestHubFreshInstall(t *testing.T) {
 	if strings.Contains(hubEnvText, "SMTP") {
 		t.Errorf("hub.env has SMTP settings without flags:\n%s", hubEnvText)
 	}
-	if unit := e.read(t, "/etc/systemd/system/tender-hub.service"); strings.Contains(unit, "LoadCredential") ||
+	if unit := e.read(t, "/etc/systemd/system/tenderhub.service"); strings.Contains(unit, "LoadCredential") ||
 		!strings.Contains(unit, "EnvironmentFile=/etc/tender/hub.env\n") || !strings.Contains(unit, "InaccessiblePaths=-/etc/tender/credentials\n") {
 		t.Errorf("hub unit:\n%s", unit)
 	}
 	e.noSecret(t, key)
 	for _, want := range []string{"Published the hub with Tailscale Serve at https://apps.example.ts.net\n", "The hub is running at https://apps.example.ts.net.", "tender destinations add NAME --endpoint URL --bucket BUCKET",
 		"tender machines add NAME", "tender backups set NAME --destination NAME", "tender recipients add you@example.com",
-		"agent --hub https://apps.example.ts.net --machine NAME", "Alert emails are off until the hub has an SMTP server"} {
+		"daemon --hub https://apps.example.ts.net --machine NAME", "Alert emails are off until the hub has an SMTP server"} {
 		if !strings.Contains(e.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, e.out.String())
 		}
@@ -628,16 +633,16 @@ func TestHubServeCases(t *testing.T) {
 }
 
 func TestUnitsFollowTheDecisions(t *testing.T) {
-	agent, _ := units.ReadFile("units/tender-agent.service")
-	hub, _ := units.ReadFile("units/tender-hub.service")
+	daemon, _ := units.ReadFile("units/tenderd.service")
+	hub, _ := units.ReadFile("units/tenderhub.service")
 	for _, want := range []string{"User=tender", "AmbientCapabilities=CAP_DAC_READ_SEARCH", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
-		"StateDirectory=tender/agent", "Restart=always", "ExecStart=/usr/local/bin/tender agent --config /etc/tender/agent.toml"} {
-		if !strings.Contains(string(agent), want+"\n") {
-			t.Errorf("agent unit lacks %s", want)
+		"StateDirectory=tender/daemon", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
+		if !strings.Contains(string(daemon), want+"\n") {
+			t.Errorf("daemon unit lacks %s", want)
 		}
 	}
-	if strings.Contains(string(agent), "LoadCredential") {
-		t.Error("agent unit still loads credentials")
+	if strings.Contains(string(daemon), "LoadCredential") {
+		t.Error("daemon unit still loads credentials")
 	}
 	for _, want := range []string{"User=tender", "CapabilityBoundingSet=", "StateDirectory=tender/hub", "Restart=always",
 		"EnvironmentFile=/etc/tender/hub.env", "ExecStart=/usr/local/bin/tender hub",

@@ -15,7 +15,7 @@ func TestQueueWritesAtomicallyAndListsOldestFirst(t *testing.T) {
 	// Queued out of clock order on purpose: the name follows the queue time.
 	for i, typ := range []string{TypeCheck, TypeBackup, TypeCleanup} {
 		offset := []int{2, 0, 1}[i]
-		if err := q.add(&agentRun{Type: typ, Status: StatusCompleted, CreatedAt: now, PostKey: "k"}, now.Add(time.Duration(offset)*time.Second)); err != nil {
+		if err := q.add(&daemonRun{Type: typ, Status: StatusCompleted, CreatedAt: now, PostKey: "k"}, now.Add(time.Duration(offset)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -58,7 +58,7 @@ func TestQueueNeverCreatedIsEmpty(t *testing.T) {
 
 func TestReplayDropsUnreadableItems(t *testing.T) {
 	h := newHub(t)
-	a, _ := testAgent(t, h)
+	a, _ := testDaemon(t, h)
 	if err := os.MkdirAll(a.queue.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

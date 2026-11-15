@@ -46,7 +46,7 @@ func restCall(t *testing.T, base, method, path, token string, body any) (int, st
 
 // Secrets go in and come out only where the design says: the machine token once when it is made,
 // a generated password once when the destination is made, and a machine's own credentials to its own
-// agent. This test creates a destination with marker secrets, then reads everything the hub can
+// daemon. This test creates a destination with marker secrets, then reads everything the hub can
 // say (every REST list and get, every error, every MCP tool and its errors, and the log) and
 // looks for them.
 func TestNoSecretAppearsAnywhere(t *testing.T) {
@@ -95,16 +95,16 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	if status, _ = restCall(t, hub.URL, "POST", "/v1/notifications/recipients", "", map[string]any{"email": "johan@example.com"}); status != 201 {
 		t.Fatalf("add recipient: %d", status)
 	}
-	// Agent traffic, so the token passes through the request log too.
+	// Daemon traffic, so the token passes through the request log too.
 	if status, _ = restCall(t, hub.URL, "POST", "/v1/machines/g4f4r0-code/usage", machine.Token,
 		map[string]any{"cpu_load": 1, "memory_used_percent": 1, "disk_used_percent": 1, "uptime_seconds": 1, "created_at": "2026-11-14T03:30:00Z"}); status != 201 {
-		t.Fatalf("agent usage: %d", status)
+		t.Fatalf("daemon usage: %d", status)
 	}
-	// The agent's own read of its settings is the one place credentials appear.
+	// The daemon's own read of its settings is the one place credentials appear.
 	status, body = restCall(t, hub.URL, "GET", "/v1/machines/g4f4r0-code/backups/settings", machine.Token, nil)
 	for _, want := range []string{keyID, secretKey, password} {
 		if status != 200 || !strings.Contains(body, want) {
-			t.Fatalf("the agent's settings lack %q: %d %s", want, status, body)
+			t.Fatalf("the daemon's settings lack %q: %d %s", want, status, body)
 		}
 	}
 

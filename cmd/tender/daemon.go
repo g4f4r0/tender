@@ -18,27 +18,27 @@ import (
 	"github.com/g4f4r0/tender/internal/machines"
 )
 
-func runAgent(args []string, log *slog.Logger) error {
-	fs := newFlagSet("agent", "[--config PATH] [--state PATH]",
-		"Run the agent: it backs up this machine on the schedule the hub sets and reports every run to the hub. "+
-			"Run it as a service; \"sudo tender install agent\" sets that up.")
-	configPath := fs.String("config", config.DefaultAgentPath, "`PATH` the agent config file")
-	state := fs.String("state", defaultState(), "`PATH` the folder for the agent's state")
+func runDaemon(args []string, log *slog.Logger) error {
+	fs := newFlagSet("daemon", "[--config PATH] [--state PATH]",
+		"Run the daemon: it backs up this machine on the schedule the hub sets and reports every run to the hub. "+
+			"Run it as a service; \"sudo tender install daemon\" sets that up.")
+	configPath := fs.String("config", config.DefaultDaemonPath, "`PATH` the daemon config file")
+	state := fs.String("state", defaultState(), "`PATH` the folder for the daemon's state")
 	if err := parseFlags(fs, args, os.Stdout); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return usageError(fs, "agent takes no arguments, got %q", fs.Arg(0))
+		return usageError(fs, "daemon takes no arguments, got %q", fs.Arg(0))
 	}
 
-	cfg, err := config.LoadAgent(*configPath)
+	cfg, err := config.LoadDaemon(*configPath)
 	if err != nil {
 		return err
 	}
 	dir := config.CredentialsDir()
 	token, err := config.ReadCredential(dir, "hub-token")
 	if err != nil {
-		return fmt.Errorf("cannot read the hub token in %s. Run \"sudo tender install agent --token-file PATH\" to save it, "+
+		return fmt.Errorf("cannot read the hub token in %s. Run \"sudo tender install daemon --token-file PATH\" to save it, "+
 			"and check that the tender user can read it.", dir)
 	}
 	hub := client.New(cfg.Hub, token)
@@ -53,14 +53,14 @@ func runAgent(args []string, log *slog.Logger) error {
 		postUsage(ctx, hub, cfg.Machine, log)
 	}()
 
-	a := backups.NewAgent(hub, cfg.Machine, *state, log)
+	a := backups.NewDaemon(hub, cfg.Machine, *state, log)
 	a.Paths, a.Exclude = cfg.Backups.Paths, cfg.Backups.Exclude
 	if bin := os.Getenv("TENDER_RESTIC_BIN"); bin != "" {
 		a.ResticBin = bin
 	}
-	log.Info("agent started", "machine", cfg.Machine, "hub", cfg.Hub, "version", version)
+	log.Info("daemon started", "machine", cfg.Machine, "hub", cfg.Hub, "version", version)
 	a.Run(ctx)
-	log.Info("agent stopping")
+	log.Info("daemon stopping")
 	wg.Wait()
 	return nil
 }
@@ -69,19 +69,22 @@ func defaultState() string {
 	if d := os.Getenv("STATE_DIRECTORY"); d != "" {
 		return d
 	}
-	return "/var/lib/tender/agent"
+	return "/var/lib/tender/daemon"
+}
+
+// sendUsage reads this machine's usage and sends it to the hub.
+func sendUsage(ctx context.Context, hub *client.Client, machine string) error {
+	in, err := machines.ReadUsage("/proc")
+	if err != nil {
+		return fmt.Errorf("read usage: %w", err)
+	}
+	return hub.Do(ctx, http.MethodPost, "/v1/machines/"+url.PathEscape(machine)+"/usage", client.NewKey(), in, nil)
 }
 
 // postUsage sends a reading now and every 60 seconds until ctx ends. A missed reading is not queued.
 func postUsage(ctx context.Context, hub *client.Client, machine string, log *slog.Logger) {
-	path := "/v1/machines/" + url.PathEscape(machine) + "/usage"
 	send := func() {
-		in, err := machines.ReadUsage("/proc")
-		if err != nil {
-			log.Error("read usage", "error", err)
-			return
-		}
-		if err := hub.Do(ctx, http.MethodPost, path, client.NewKey(), in, nil); err != nil && ctx.Err() == nil {
+		if err := sendUsage(ctx, hub, machine); err != nil && ctx.Err() == nil {
 			log.Warn("could not send usage", "error", err)
 		}
 	}

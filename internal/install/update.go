@@ -77,14 +77,20 @@ func (in *Installer) installed(unitPath string) bool {
 	return err == nil
 }
 
+// installedServices reports which services are installed, under their current or their old names.
+func (in *Installer) installedServices() (daemon, hub bool) {
+	return in.installed(daemonUnitPath) || in.installed(oldUnitPath(oldDaemonUnit)),
+		in.installed(hubUnitPath) || in.installed(oldUnitPath(oldHubUnit))
+}
+
 // Update replaces the tender binary with a release (the latest when version is empty), then has the
 // new binary refresh the installed services. The old binary stays until the download is verified.
 func (in *Installer) Update(ctx context.Context, version string) error {
 	if err := in.preflight(); err != nil {
 		return err
 	}
-	if !in.installed(agentUnitPath) && !in.installed(hubUnitPath) {
-		return errors.New("Tender is not installed on this machine yet. Run \"sudo tender install agent\" or \"sudo tender install hub\" first")
+	if daemon, hub := in.installedServices(); !daemon && !hub {
+		return errors.New("Tender is not installed on this machine yet. Run \"sudo tender install daemon\" or \"sudo tender install hub\" first")
 	}
 	tag := version
 	if tag != "" && !strings.HasPrefix(tag, "v") {
@@ -125,13 +131,13 @@ func (in *Installer) Update(ctx context.Context, version string) error {
 // Refresh brings every installed service up to date with this binary: it re-renders the units,
 // re-checks the pinned restic, keeps the config and credentials, and restarts the services.
 func (in *Installer) Refresh(ctx context.Context) error {
-	agent, hub := in.installed(agentUnitPath), in.installed(hubUnitPath)
-	if !agent && !hub {
-		return errors.New("Tender is not installed on this machine yet. Run \"sudo tender install agent\" or \"sudo tender install hub\" first")
+	daemon, hub := in.installedServices()
+	if !daemon && !hub {
+		return errors.New("Tender is not installed on this machine yet. Run \"sudo tender install daemon\" or \"sudo tender install hub\" first")
 	}
 	in.Refreshing = true
-	if agent {
-		if err := in.Agent(ctx, AgentOptions{}); err != nil {
+	if daemon {
+		if err := in.Daemon(ctx, DaemonOptions{}); err != nil {
 			return err
 		}
 	}

@@ -1,5 +1,5 @@
 [Unit]
-Description=Tender hub (receives agent reports, read-only MCP, notifications)
+Description=Tender hub (settings, reports, API, MCP and alerts)
 Documentation=https://github.com/g4f4r0/tender
 After=network-online.target
 Wants=network-online.target
@@ -17,7 +17,7 @@ StateDirectory=tender/hub
 StateDirectoryMode=0700
 ConfigurationDirectory=tender
 # The hub's settings and secrets are in hub.env, which systemd reads as root before the hub starts.
-# The hub never reads the credentials folder: on the same machine it holds the agent's hub token.
+# The hub never reads the credentials folder: on the same machine it holds the daemon's hub token.
 InaccessiblePaths=-/etc/tender/credentials
 
 # Listens on 127.0.0.1 only; `tailscale serve` is the only way in.

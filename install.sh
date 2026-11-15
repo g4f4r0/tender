@@ -1,10 +1,10 @@
 #!/bin/sh
 # Installs Tender and sets up this machine.
 #
-#   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- agent --hub URL --machine NAME
+#   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- daemon --hub URL --machine NAME
 #   curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub [--smtp-host HOST --smtp-from SENDER --smtp-port PORT --smtp-username USER]
 #
-# Everything after agent or hub goes to "tender install agent" or "tender install hub", which the
+# Everything after daemon or hub goes to "tender install daemon" or "tender install hub", which the
 # installed tender explains with --help. The hub asks for the SMTP password on the terminal.
 #
 # TENDER_VERSION=v0.1.0 installs that release instead of the latest.
@@ -46,8 +46,9 @@ ask_token() {
 
 main() {
 	case "${1:-}" in
-	agent | hub) ;;
-	*) fail "usage: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- agent --hub URL --machine NAME
+	daemon | hub) ;;
+	agent) ;; # releases before v0.2.2, picked with TENDER_VERSION, call the daemon "agent"
+	*) fail "usage: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- daemon --hub URL --machine NAME
        or: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- hub [--smtp-host HOST --smtp-from SENDER --smtp-port PORT --smtp-username USER]" ;;
 	esac
 	[ "$(id -u)" -eq 0 ] || fail "this needs root. Run it with sudo, for example: curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sudo sh -s -- $*"
@@ -65,10 +66,10 @@ main() {
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 1' HUP INT TERM
 
-	# The agent needs its hub token. It comes from --token-file, from a token saved by an earlier
+	# The daemon needs its hub token. It comes from --token-file, from a token saved by an earlier
 	# run, or from a prompt; it reaches tender on stdin, never in an argument.
 	token=
-	if [ "$1" = agent ]; then
+	if [ "$1" = daemon ] || [ "$1" = agent ]; then
 		have_token=
 		for arg in "$@"; do
 			case "$arg" in -token-file | --token-file | -token-file=* | --token-file=*) have_token=1 ;; esac

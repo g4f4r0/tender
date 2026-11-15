@@ -53,12 +53,12 @@ func TestCreateDestinationRoute(t *testing.T) {
 	if err != nil || len(raw) != 32 {
 		t.Fatalf("generated password %q is not 32 random bytes in base64 (%v)", made.Password, err)
 	}
-	// It is what the agent gets later; no read shows it.
+	// It is what the daemon gets later; no read shows it.
 	h.status(200, "PUT", "/v1/machines/a/backups/settings", "", backups.SettingsInput{Destination: "b-two", Schedule: "30 3 * * *", RetentionDays: 30})
 	var st backups.Settings
 	h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st)
 	if st.Credentials == nil || st.Credentials.Password != made.Password {
-		t.Errorf("agent credentials = %+v, want the generated password", st.Credentials)
+		t.Errorf("daemon credentials = %+v, want the generated password", st.Credentials)
 	}
 	var body json.RawMessage
 	for _, path := range []string{"/v1/backups/destinations", "/v1/backups/destinations/b-two", "/v1/machines/a/backups", "/v1/backups"} {
@@ -110,8 +110,8 @@ func TestCreateDestinationRejects(t *testing.T) {
 	}
 }
 
-// The agent gets the decrypted credentials, only with its own token; the database holds none of them in the clear.
-func TestAgentCredentials(t *testing.T) {
+// The daemon gets the decrypted credentials, only with its own token; the database holds none of them in the clear.
+func TestDaemonCredentials(t *testing.T) {
 	h := newHub(t)
 	var made backups.DestinationCreated
 	h.do("POST", "/v1/backups/destinations", "", map[string]any{"name": "r2", "endpoint": "https://x.example.com", "bucket": "b",
@@ -121,7 +121,7 @@ func TestAgentCredentials(t *testing.T) {
 	var st backups.Settings
 	if res := h.do("GET", "/v1/machines/a/backups/settings", "tok-a", nil, &st); res.StatusCode != 200 || st.Credentials == nil ||
 		*st.Credentials != (backups.Credentials{AccessKeyID: "marker-key-id", SecretAccessKey: "marker-secret-key", Password: made.Password}) {
-		t.Fatalf("agent settings: %d %+v", res.StatusCode, st.Credentials)
+		t.Fatalf("daemon settings: %d %+v", res.StatusCode, st.Credentials)
 	}
 
 	// Without the token: settings, and no credentials key at all.
@@ -169,7 +169,7 @@ func TestWrongKeyFailsCleanly(t *testing.T) {
 		t.Errorf("Credentials with the wrong key: %v, want a plain error that names the key and shows no secret", err)
 	}
 
-	// Over HTTP an agent gets a 500 with a sentence and no detail; the people routes still work.
+	// Over HTTP a daemon gets a 500 with a sentence and no detail; the people routes still work.
 	s := server.New(h.db, slog.New(slog.NewTextHandler(io.Discard, nil)), identity{h.db})
 	wrong.Routes(s)
 	srv := httptest.NewServer(s)
@@ -181,7 +181,7 @@ func TestWrongKeyFailsCleanly(t *testing.T) {
 	body, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
 	if res.StatusCode != 500 || strings.Contains(string(body), "TENDER_ENCRYPTION_KEY") || strings.Contains(string(body), "repo-password") {
-		t.Errorf("agent with a wrong hub key: %d %s, want a plain 500", res.StatusCode, body)
+		t.Errorf("daemon with a wrong hub key: %d %s, want a plain 500", res.StatusCode, body)
 	}
 
 	// A store with no key at all refuses writes with a sentence that says what to set.
@@ -313,9 +313,9 @@ func TestSettingsRoutes(t *testing.T) {
 		t.Errorf("a refused put changed the settings: %+v", st)
 	}
 
-	// An agent can't set its own settings: that is for people.
+	// A daemon can't set its own settings: that is for people.
 	h.status(204, "DELETE", "/v1/machines/a/backups/settings", "", nil)
-	// The agent deletes its saved keys only on this problem type, so it must not be about:blank.
+	// The daemon deletes its saved keys only on this problem type, so it must not be about:blank.
 	var noSettings struct {
 		Type string `json:"type"`
 	}

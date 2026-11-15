@@ -47,7 +47,7 @@ func notFoundIfNone(err error, format string, a ...any) error {
 	return err
 }
 
-// NoSettingsType is the problem type of the 404 for a machine without backup settings. The agent
+// NoSettingsType is the problem type of the 404 for a machine without backup settings. The daemon
 // tells it apart from other 404s, such as a wrong machine name, before it deletes its saved keys.
 const NoSettingsType = "https://github.com/g4f4r0/tender#no-backup-settings"
 
@@ -282,7 +282,7 @@ func (s *Store) DeleteDestination(ctx context.Context, name string) error {
 }
 
 // CheckKey is an error unless the store's key opens every secret already stored. The hub and
-// "tender mcp" run it at start, so a wrong key stops them there instead of failing every agent
+// "tender mcp" run it at start, so a wrong key stops them there instead of failing every daemon
 // later, or storing new secrets that the hub can't open.
 func (s *Store) CheckKey(ctx context.Context) error {
 	rows, err := s.db.Read.QueryContext(ctx, `SELECT name, access_key_id, secret_access_key, password FROM backup_destinations ORDER BY id`)
@@ -374,7 +374,7 @@ func (s *Store) Settings(ctx context.Context, machineID int64) (Settings, error)
 	return st, noSettingsIfNone(err)
 }
 
-// DeleteSettings removes a machine's backup settings: its agent stops backing up. Its snapshots
+// DeleteSettings removes a machine's backup settings: its daemon stops backing up. Its snapshots
 // and history stay. It is a NotFound error when the machine has none.
 func (s *Store) DeleteSettings(ctx context.Context, machineID int64) error {
 	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM backup_settings WHERE machine_id = ?`, machineID)
@@ -390,7 +390,7 @@ func (s *Store) DeleteSettings(ctx context.Context, machineID int64) error {
 }
 
 // Credentials returns the keys and password of the destination a machine backs up to, decrypted.
-// Only the machine's own agent may be given them.
+// Only the machine's own daemon may be given them.
 func (s *Store) Credentials(ctx context.Context, machineID int64) (Credentials, error) {
 	var sealed [3][]byte
 	err := s.db.Read.QueryRowContext(ctx,
@@ -598,7 +598,7 @@ func (s *Store) CreateHistory(ctx context.Context, machineID int64, in HistoryIn
 	if err != nil {
 		return History{}, err
 	}
-	// An agent runs one job at a time, so an older unfinished run of the same type will never
+	// A daemon runs one job at a time, so an older unfinished run of the same type will never
 	// be finished: it crashed or lost its report. Close it, so it can't look in progress forever.
 	_, err = tx.ExecContext(ctx,
 		`UPDATE backup_history SET status = ?, error = ?, updated_at = ?
@@ -611,7 +611,7 @@ func (s *Store) CreateHistory(ctx context.Context, machineID int64, in HistoryIn
 }
 
 // abandoned is the error on a run whose end was never reported.
-const abandoned = "The agent never reported how this run ended; a later run of the same type started."
+const abandoned = "The daemon never reported how this run ended; a later run of the same type started."
 
 // PatchHistory finishes or advances a run that is pending or in_progress. A finished run
 // can't change: that is a Conflict.

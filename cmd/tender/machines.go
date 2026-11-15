@@ -64,7 +64,7 @@ func machinesList(args []string, s session) error {
 
 func machinesAdd(args []string, s session) error {
 	fs := newFlagSet("machines add", "NAME [--hub URL]",
-		"Add a machine and print its token. The token is shown once: save it, then give it to \"tender install agent\" on that machine.")
+		"Add a machine and print its token. The token is shown once: save it, then give it to \"tender install daemon\" on that machine.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -85,15 +85,15 @@ func machinesAdd(args []string, s session) error {
 	say(s.out, "Added machine %s.\n", created.Name)
 	say(s.out, "Its hub token, shown only now. Save it before you go on:")
 	say(s.out, "  %s\n", created.Token)
-	say(s.out, "Install the agent on that machine; it asks for the token:")
+	say(s.out, "Install the daemon on that machine; it asks for the token:")
 	say(s.out, "  curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh \\")
-	say(s.out, "    | sudo sh -s -- agent --hub %s --machine %s", agentHubURL(hub.url), created.Name)
+	say(s.out, "    | sudo sh -s -- daemon --hub %s --machine %s", daemonHubURL(hub.url), created.Name)
 	return nil
 }
 
 func machinesRotate(args []string, s session) error {
 	fs := newFlagSet("machines rotate-token", "NAME [--hub URL]",
-		"Replace a machine's token and print the new one, once. The old token stops working at once, so the agent stays "+
+		"Replace a machine's token and print the new one, once. The old token stops working at once, so the daemon stays "+
 			"offline until it has the new one.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
@@ -115,7 +115,7 @@ func machinesRotate(args []string, s session) error {
 	say(s.out, "Replaced the token of %s. The old one no longer works.\n", name)
 	say(s.out, "The new token, shown only now. Save it before you go on:")
 	say(s.out, "  %s\n", t.Token)
-	say(s.out, "Give it to the agent on that machine: sudo tender install agent --token-file PATH")
+	say(s.out, "Give it to the daemon on that machine: sudo tender install daemon --token-file PATH")
 	return nil
 }
 
@@ -147,9 +147,9 @@ func machinesRemove(args []string, s session) error {
 	return nil
 }
 
-// agentHubURL is the hub address to print in an agent install command: the address the person
+// daemonHubURL is the hub address to print in a daemon install command: the address the person
 // used, unless it points at this machine, which another machine can't reach.
-func agentHubURL(hub string) string {
+func daemonHubURL(hub string) string {
 	u, err := url.Parse(hub)
 	if err != nil {
 		return "HUB_URL"

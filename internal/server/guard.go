@@ -16,7 +16,7 @@ import (
 //  1. a request whose Host is not the hub's: an IP address, a name without dots (localhost or a
 //     short tailnet name), a Tailscale name under .ts.net, or one of hosts (TENDER_HOSTS);
 //  2. a browser request from another origin, as http.CrossOriginProtection decides. The tender
-//     command, agents and MCP clients send no Origin, so they pass.
+//     command, daemons and MCP clients send no Origin, so they pass.
 func Guard(h http.Handler, hosts []string, log *slog.Logger) http.Handler {
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

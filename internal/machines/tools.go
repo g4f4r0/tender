@@ -66,7 +66,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "add_machine", "Add a machine",
 		"Add a machine to the hub. The result has its token, shown only this once: it is not stored and can't be read again. "+
-			"Give it to the owner to install on that machine with \"tender install agent\"; if it is lost, call rotate_machine_token.",
+			"Give it to the owner to install on that machine with \"tender install daemon\"; if it is lost, call rotate_machine_token.",
 		mcp.WriteOptions{},
 		func(ctx context.Context, in addMachineInput) (MachineCreated, error) {
 			token, err := s.Create(ctx, in.Name)
@@ -78,7 +78,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 		})
 
 	mcp.AddWrite(m, "rotate_machine_token", "Rotate a machine's token",
-		"Replace a machine's token. The old token stops working at once, so its agent can't report until the new token is installed "+
+		"Replace a machine's token. The old token stops working at once, so its daemon can't report until the new token is installed "+
 			"on that machine. The new token is in the result, shown only this once.",
 		mcp.WriteOptions{},
 		func(ctx context.Context, in machineInput) (Token, error) {
@@ -91,7 +91,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "remove_machine", "Remove a machine",
 		"Remove a machine and everything the hub knows about it: usage, backup settings, snapshots, history and notifications. "+
-			"This can't be undone. Its backups in the bucket stay where they are, and its agent can no longer report.",
+			"This can't be undone. Its backups in the bucket stay where they are, and its daemon can no longer report.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
 		func(ctx context.Context, in machineInput) (mcp.Removed, error) {
 			if _, err := mcp.Machine(ctx, s.Lookup, in.Machine); err != nil {

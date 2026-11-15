@@ -20,53 +20,53 @@ type HandlerFunc func(w http.ResponseWriter, r *http.Request) error
 
 type (
 	machineKey struct{}
-	agentKey   struct{}
+	daemonKey  struct{}
 )
 
-// MachineID is the id of the machine named by {machine} in the route, set by Agent, People
-// and AgentOrPeople. It is 0 on routes without {machine}.
+// MachineID is the id of the machine named by {machine} in the route, set by Daemon, People
+// and DaemonOrPeople. It is 0 on routes without {machine}.
 func MachineID(ctx context.Context) int64 {
 	id, _ := ctx.Value(machineKey{}).(int64)
 	return id
 }
 
-// IsAgent reports whether the request came from the machine's own agent, with its token.
+// IsDaemon reports whether the request came from the machine's own daemon, with its token.
 // Only then may a handler show that machine's secrets.
-func IsAgent(ctx context.Context) bool {
-	agent, _ := ctx.Value(agentKey{}).(bool)
-	return agent
+func IsDaemon(ctx context.Context) bool {
+	daemon, _ := ctx.Value(daemonKey{}).(bool)
+	return daemon
 }
 
-// Agent serves a route that only the machine named by {machine} may call, with its bearer token.
-func (s *Server) Agent(h HandlerFunc) http.Handler { return s.wrap(h, s.agent) }
+// Daemon serves a route that only the machine named by {machine} may call, with its bearer token.
+func (s *Server) Daemon(h HandlerFunc) http.Handler { return s.wrap(h, s.daemon) }
 
 // People serves a route for people and their tools: no login, the hub is only reachable
 // through the owner's own network access control. A route with {machine} answers 404 for an
 // unknown machine. Tailscale Serve's Tailscale-User-Login header is logged when present.
 func (s *Server) People(h HandlerFunc) http.Handler { return s.wrap(h, s.people) }
 
-// AgentOrPeople serves a route that the machine itself or people may call. A request with an
-// Authorization header is treated as an agent; IsAgent tells the handler which it got.
-func (s *Server) AgentOrPeople(h HandlerFunc) http.Handler {
+// DaemonOrPeople serves a route that the machine itself or people may call. A request with an
+// Authorization header is treated as a daemon; IsDaemon tells the handler which it got.
+func (s *Server) DaemonOrPeople(h HandlerFunc) http.Handler {
 	return s.wrap(h, func(r *http.Request) (int64, bool, error) {
 		if r.Header.Get("Authorization") != "" {
-			return s.agent(r)
+			return s.daemon(r)
 		}
 		return s.people(r)
 	})
 }
 
-func (s *Server) wrap(h HandlerFunc, identify func(*http.Request) (id int64, agent bool, err error)) http.Handler {
+func (s *Server) wrap(h HandlerFunc, identify func(*http.Request) (id int64, daemon bool, err error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, agent, err := identify(r)
+		id, daemon, err := identify(r)
 		if err != nil {
 			s.fail(w, r, err)
 			return
 		}
 		ctx := context.WithValue(r.Context(), machineKey{}, id)
-		r = r.WithContext(context.WithValue(ctx, agentKey{}, agent))
-		// Only agents retry, so only their requests are made idempotent; people's keys are ignored.
-		if key := r.Header.Get("Idempotency-Key"); agent && key != "" && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
+		r = r.WithContext(context.WithValue(ctx, daemonKey{}, daemon))
+		// Only daemons retry, so only their requests are made idempotent; people's keys are ignored.
+		if key := r.Header.Get("Idempotency-Key"); daemon && key != "" && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
 			s.once(w, r, id, key, h)
 			return
 		}
@@ -80,7 +80,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, h HandlerFunc) {
 	}
 }
 
-func (s *Server) agent(r *http.Request) (int64, bool, error) {
+func (s *Server) daemon(r *http.Request) (int64, bool, error) {
 	auth := r.Header.Get("Authorization")
 	if len(auth) <= 7 || !strings.EqualFold(auth[:7], "bearer ") {
 		return 0, false, &Error{Status: http.StatusUnauthorized, Detail: "Send the machine token as \"Authorization: Bearer <token>\"."}

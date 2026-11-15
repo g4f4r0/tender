@@ -24,7 +24,7 @@ const (
 	settingsEvery = 10 * time.Minute
 )
 
-// Runner is the restic work the agent needs. *Restic is the real one.
+// Runner is the restic work the daemon needs. *Restic is the real one.
 type Runner interface {
 	Backup(ctx context.Context, paths, exclude []string) Outcome
 	Cleanup(ctx context.Context, retentionDays int) Outcome
@@ -32,9 +32,9 @@ type Runner interface {
 	Snapshots(ctx context.Context) ([]SnapshotInput, error)
 }
 
-// Agent runs this machine's backups on the hub's schedule and reports to the hub.
-// Set the exported fields after NewAgent. Run drives one goroutine; nothing else touches the agent.
-type Agent struct {
+// Daemon runs this machine's backups on the hub's schedule and reports to the hub.
+// Set the exported fields after NewDaemon. Run drives one goroutine; nothing else touches the daemon.
+type Daemon struct {
 	Hub       *client.Client
 	Machine   string
 	Paths     []string
@@ -50,11 +50,12 @@ type Agent struct {
 	schedule   cron.Schedule
 	settingsAt time.Time // last time the hub was asked for settings
 	waiting    bool      // a backup is due but the hub has sent no credentials yet
+	unusable   string    // the last unusable settings the hub sent, logged once
 }
 
-// NewAgent returns an agent that keeps its state under stateDir.
-func NewAgent(hub *client.Client, machine, stateDir string, log *slog.Logger) *Agent {
-	a := &Agent{
+// NewDaemon returns a daemon that keeps its state under stateDir.
+func NewDaemon(hub *client.Client, machine, stateDir string, log *slog.Logger) *Daemon {
+	a := &Daemon{
 		Hub: hub, Machine: machine, StateDir: stateDir, Log: log,
 		now:   time.Now,
 		queue: pendingQueue{dir: filepath.Join(stateDir, "queue")},
@@ -63,9 +64,9 @@ func NewAgent(hub *client.Client, machine, stateDir string, log *slog.Logger) *A
 	return a
 }
 
-// agentRun is one history entry, from its start to the hub's acknowledgement. Queued runs are
+// daemonRun is one history entry, from its start to the hub's acknowledgement. Queued runs are
 // stored as this JSON. The keys are fixed when the run starts, so every retry reuses them.
-type agentRun struct {
+type daemonRun struct {
 	HistoryID  *int64    `json:"history_id,omitempty"` // set when the hub took the in_progress row
 	Type       string    `json:"type"`
 	Status     string    `json:"status"`
@@ -80,7 +81,7 @@ type agentRun struct {
 
 // Run fetches settings, replays queued reports and runs backups when due, until ctx ends.
 // A running restic gets SIGINT when ctx ends, and its outcome is still reported.
-func (a *Agent) Run(ctx context.Context) {
+func (a *Daemon) Run(ctx context.Context) {
 	a.loadSavedSettings()
 	a.tick(ctx)
 	t := time.NewTicker(tickEvery)
@@ -95,8 +96,10 @@ func (a *Agent) Run(ctx context.Context) {
 	}
 }
 
-func (a *Agent) tick(ctx context.Context) {
-	if a.now().Sub(a.settingsAt) >= settingsEvery {
+// tick asks the hub for settings every settingsEvery, or on every tick while the daemon has
+// none, so a machine starts backing up within a tick of getting them.
+func (a *Daemon) tick(ctx context.Context) {
+	if a.settings == nil || a.now().Sub(a.settingsAt) >= settingsEvery {
 		a.refreshSettings(ctx)
 	}
 	a.replay(ctx)
@@ -105,18 +108,18 @@ func (a *Agent) tick(ctx context.Context) {
 	}
 }
 
-func (a *Agent) path(rest string) string {
+func (a *Daemon) path(rest string) string {
 	return "/v1/machines/" + url.PathEscape(a.Machine) + "/" + rest
 }
 
-func (a *Agent) settingsFile() string { return filepath.Join(a.StateDir, "settings.json") }
+func (a *Daemon) settingsFile() string { return filepath.Join(a.StateDir, "settings.json") }
 
-func (a *Agent) passwordFile() string { return filepath.Join(a.StateDir, "repository-password") }
+func (a *Daemon) passwordFile() string { return filepath.Join(a.StateDir, "repository-password") }
 
 // stopSettings stops backups until the hub sends settings again. With deleteSaved, it also
 // deletes the saved settings, which hold the keys, and the repository password. It logs why once,
 // when there was something to stop or delete, and quietly after that.
-func (a *Agent) stopSettings(why string, err error, deleteSaved bool) {
+func (a *Daemon) stopSettings(why string, err error, deleteSaved bool) {
 	had := a.settings != nil
 	a.settings, a.schedule, a.waiting = nil, nil, false
 	if deleteSaved {
@@ -138,7 +141,7 @@ func (a *Agent) stopSettings(why string, err error, deleteSaved bool) {
 	}
 }
 
-func (a *Agent) loadSavedSettings() {
+func (a *Daemon) loadSavedSettings() {
 	b, err := os.ReadFile(a.settingsFile())
 	if errors.Is(err, os.ErrNotExist) {
 		return
@@ -156,7 +159,7 @@ func (a *Agent) loadSavedSettings() {
 }
 
 // apply makes s the current settings if its schedule is valid.
-func (a *Agent) apply(s Settings) error {
+func (a *Daemon) apply(s Settings) error {
 	if s.Destination.Name == "" {
 		return errors.New("settings have no destination")
 	}
@@ -170,14 +173,14 @@ func (a *Agent) apply(s Settings) error {
 
 // refreshSettings asks the hub for the settings and saves the last good copy, which holds the
 // destination's credentials, at 0600. Settings without credentials are used but not saved over
-// a good copy. When the hub can't be reached, or answers another error, the agent keeps the
+// a good copy. When the hub can't be reached, or answers another error, the daemon keeps the
 // settings it has.
 //
-// When the hub says the machine has no backup settings, the agent stops backing up and deletes
+// When the hub says the machine has no backup settings, the daemon stops backing up and deletes
 // its saved settings and password, so the keys don't stay behind. When the hub no longer takes
-// the token (401: the machine was removed, its token replaced, or the hub reinstalled), the agent
+// the token (401: the machine was removed, its token replaced, or the hub reinstalled), the daemon
 // stops backing up but keeps its files: they may hold the only copy of the repository password.
-func (a *Agent) refreshSettings(ctx context.Context) {
+func (a *Daemon) refreshSettings(ctx context.Context) {
 	a.settingsAt = a.now()
 	var s Settings
 	err := a.Hub.Do(ctx, http.MethodGet, a.path("backups/settings"), "", nil, &s)
@@ -188,16 +191,23 @@ func (a *Agent) refreshSettings(ctx context.Context) {
 		a.stopSettings("the hub has no backup settings for this machine", err, true)
 		return
 	case errors.As(err, &he) && he.Status == http.StatusUnauthorized:
-		a.stopSettings("the hub no longer accepts this machine's token; install the agent again with a new one", err, false)
+		a.stopSettings("the hub no longer accepts this machine's token; install the daemon again with a new one", err, false)
+		return
+	case a.settings == nil: // asked again every tick; the usage reports already warn when the hub is down
+		a.Log.Debug("could not fetch backup settings", "error", err)
 		return
 	default:
 		a.Log.Warn("could not fetch backup settings, using the last ones", "error", err)
 		return
 	}
 	if err := a.apply(s); err != nil {
-		a.Log.Error("the hub sent unusable backup settings", "error", err)
+		if err.Error() != a.unusable { // asked again every tick while the daemon has no settings
+			a.Log.Error("the hub sent unusable backup settings", "error", err)
+		}
+		a.unusable = err.Error()
 		return
 	}
+	a.unusable = ""
 	if s.Credentials == nil {
 		return
 	}
@@ -210,11 +220,11 @@ func (a *Agent) refreshSettings(ctx context.Context) {
 	}
 }
 
-func (a *Agent) runDue(ctx context.Context) {
-	statePath := filepath.Join(a.StateDir, "agent-state.json")
+func (a *Daemon) runDue(ctx context.Context) {
+	statePath := filepath.Join(a.StateDir, "state.json")
 	st, err := loadState(statePath)
 	if err != nil {
-		a.Log.Error("ignoring the agent state", "error", err)
+		a.Log.Error("ignoring the daemon state", "error", err)
 	}
 	if !isDue(a.schedule, st.LastBackup, a.now()) {
 		return
@@ -251,14 +261,14 @@ func (a *Agent) runDue(ctx context.Context) {
 	}
 }
 
-func (a *Agent) save(path string, st agentState) {
+func (a *Daemon) save(path string, st daemonState) {
 	if err := saveState(path, st); err != nil {
-		a.Log.Error("save the agent state", "error", err)
+		a.Log.Error("save the daemon state", "error", err)
 	}
 }
 
 // do runs one restic job between its start and end reports.
-func (a *Agent) do(ctx context.Context, typ string, work func(Runner) Outcome) Outcome {
+func (a *Daemon) do(ctx context.Context, typ string, work func(Runner) Outcome) Outcome {
 	run := a.begin(ctx, typ)
 	var o Outcome
 	if r, err := a.newRunner(*a.settings); err != nil {
@@ -272,8 +282,8 @@ func (a *Agent) do(ctx context.Context, typ string, work func(Runner) Outcome) O
 }
 
 // begin tells the hub the run started. If it can't, the run is reported whole when it ends.
-func (a *Agent) begin(ctx context.Context, typ string) *agentRun {
-	run := &agentRun{
+func (a *Daemon) begin(ctx context.Context, typ string) *daemonRun {
+	run := &daemonRun{
 		Type:      typ,
 		CreatedAt: a.now().UTC().Truncate(time.Second),
 		PostKey:   client.NewKey(),
@@ -298,7 +308,7 @@ func (a *Agent) begin(ctx context.Context, typ string) *agentRun {
 
 // finish reports the end of a run. A report the hub can't take now is queued; one it rejects
 // is dropped. The context ignores shutdown so a stopped run still gets reported.
-func (a *Agent) finish(ctx context.Context, run *agentRun, o Outcome) {
+func (a *Daemon) finish(ctx context.Context, run *daemonRun, o Outcome) {
 	run.Status, run.Error, run.ResticID = o.Status, o.Error, o.ResticID
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
@@ -318,7 +328,7 @@ func (a *Agent) finish(ctx context.Context, run *agentRun, o Outcome) {
 // report sends a finished run: first the snapshot list (after a backup or cleanup), then the run
 // itself, as a PATCH of its in_progress row or, if the hub never saw it start, as one POST.
 // Live runs and queued runs both come through here.
-func (a *Agent) report(ctx context.Context, run *agentRun) error {
+func (a *Daemon) report(ctx context.Context, run *daemonRun) error {
 	if !run.Synced && (run.Type == TypeBackup || run.Type == TypeCleanup) {
 		if err := a.syncSnapshots(ctx, run); err != nil {
 			return err
@@ -338,7 +348,7 @@ func (a *Agent) report(ctx context.Context, run *agentRun) error {
 
 // syncSnapshots replaces the hub's snapshot list with restic's and finds the hub id of the
 // run's snapshot. A restic failure is logged and skipped; only a hub error is returned.
-func (a *Agent) syncSnapshots(ctx context.Context, run *agentRun) error {
+func (a *Daemon) syncSnapshots(ctx context.Context, run *daemonRun) error {
 	if a.settings == nil {
 		return nil
 	}
@@ -371,7 +381,7 @@ var errNoCredentials = errors.New("the hub sent no credentials for this destinat
 // newRestic builds the real runner for the settings' destination. The repository password goes
 // to restic through a 0600 file in the state folder; the S3 keys go in the child's environment
 // only. Neither ever appears on a command line.
-func (a *Agent) newRestic(s Settings) (Runner, error) {
+func (a *Daemon) newRestic(s Settings) (Runner, error) {
 	c := s.Credentials
 	if c == nil || c.AccessKeyID == "" || c.SecretAccessKey == "" || c.Password == "" {
 		return nil, errNoCredentials

@@ -79,9 +79,9 @@ func (h *hubAPI) explain(err error) error {
 		if answer.Detail != "" {
 			return errors.New(answer.Detail)
 		}
-		return fmt.Errorf("the hub at %s answered %d %s. Look at its log: journalctl -u tender-hub.", h.url, answer.Status, answer.Title)
+		return fmt.Errorf("the hub at %s answered %d %s. Look at its log: journalctl -u tenderhub.", h.url, answer.Status, answer.Title)
 	case errors.As(err, &network):
-		return fmt.Errorf("cannot reach the hub at %s. Check that the hub is running (systemctl status tender-hub) "+
+		return fmt.Errorf("cannot reach the hub at %s. Check that the hub is running (systemctl status tenderhub) "+
 			"and that --hub or TENDER_HUB has its address.", h.url)
 	}
 	return err

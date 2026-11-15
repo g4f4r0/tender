@@ -52,12 +52,12 @@ func TestIsDue(t *testing.T) {
 }
 
 func TestStateFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "agent-state.json")
+	path := filepath.Join(t.TempDir(), "state", "state.json")
 	st, err := loadState(path)
 	if err != nil || !st.LastBackup.IsZero() {
 		t.Fatalf("missing file: %+v, %v", st, err)
 	}
-	want := agentState{LastBackup: clock("2026-11-14 03:31"), LastCheck: clock("2026-11-10 04:00")}
+	want := daemonState{LastBackup: clock("2026-11-14 03:31"), LastCheck: clock("2026-11-10 04:00")}
 	if err := saveState(path, want); err != nil {
 		t.Fatal(err)
 	}
