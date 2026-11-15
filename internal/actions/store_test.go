@@ -1,9 +1,11 @@
 package actions
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -476,4 +478,66 @@ func TestLateFinish(t *testing.T) {
 	if err := s.Finish(ctx, 1, never.ID, Patch{Status: StatusCompleted}); status(err) != http.StatusConflict {
 		t.Errorf("an action never picked up took a report: %v", err)
 	}
+}
+
+// Clearing a logs action's output leaves none of its bytes in the database's files: not in the
+// pages it freed, nor in the WAL. Big output spills to overflow pages, so both sizes are tried.
+func TestClearedLogsLeaveNoBytes(t *testing.T) {
+	d := newDB(t)
+	s := NewStore(d, &fakeServices{})
+	ctx := context.Background()
+	const marker = "MARKER-JOURNAL-LINE"
+	for _, out := range []string{marker + "\n", strings.Repeat(marker+" password=hunter2\n", 12000)} {
+		a, err := s.Create(ctx, 1, Input{Type: TypeLogs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Claim(ctx, 1, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, 1, a.ID, Patch{Status: StatusCompleted, Output: ptr(out)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, _ := filepath.Glob(filepath.Join(filepath.Dir(dbPath(t, d)), "hub.db*"))
+	if !contains(t, files, marker) {
+		t.Fatalf("the marker never reached %q", files)
+	}
+	old := time.Now().Add(-2 * time.Hour).Unix()
+	if _, err := d.Write.Exec(`UPDATE actions SET updated_at = ?`, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tidy(ctx, 0, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	files, _ = filepath.Glob(filepath.Join(filepath.Dir(dbPath(t, d)), "hub.db*"))
+	if contains(t, files, marker) {
+		t.Errorf("cleared logs are still in %q", files)
+	}
+}
+
+func dbPath(t *testing.T, d *db.DB) string {
+	t.Helper()
+	var seq int
+	var name, file string
+	if err := d.Read.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func contains(t *testing.T, files []string, s string) bool {
+	t.Helper()
+	found := false
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(b, []byte(s)) {
+			t.Logf("%s holds %q", filepath.Base(f), s)
+			found = true
+		}
+	}
+	return found
 }

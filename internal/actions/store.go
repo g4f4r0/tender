@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/db"
@@ -25,6 +26,8 @@ type Store struct {
 	services Services
 	// Keep is how long a logs action keeps its output after it finished. Logs can hold secrets.
 	Keep time.Duration
+
+	unflushed atomic.Bool // logs were cleared but the WAL may still hold them; Sweep tries again
 }
 
 // DefaultKeep is how long a logs action keeps its output, unless the hub is told otherwise.
@@ -148,9 +151,30 @@ func (s *Store) tidy(ctx context.Context, machineID int64, now time.Time) error 
 		machineID, stale, old, notPickedUp, notAnswered, now.Unix()); err != nil {
 		return err
 	}
-	_, err := s.db.Write.ExecContext(ctx,
+	res, err := s.db.Write.ExecContext(ctx,
 		`UPDATE actions SET output = NULL, output_cleared = 1, updated_at = ?4 WHERE (?1 = 0 OR machine_id = ?1) AND `+clearable,
 		machineID, stale, old, now.Unix())
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return err
+	}
+	// The cleared pages were zeroed (secure_delete); the WAL still holds their old copies until a
+	// checkpoint empties it. One that a reader holds up is left to the next pass, a minute later.
+	s.unflushed.Store(true)
+	return s.flush(ctx)
+}
+
+// flush empties the WAL after logs were cleared, until it has once.
+func (s *Store) flush(ctx context.Context) error {
+	if !s.unflushed.Load() {
+		return nil
+	}
+	done, err := s.db.Checkpoint(ctx)
+	if done {
+		s.unflushed.Store(false)
+	}
 	return err
 }
 
@@ -160,7 +184,11 @@ func (s *Store) Sweep(ctx context.Context, log *slog.Logger) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
-		if err := s.tidy(ctx, 0, time.Now()); err != nil && ctx.Err() == nil {
+		err := s.tidy(ctx, 0, time.Now())
+		if err == nil {
+			err = s.flush(ctx)
+		}
+		if err != nil && ctx.Err() == nil {
 			log.Error("tidy the actions", "error", err)
 		}
 		select {
