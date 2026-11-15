@@ -52,6 +52,22 @@ Until the daemon has seen Docker answer on this machine, only a socket that refu
 
 The hub keeps the last list and sets the `state` of every service that isn't removed to `unknown`, with `exit_code`, memory and CPU `null`, until Docker answers again. `GET /v1/services`, `GET /v1/machines/{machine}/services` and `list_services` return `docker_reason`, which is `null` while Docker runs. [Notifications](notifications.md#service-events) explains the `docker.unreachable` event.
 
+### When Docker is turned off
+
+Docker that you turned off on purpose is not an outage. When the socket is missing or refuses connections, the daemon asks systemd whether Docker is wanted, with `systemctl is-enabled docker.service docker.socket`. When each unit is `disabled`, `masked` or `not-found`, Docker is turned off, and the daemon reports `{"docker": "off"}` with no list and no reason. It does so whether or not it saw Docker before, and logs once:
+
+```text
+Docker is turned off on this machine (docker.service and docker.socket aren't enabled), so Tender doesn't watch its services.
+```
+
+The hub then forgets the machine's Docker, as for a machine without it:
+
+1. `docker` and `docker_reason` are `null` in `GET /v1/services`, `GET /v1/machines/{machine}/services` and `list_services`.
+2. Every service that isn't removed becomes `removed`, as [Removed services](#removed-services) describes, so its open problems resolve.
+3. An open `docker.unreachable` resolves, and the 5-minute rule for a daemon that stops sending services reports no longer applies.
+
+`tender status` shows `-` for the machine's services. Any other answer from systemd, such as `enabled` or `static` for either unit, means Docker is wanted, so a refusing socket is still `unreachable`. When `systemctl` is missing, fails or doesn't answer within 5 seconds, the daemon reports as if Docker were wanted. Turn Docker back on, and the next report with its containers takes the services back.
+
 ## How actions reach a machine
 
 The hub never connects to a machine. Each daemon keeps one request open to the hub and waits for work, so actions work through NAT and firewalls without opening a port.

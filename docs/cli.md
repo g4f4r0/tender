@@ -81,7 +81,7 @@ SEVERITY   SINCE      EVENT                 PROBLEM
 warning    just now   service.memory_high   The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.
 ```
 
-`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed services. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. Each open problem shows its latest notification, as [Notifications](notifications.md#how-a-notification-works) explains. A message longer than 100 characters, or longer than one line, ends in `...`; the notification has the whole text. With no open problems, the list ends with `No open problems.`
+`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed services. A machine whose Docker is turned off shows `-`, as one without Docker does. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. Each open problem shows its latest notification, as [Notifications](notifications.md#how-a-notification-works) explains. A message longer than 100 characters, or longer than one line, ends in `...`; the notification has the whole text. With no open problems, the list ends with `No open problems.`
 
 #### Errors
 
@@ -759,7 +759,7 @@ The columns are:
 3. `CPU` is its use since the previous report, where 100% is one whole CPU. It shows `-` while there is no previous reading, as [Services](services.md#what-a-service-is) explains.
 4. `ALERTS` says whether the service alerts.
 
-While Docker is unreachable, the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
+While Docker is unreachable, the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` Once Docker is turned off, as [Services](services.md#when-docker-is-turned-off) explains, its services show `removed`, and the list says nothing about Docker. With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
 
 #### Errors
 

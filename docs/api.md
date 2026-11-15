@@ -1997,7 +1997,7 @@ A service is a Docker container on a machine, as the machine's daemon reported i
 
 Lists every machine's services, by machine, with whether its Docker answers.
 
-`docker` is `running` or `unreachable`, from the latest report, or `null` before the first. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each service.
+`docker` is `running` or `unreachable`, from the latest report, or `null` before the first and once Docker is turned off on the machine. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each service, and [When Docker is turned off](services.md#when-docker-is-turned-off) explains `null` after a report of `off`.
 
 #### Parameters
 
@@ -3211,7 +3211,7 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
 | `POST /v1/machines/{machine}/backups/history` | Records a run as it starts, or a finished run it couldn't send while the hub was down. |
 | `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |
-| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "services": [...]}` with every container, `[]` for none, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, once a minute and after each start, stop or restart. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. |
+| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "services": [...]}` with every container, `[]` for none, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, or `{"docker": "off"}` when Docker is turned off, once a minute and after each start, stop or restart. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. |
 | `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the oldest pending action, and gets it without changing its status. |
 | `GET /v1/machines/{machine}/logs/sinks` | Gets the enabled sinks for the machine, every 30 seconds, each with its whole `config`, secrets included, its `sources` and `updated_at`. |
 | `PUT /v1/machines/{machine}/logs/status` | Sends `{"data": [...]}`, one entry per sink with `sink_id` and the `status` fields, every minute and within seconds when sending starts or stops failing. An entry for a sink that is gone is ignored. |
