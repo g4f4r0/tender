@@ -44,6 +44,9 @@ type Runner interface {
 type System interface {
 	// Upgrade upgrades the system's packages, security or all, and returns what the upgrade printed.
 	Upgrade(ctx context.Context, packages string) (string, error)
+	// ResumeUpgrade waits for the upgrade a daemon before this one started, or reads how it ended,
+	// and never starts one.
+	ResumeUpgrade(ctx context.Context) (string, error)
 	// Update starts the job that installs a Tender release. The job restarts the daemon, so how it
 	// ended comes from UpdateResult, maybe in the next daemon.
 	Update(ctx context.Context, version string) error
@@ -90,6 +93,7 @@ func (d *Daemon) path(rest string) string {
 // still waiting; while some wait, it polls without waiting and tries again every Every.
 func (d *Daemon) Run(ctx context.Context) {
 	d.load()
+	d.resumeUpgrades(ctx)
 	for ctx.Err() == nil {
 		d.deliver(ctx)
 		wait := pollWait
@@ -162,9 +166,13 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 	if service && d.Services != nil {
 		d.Services.Lock()
 	}
-	r := &sent{ID: a.ID, Key: client.NewKey(), Type: a.Type}
+	r := &sent{ID: a.ID, Key: client.NewKey(), Type: a.Type, Packages: deref(a.Packages)}
 	d.keep(r) // before it runs, so a daemon that stops meanwhile still reports it
 	r.Patch = d.do(ctx, a)
+	if a.Type == TypeUpgrade && ctx.Err() != nil {
+		r.Patch = nil // the daemon stops, and the upgrade runs on in its unit: the next daemon reports it
+		return
+	}
 	d.keep(r)
 	d.send(ctx, r)
 	if service && d.Services != nil {
@@ -172,6 +180,41 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 		if a.Type != TypeLogs {
 			d.Services.Changed()
 		}
+	}
+}
+
+// resumeUpgrades reports the upgrades that ran when the daemon before this one stopped. An upgrade
+// runs on in its unit, so this waits for it, or reads how it ended, and never starts another.
+func (d *Daemon) resumeUpgrades(ctx context.Context) {
+	for _, r := range d.waiting {
+		if r.Patch != nil || r.Type != TypeUpgrade {
+			continue
+		}
+		if d.Busy != nil {
+			if release, err := d.Busy(); err == nil {
+				defer release()
+			}
+		}
+		a := Action{ID: r.ID, Type: TypeUpgrade, Packages: &r.Packages}
+		d.Log.Info("waiting for the upgrade the daemon before this one started", "id", r.ID)
+		actx, cancel := context.WithTimeout(ctx, upgradeTimeout)
+		output, err := "", errors.New("this daemon can't upgrade the machine")
+		if d.System != nil {
+			output, err = d.System.ResumeUpgrade(actx)
+		}
+		cancel()
+		if ctx.Err() != nil {
+			return // stopping again: the next daemon picks it up
+		}
+		p := Patch{Status: StatusCompleted}
+		if err != nil {
+			p.Status, output = StatusFailed, failure(a, err)
+		}
+		output = fitJSON(output)
+		p.Output = &output
+		r.Patch = &p
+		d.keep(r)
+		d.Log.Info("action finished", "id", r.ID, "type", r.Type, "status", p.Status)
 	}
 }
 

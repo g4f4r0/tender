@@ -193,7 +193,13 @@ type systemActions struct {
 }
 
 func (s systemActions) Upgrade(ctx context.Context, packages string) (string, error) {
-	out, err := security.Upgrade(ctx, packages)
+	out, err := security.Upgrade(ctx, s.StateDir, packages, false)
+	s.collect()
+	return out, err
+}
+
+func (s systemActions) ResumeUpgrade(ctx context.Context) (string, error) {
+	out, err := security.Upgrade(ctx, s.StateDir, actions.PackagesSecurity, true)
 	s.collect()
 	return out, err
 }

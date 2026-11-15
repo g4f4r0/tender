@@ -32,6 +32,8 @@ type sent struct {
 	// An update's report waits for the job's result: its release and when it started.
 	Version string    `json:"version,omitempty"`
 	Started time.Time `json:"started,omitzero"`
+	// An upgrade's packages, for the daemon that picks it up after a restart.
+	Packages string `json:"packages,omitempty"`
 }
 
 func (d *Daemon) outbox() string {
@@ -122,6 +124,7 @@ func (d *Daemon) load() {
 		var out string
 		switch {
 		case r.Patch == nil && r.Type == TypeUpdate: // the job restarted the daemon; deliver sends its result
+		case r.Patch == nil && r.Type == TypeUpgrade: // it runs on in its unit; resumeUpgrades waits for it
 		case r.Patch == nil:
 			out = stoppedWhileRunning
 		case r.Type == TypeLogs:

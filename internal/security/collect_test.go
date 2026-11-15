@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/g4f4r0/tender/internal/config"
 )
 
 // fakes puts shell scripts on PATH, by name, and nothing else. A script prints its body's output.
@@ -235,36 +237,85 @@ func TestSSHWeak(t *testing.T) {
 	}
 }
 
-// The upgrade runs in the tenderupgrade transient unit, with fixed arguments.
-func TestUpgradeRunsInATransientUnit(t *testing.T) {
-	dir := t.TempDir()
-	stand := filepath.Join(dir, "systemd-run")
-	log := filepath.Join(dir, "args")
-	if err := os.WriteFile(stand, []byte("#!/bin/sh\necho \"$@\" >"+log+"\necho 'Reading package lists...'\necho 'All upgrades installed'\n"), 0o755); err != nil {
+// upgradeFakes puts apt-get, unattended-upgrade and the fake systemd in place, and returns the fake
+// systemd's folder.
+func upgradeFakes(t *testing.T, scripts map[string]string) string {
+	t.Helper()
+	fakes(t, scripts)
+	bin, err := filepath.Abs("../config/testdata/fakesystemd")
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("TENDER_TEST_SYSTEMD_RUN", stand)
+	dir := t.TempDir()
+	t.Setenv("FAKE_SYSTEMD_DIR", dir)
+	t.Setenv("TENDER_TEST_SYSTEMD_RUN", filepath.Join(bin, "systemd-run"))
+	t.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator)+bin+string(os.PathListSeparator)+"/usr/bin:/bin")
+	return dir
+}
+
+// The upgrade runs in the tenderupgrade transient unit, with fixed arguments, without --wait or
+// --pipe: its output goes to a file in the state folder, and systemctl show says how it ended.
+func TestUpgradeRunsInATransientUnit(t *testing.T) {
+	sd := upgradeFakes(t, map[string]string{
+		"apt-get":            `[ "$1" = update ] && echo "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease" || echo "1 upgraded"`,
+		"unattended-upgrade": `echo "All upgrades installed"`,
+	})
+	state := t.TempDir()
+	ctx := context.Background()
 	for packages, want := range map[string]string{
-		"security": "--wait --collect --quiet --pipe --unit tenderupgrade --setenv DEBIAN_FRONTEND=noninteractive --setenv LC_ALL=C " +
-			"/bin/sh -c apt-get update -q && exec unattended-upgrade -v",
-		"all": "--wait --collect --quiet --pipe --unit tenderupgrade --setenv DEBIAN_FRONTEND=noninteractive --setenv LC_ALL=C " +
-			"/bin/sh -c apt-get update -q && exec apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade --with-new-pkgs",
+		"security": "systemd-run --unit tenderupgrade DEBIAN_FRONTEND=noninteractive LC_ALL=C /bin/sh -c apt-get update -q && exec unattended-upgrade -v",
+		"all": "systemd-run --unit tenderupgrade DEBIAN_FRONTEND=noninteractive LC_ALL=C /bin/sh -c apt-get update -q && exec apt-get -y " +
+			"-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade --with-new-pkgs",
 	} {
-		out, err := Upgrade(context.Background(), packages)
-		if err != nil || !strings.Contains(out, "All upgrades installed") {
+		out, err := Upgrade(ctx, state, packages, false)
+		if err != nil || !strings.Contains(out, "Hit:1") || (packages == "security") != strings.Contains(out, "All upgrades installed") {
 			t.Fatalf("%s: %q %v", packages, out, err)
 		}
-		if b, _ := os.ReadFile(log); strings.TrimSpace(string(b)) != want {
-			t.Errorf("%s ran %q", packages, b)
+		if b, _ := os.ReadFile(filepath.Join(sd, "log")); !strings.Contains(string(b), want+"\n") {
+			t.Errorf("%s ran:\n%s", packages, b)
+		}
+		if u, _ := config.ShowUnit(ctx, UpgradeUnit); u.Exists() {
+			t.Errorf("%s left its unit: %+v", packages, u)
 		}
 	}
-	if _, err := Upgrade(context.Background(), "some"); err == nil {
+	if _, err := Upgrade(ctx, state, "some", false); err == nil {
 		t.Error("an unknown packages value ran")
 	}
-	if err := os.WriteFile(stand, []byte("#!/bin/sh\necho 'E: dpkg was interrupted'\nexit 1\n"), 0o755); err != nil {
+	upgradeFakes(t, map[string]string{"apt-get": "true", "unattended-upgrade": `echo "E: dpkg was interrupted"; exit 1`})
+	if out, err := Upgrade(ctx, state, "security", false); err == nil || !strings.Contains(err.Error(), "dpkg was interrupted") || !strings.Contains(out, "dpkg") {
+		t.Errorf("a failed upgrade: %q %v", out, err)
+	}
+}
+
+// A daemon that restarts while an upgrade runs waits for that one and reports it, and never starts
+// another. One that finds no upgrade says so.
+func TestUpgradeIsPickedUpAfterARestart(t *testing.T) {
+	sd := upgradeFakes(t, nil)
+	state := t.TempDir()
+	ctx := context.Background()
+	if _, err := Upgrade(ctx, state, "security", true); err == nil || !strings.Contains(err.Error(), "didn't start") {
+		t.Errorf("nothing to pick up: %v", err)
+	}
+	if err := config.StartUnit(ctx, UpgradeUnit, filepath.Join(state, UpgradeLog), nil, "/bin/sh", "-c", "sleep 0.3; echo All upgrades installed"); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := Upgrade(context.Background(), "all"); err == nil || !strings.Contains(err.Error(), "dpkg was interrupted") || !strings.Contains(out, "dpkg") {
-		t.Errorf("a failed upgrade: %q %v", out, err)
+	if out, err := Upgrade(ctx, state, "all", true); err != nil || !strings.Contains(out, "All upgrades installed") {
+		t.Errorf("picked up: %q %v", out, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(sd, "log")); strings.Count(string(b), "systemd-run") != 1 {
+		t.Errorf("started another upgrade:\n%s", b)
+	}
+
+	// The wait ends with its context; the upgrade runs on.
+	if err := config.StartUnit(ctx, UpgradeUnit, filepath.Join(state, UpgradeLog), nil, "sleep", "1"); err != nil {
+		t.Fatal(err)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err := Upgrade(cctx, state, "security", false); err == nil || !strings.Contains(err.Error(), "still runs") {
+		t.Errorf("the wait outlived its context: %v", err)
+	}
+	if u, _ := config.ShowUnit(ctx, UpgradeUnit); !u.Running() {
+		t.Error("the end of the wait stopped the upgrade")
 	}
 }

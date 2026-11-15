@@ -3,11 +3,14 @@ package security
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -96,32 +99,61 @@ func (d *Daemon) send(ctx context.Context) {
 // maxUpgradeOutput is how much of an upgrade's output the action keeps: its end.
 const maxUpgradeOutput = 256 << 10
 
+// The transient unit of an upgrade, and its output's file in the daemon's state folder.
+const (
+	UpgradeUnit = "tenderupgrade"
+	UpgradeLog  = "tenderupgrade.log"
+)
+
+// upgradeEvery is how often the daemon asks systemd whether the upgrade ended.
+var upgradeEvery = 2 * time.Second
+
 // Upgrade upgrades the machine's packages in the transient unit tenderupgrade, outside the daemon's
 // sandbox: after apt-get update, the security updates with unattended-upgrade, or every pending update
-// with apt-get upgrade --with-new-pkgs, keeping the current config files. It returns what the upgrade printed, its end when it is long.
-func Upgrade(ctx context.Context, packages string) (string, error) {
-	args := []string{"--wait", "--collect", "--quiet", "--pipe", "--unit", "tenderupgrade",
-		"--setenv", "DEBIAN_FRONTEND=noninteractive", "--setenv", "LC_ALL=C"}
-	// Both read the package lists fresh first. upgrade --with-new-pkgs installs new packages, such as
-	// a new kernel, but never removes one.
+// with apt-get upgrade --with-new-pkgs, keeping the current config files. Nothing pipes its output,
+// so the daemon stopping never stops apt in the middle of dpkg: the output goes to UpgradeLog in
+// stateDir, and systemctl show says how the unit ended. When an upgrade already runs, it waits for
+// that one instead of starting another. resume is a daemon that restarted while an upgrade ran: it
+// only waits for that one, or reads how it ended. It returns the end of the upgrade's output.
+func Upgrade(ctx context.Context, stateDir, packages string, resume bool) (string, error) {
+	var script string
 	switch packages {
 	case "security":
-		args = append(args, "/bin/sh", "-c", "apt-get update -q && exec unattended-upgrade -v")
+		script = "apt-get update -q && exec unattended-upgrade -v"
 	case "all":
-		args = append(args, "/bin/sh", "-c", "apt-get update -q && exec apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade --with-new-pkgs")
+		script = "apt-get update -q && exec apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade --with-new-pkgs"
 	default:
 		return "", fmt.Errorf("packages must be security or all, not %q", packages)
 	}
-	cmd := exec.CommandContext(ctx, config.SystemdRun(), args...)
-	cmd.Stdin = nil
-	var out tailBuffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	err := cmd.Run()
-	text := strings.ToValidUTF8(out.String(), "�")
+	log := filepath.Join(stateDir, UpgradeLog)
+	u, err := config.ShowUnit(ctx, UpgradeUnit)
+	switch {
+	case err != nil:
+		return "", err
+	case u.Running(): // started by the daemon before this one, or by the last action: wait for it
+	case resume && !u.Exists():
+		return "", errors.New("the upgrade didn't start before the daemon stopped. Run it again")
+	case resume: // it ended while no daemon watched: read how
+	default:
+		config.ClearUnit(ctx, UpgradeUnit)
+		if err := os.WriteFile(log, nil, 0o600); err != nil {
+			return "", err
+		}
+		env := []string{"DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"}
+		if err := config.StartUnit(ctx, UpgradeUnit, log, env, "/bin/sh", "-c", script); err != nil {
+			return "", err
+		}
+	}
+	u, err = config.WaitUnit(ctx, UpgradeUnit, upgradeEvery)
+	text := strings.ToValidUTF8(tail(log), "\uFFFD")
 	if err != nil {
+		return text, fmt.Errorf("the upgrade still runs in the %s unit, and the daemon stopped waiting for it (%w). Its output is in %s", UpgradeUnit, err, log)
+	}
+	config.ClearUnit(ctx, UpgradeUnit)
+	if !u.Succeeded() {
 		last := lastLine(text)
 		if last == "" {
-			last = err.Error()
+			last = fmt.Sprintf("it exited with status %d", u.Status)
 		}
 		return text, fmt.Errorf("the upgrade failed: %s", last)
 	}
@@ -133,25 +165,20 @@ func lastLine(s string) string {
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-// tailBuffer keeps the last maxUpgradeOutput bytes written to it, from a line start.
-type tailBuffer struct{ b bytes.Buffer }
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.b.Write(p)
-	if t.b.Len() > 2*maxUpgradeOutput {
-		keep := t.b.Bytes()[t.b.Len()-maxUpgradeOutput:]
-		if i := bytes.IndexByte(keep, '\n'); i >= 0 {
-			keep = keep[i+1:]
-		}
-		t.b = *bytes.NewBuffer(append([]byte(nil), keep...))
+// tail returns the last maxUpgradeOutput bytes of the file at path, from a line start.
+func tail(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
 	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) String() string {
-	b := t.b.Bytes()
-	if len(b) > maxUpgradeOutput {
-		b = b[len(b)-maxUpgradeOutput:]
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err == nil && fi.Size() > maxUpgradeOutput {
+		if _, err := f.Seek(fi.Size()-maxUpgradeOutput, io.SeekStart); err != nil {
+			return ""
+		}
+	}
+	b, _ := io.ReadAll(io.LimitReader(f, maxUpgradeOutput))
+	if len(b) == maxUpgradeOutput {
 		if i := bytes.IndexByte(b, '\n'); i >= 0 {
 			b = b[i+1:]
 		}

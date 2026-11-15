@@ -21,16 +21,32 @@ type fakeSystem struct {
 	cleared  int
 	// update runs as the job; nil leaves the result at once.
 	update func(ctx context.Context, version string) error
+	// upgrade runs as the upgrade; nil ends it at once.
+	upgrade func(ctx context.Context) (string, error)
+	resumes int
 }
 
-func (f *fakeSystem) Upgrade(_ context.Context, packages string) (string, error) {
+func (f *fakeSystem) Upgrade(ctx context.Context, packages string) (string, error) {
+	f.mu.Lock()
+	f.upgrades = append(f.upgrades, packages)
+	run := f.upgrade
+	f.mu.Unlock()
+	if run != nil {
+		return run(ctx)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.upgrades = append(f.upgrades, packages)
 	if packages == PackagesAll {
 		return "", errors.New("dpkg was interrupted")
 	}
 	return "3 upgraded", nil
+}
+
+func (f *fakeSystem) ResumeUpgrade(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumes++
+	return "All upgrades installed", nil
 }
 
 func (f *fakeSystem) Update(ctx context.Context, version string) error {
@@ -177,6 +193,41 @@ func TestUpdateReportOutlivesTheDaemon(t *testing.T) {
 	eventually(t, "the job's result", func() bool { got, _ = h.store.Get(ctx, 1, a.ID); return got.Finished() })
 	if got.Status != StatusFailed || deref(got.Output) != "Tender 0.3.1 failed its health check, so it rolled back to Tender 0.3.0." {
 		t.Errorf("update = %+v, output %q", got, deref(got.Output))
+	}
+}
+
+// A daemon that restarts while an upgrade runs waits for that upgrade and reports it, without
+// starting another.
+func TestUpgradeIsPickedUpAfterARestart(t *testing.T) {
+	h := newTestHub(t)
+	ctx := context.Background()
+	state := t.TempDir()
+	started := make(chan struct{})
+	sys := &fakeSystem{upgrade: func(ctx context.Context) (string, error) {
+		close(started)
+		<-ctx.Done() // the daemon stops; the upgrade runs on in its unit
+		return "", ctx.Err()
+	}}
+	stop := startSystemDaemon(t, h.URL, state, sys, nil)
+	packages := PackagesSecurity
+	a, err := h.store.Create(ctx, 1, Input{Type: TypeUpgrade, Packages: &packages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stop()
+
+	next := &fakeSystem{}
+	startSystemDaemon(t, h.URL, state, next, nil)
+	var got Action
+	eventually(t, "the upgrade's report", func() bool { got, _ = h.store.Get(ctx, 1, a.ID); return got.Finished() })
+	if got.Status != StatusCompleted || deref(got.Output) != "All upgrades installed" {
+		t.Errorf("upgrade = %+v, output %q", got, deref(got.Output))
+	}
+	next.mu.Lock()
+	defer next.mu.Unlock()
+	if next.resumes != 1 || len(next.upgrades) != 0 {
+		t.Errorf("resumed %d, started %v", next.resumes, next.upgrades)
 	}
 }
 

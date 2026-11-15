@@ -48,10 +48,10 @@ A systemd sandbox keeps a bug in the daemon from changing the system:
 3. `NoNewPrivileges`, the `ProtectKernel` settings and a system call filter keep it from loading modules, changing the clock or gaining privileges.
 4. It may lower a process's CPU and IO priority, which it does for restic, but without `CAP_SYS_NICE` it can't raise one. [Backups](backups.md#destinations-settings-and-runs) explains why.
 
-Two jobs must change the whole system, so they run outside the sandbox, as transient units that systemd starts through `systemd-run --wait --collect`:
+Two jobs must change the whole system, so they run outside the sandbox, as transient units that systemd starts through `systemd-run`. The daemon runs it without `--wait` or `--pipe`, so as root it talks to systemd over its private socket, `/run/systemd/private`, where systemd trusts root by its user id. That needs no D-Bus, no polkit and no `CAP_SYS_ADMIN`. Each job writes its output to a file in `/var/lib/tender/daemon`, and the daemon asks `systemctl show` how it ended:
 
 1. `tenderupdate` installs a Tender release, as [Updates](updates.md#how-an-update-works) explains. It takes only a version, and installs only a release signed with Tender's key.
-2. `tenderupgrade` upgrades the system's packages when someone runs `tender machines upgrade`.
+2. `tenderupgrade` upgrades the system's packages when someone runs `tender machines upgrade`. Its output is `tenderupgrade.log`. Nothing pipes it, so a daemon that restarts never stops apt in the middle: the upgrade runs on, and the next daemon waits for it and reports it instead of starting another.
 
 > [!WARNING]
 > Anyone who can reach the hub can ask a daemon to stop a service, read logs, upgrade packages or update Tender. That is one more reason to keep the hub private.
