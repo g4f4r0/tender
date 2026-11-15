@@ -141,7 +141,7 @@ func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
 		if r.Services == nil {
 			return server.Invalid("services is required when docker is running; send [] for none.")
 		}
-		_, err := s.Replace(ctx, machineID, r.Services)
+		_, err := s.Replace(ctx, machineID, *r.Services)
 		return err
 	case DockerUnreachable:
 		if r.Services != nil {

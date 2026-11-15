@@ -29,6 +29,9 @@ func (s *Store) listMachine(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if len(list) == 0 { // removed since the route looked it up
+		return server.NotFound("Machine %q doesn't exist.", r.PathValue("machine"))
+	}
 	server.WriteJSON(w, http.StatusOK, list[0])
 	return nil
 }

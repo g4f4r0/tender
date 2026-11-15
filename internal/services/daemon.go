@@ -129,7 +129,7 @@ func (d *Daemon) reportNow(ctx context.Context) {
 		d.Log.Info("Docker is reachable", "containers", len(list))
 	}
 	d.problem = ""
-	d.send(ctx, Report{Docker: DockerRunning, Services: list})
+	d.send(ctx, RunningReport(list))
 }
 
 // usage reads the memory and CPU of each running container in list, statsAtOnce at a time. CPU is
@@ -198,7 +198,7 @@ func sampleKey(sv ServiceInput) string {
 func (d *Daemon) unreachable(ctx context.Context, err error, tell bool) {
 	d.dockerProblem(err, tell)
 	if tell {
-		d.send(ctx, Report{Docker: DockerUnreachable})
+		d.send(ctx, UnreachableReport())
 	}
 }
 

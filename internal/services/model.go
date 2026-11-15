@@ -93,11 +93,13 @@ type ServiceInput struct {
 }
 
 // Report is the body of PUT /v1/machines/{machine}/services: {"docker": "running", "services": [...]}
-// when the Engine API answers, the full list, or {"docker": "unreachable"} when its socket refuses
-// connections or doesn't answer. Then the hub keeps the last list with every state unknown.
+// when the Engine API answers, the full list and [] for none, or {"docker": "unreachable"} when its
+// socket refuses connections or doesn't answer. Then the hub keeps the last list with every state
+// unknown. Make one with RunningReport or UnreachableReport, so a running report always carries
+// its list and an unreachable one never does.
 type Report struct {
-	Docker   string         `json:"docker"`
-	Services []ServiceInput `json:"services,omitempty"`
+	Docker   string          `json:"docker"`
+	Services *[]ServiceInput `json:"services,omitempty"`
 }
 
 // MachineServices is one machine's services, as GET /v1/machines/{machine}/services returns it
@@ -117,3 +119,14 @@ func (m MachineServices) UnreachableReports() int { return m.unreachableReports 
 type ServicePatch struct {
 	AlertsEnabled *bool `json:"alerts_enabled"`
 }
+
+// RunningReport is a report of the containers Docker listed, [] when there are none.
+func RunningReport(list []ServiceInput) Report {
+	if list == nil {
+		list = []ServiceInput{}
+	}
+	return Report{Docker: DockerRunning, Services: &list}
+}
+
+// UnreachableReport is a report that Docker doesn't answer. It carries no list.
+func UnreachableReport() Report { return Report{Docker: DockerUnreachable} }

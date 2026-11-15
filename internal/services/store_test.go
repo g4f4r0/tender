@@ -276,11 +276,11 @@ func TestUnreachable(t *testing.T) {
 	}
 	down := running("web", "c1")
 	down.State, down.ExitCode = StateExited, ptr(int64(1))
-	if err := s.Apply(ctx, 1, Report{Docker: DockerRunning, Services: []ServiceInput{down}}); err != nil {
+	if err := s.Apply(ctx, 1, RunningReport([]ServiceInput{down})); err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
-		if err := s.Apply(ctx, 1, Report{Docker: DockerUnreachable}); err != nil {
+		if err := s.Apply(ctx, 1, UnreachableReport()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -293,7 +293,7 @@ func TestUnreachable(t *testing.T) {
 	if sv := ms[0].Data[0]; sv.State != StateUnknown || sv.DownReports != 0 || sv.RestartingReports != 0 || sv.UnhealthyReports != 0 || *sv.ExitCode != 1 {
 		t.Errorf("service while unreachable = %+v", sv)
 	}
-	if err := s.Apply(ctx, 1, Report{Docker: DockerRunning, Services: []ServiceInput{down}}); err != nil {
+	if err := s.Apply(ctx, 1, RunningReport([]ServiceInput{down})); err != nil {
 		t.Fatal(err)
 	}
 	ms, _ = s.Machines(ctx, 1)

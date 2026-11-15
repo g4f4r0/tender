@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -105,7 +106,7 @@ func (h *hub) call(t *testing.T, method, path, token string, body any) (int, str
 
 func TestRoutes(t *testing.T) {
 	h := newTestHub(t)
-	report := Report{Docker: DockerRunning, Services: []ServiceInput{running("web", "c1"), running("worker", "c2")}}
+	report := RunningReport([]ServiceInput{running("web", "c1"), running("worker", "c2")})
 
 	for _, c := range []struct {
 		method, path, token string
@@ -124,7 +125,7 @@ func TestRoutes(t *testing.T) {
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []map[string]any{
 			{"name": "x", "container_id": "c", "image": "i", "state": "running", "restart_policy": "sometimes"}}}, 422, "restart_policy"},
 		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
-		{"PUT", "/v1/machines/b/services", "token-b", Report{Docker: DockerRunning, Services: []ServiceInput{running("db", "c3")}}, 204, ""},
+		{"PUT", "/v1/machines/b/services", "token-b", RunningReport([]ServiceInput{running("db", "c3")}), 204, ""},
 		{"GET", "/v1/services", "", nil, 200, `"machine":"b","docker":"running","data":[{"id":3`},
 		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":"running","data":[{"id":1`},
 		{"GET", "/v1/machines/nope/services", "", nil, 404, `Machine \"nope\" doesn't exist.`},
@@ -134,7 +135,7 @@ func TestRoutes(t *testing.T) {
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{"state": "running"}, 400, "unknown field"},
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{}, 200, `"alerts_enabled":false`},
 		// Docker stops answering: the list stays, with every state unknown.
-		{"PUT", "/v1/machines/a/services", "token-a", Report{Docker: DockerUnreachable}, 204, ""},
+		{"PUT", "/v1/machines/a/services", "token-a", UnreachableReport(), 204, ""},
 		{"GET", "/v1/machines/a/services", "", nil, 200, `"docker":"unreachable"`},
 		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"unknown"`},
 		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
@@ -157,7 +158,7 @@ func TestRoutes(t *testing.T) {
 func TestServiceCalledActions(t *testing.T) {
 	h := newTestHub(t)
 	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a",
-		Report{Docker: DockerRunning, Services: []ServiceInput{running("actions", "c1")}}); status != 204 {
+		RunningReport([]ServiceInput{running("actions", "c1")})); status != 204 {
 		t.Fatalf("report: %d %s", status, body)
 	}
 	for _, c := range []struct {
@@ -454,5 +455,64 @@ func TestDaemonDockerUnreachable(t *testing.T) {
 	ms, _ = NewStore(h.db).Machines(context.Background(), 1)
 	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].State != StateRunning {
 		t.Errorf("after Docker is back: %+v", ms)
+	}
+}
+
+// Docker running with no containers is a report too: "services": [], so an earlier outage
+// resolves and the hub doesn't refuse it every minute.
+func TestDaemonZeroContainers(t *testing.T) {
+	h := newTestHub(t)
+	f := newFakeDocker(t)
+	var logs syncBuffer
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(&logs, nil)))
+	ctx := context.Background()
+	s := NewStore(h.db)
+	if err := s.Apply(ctx, 1, UnreachableReport()); err != nil {
+		t.Fatal(err)
+	}
+	d.reportNow(ctx)
+	ms, err := s.Machines(ctx, 1)
+	if err != nil || ms[0].Docker == nil || *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || len(ms[0].Data) != 0 {
+		t.Errorf("after a report of no containers: %+v, %v", ms, err)
+	}
+	if strings.Contains(logs.String(), "could not send") {
+		t.Errorf("the hub refused the report: %s", logs.String())
+	}
+}
+
+// A running report always carries its list, [] for none, and an unreachable one never does.
+func TestReportJSON(t *testing.T) {
+	for _, c := range []struct {
+		r    Report
+		want string
+	}{
+		{RunningReport(nil), `{"docker":"running","services":[]}`},
+		{RunningReport([]ServiceInput{}), `{"docker":"running","services":[]}`},
+		{UnreachableReport(), `{"docker":"unreachable"}`},
+	} {
+		if b, err := json.Marshal(c.r); err != nil || string(b) != c.want {
+			t.Errorf("%+v = %s, %v; want %s", c.r, b, err, c.want)
+		}
+	}
+}
+
+// The hub takes a running report with no containers.
+func TestReportOfNoContainers(t *testing.T) {
+	h := newTestHub(t)
+	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []any{}}); status != 204 {
+		t.Fatalf("PUT: %d %s", status, body)
+	}
+	if status, body := h.call(t, "GET", "/v1/machines/a/services", "", nil); status != 200 || !strings.Contains(body, `{"machine":"a","docker":"running","data":[]}`) {
+		t.Errorf("GET: %d %s", status, body)
+	}
+}
+
+// A machine removed between its lookup and the read is a 404, not a crash.
+func TestListMachineGone(t *testing.T) {
+	h := newTestHub(t)
+	err := NewStore(h.db).listMachine(httptest.NewRecorder(), httptest.NewRequest("GET", "/v1/machines/gone/services", nil))
+	var e *server.Error
+	if !errors.As(err, &e) || e.Status != http.StatusNotFound {
+		t.Errorf("listMachine of a machine that is gone = %v, want a 404", err)
 	}
 }
