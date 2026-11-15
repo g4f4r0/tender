@@ -41,6 +41,9 @@ func NewStore(d *db.DB, services Services) *Store {
 const (
 	// lifetime is how long an action may wait for the daemon, or run without an answer.
 	lifetime = 15 * time.Minute
+	// systemLifetime is how long an update or an upgrade may run without an answer: an update waits
+	// up to 30 minutes for a running backup, and an upgrade can take a while too.
+	systemLifetime = 45 * time.Minute
 	// handOutAgain is how long, in seconds, the daemon has to claim an action it was handed, before
 	// it is handed out again.
 	handOutAgain = "30"
@@ -57,7 +60,7 @@ const (
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 // selectSummaries leaves out the output, which can be 256 KiB an action, for the list.
 const (
-	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.status, a.output_cleared, a.created_at, a.updated_at`
+	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.version, a.packages, a.status, a.output_cleared, a.created_at, a.updated_at`
 	selectSummaries = `SELECT ` + summaryColumns + ` FROM actions a JOIN machines m ON m.id = a.machine_id`
 	selectActions   = `SELECT ` + summaryColumns + `, a.output FROM actions a JOIN machines m ON m.id = a.machine_id`
 )
@@ -67,7 +70,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Action, error) {
 	var a Action
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Status, &a.OutputCleared,
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Version, &a.Packages, &a.Status, &a.OutputCleared,
 		&created, &updated, &a.Output)
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return a, err
@@ -76,7 +79,7 @@ func scan(row scanner) (Action, error) {
 func scanSummary(row scanner) (Summary, error) {
 	var a Summary
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Status, &a.OutputCleared,
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Version, &a.Packages, &a.Status, &a.OutputCleared,
 		&created, &updated)
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return a, err
@@ -93,12 +96,22 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, 
 			return Action{}, err
 		}
 	}
+	return s.insert(ctx, machineID, in, nil)
+}
+
+// CreateUpdate queues the update of a machine to a Tender release, such as 0.3.1. Only an update
+// rollout calls it, so the machines update one at a time.
+func (s *Store) CreateUpdate(ctx context.Context, machineID int64, version string) (Action, error) {
+	return s.insert(ctx, machineID, Input{Type: TypeUpdate}, &version)
+}
+
+func (s *Store) insert(ctx context.Context, machineID int64, in Input, version *string) (Action, error) {
 	now := time.Now().Unix()
 	var id int64
 	err := s.db.Write.QueryRowContext(ctx,
-		`INSERT INTO actions (machine_id, type, service, unit, priority, since, lines, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id`,
-		machineID, in.Type, in.Service, in.Unit, in.Priority, in.Since, in.Lines, now, now).Scan(&id)
+		`INSERT INTO actions (machine_id, type, service, unit, priority, since, lines, version, packages, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id`,
+		machineID, in.Type, in.Service, in.Unit, in.Priority, in.Since, in.Lines, version, in.Packages, now, now).Scan(&id)
 	if err != nil {
 		return Action{}, err
 	}
@@ -136,25 +149,29 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Summary, error) {
 // output of logs actions that completed more than Keep ago. machineID 0 tidies every machine's.
 // It only reads when there is nothing to do, so a wait doesn't take the write lock.
 func (s *Store) tidy(ctx context.Context, machineID int64, now time.Time) error {
-	stale, old := now.Add(-lifetime).Unix(), now.Add(-s.Keep).Unix()
-	const expired = `(status = 'pending' AND created_at < ?2) OR (status = 'in_progress' AND updated_at < ?2)`
+	// Every statement numbers its arguments the same way: ?1 the machine, ?2 when a pending or a
+	// running action is stale, ?3 when a logs action's output is old, ?4 when a running update or
+	// upgrade is stale, ?5 and ?6 the failures, ?7 now.
+	args := []any{machineID, now.Add(-lifetime).Unix(), now.Add(-s.Keep).Unix(), now.Add(-systemLifetime).Unix(),
+		notPickedUp, notAnswered, now.Unix()}
+	const expired = `(status = 'pending' AND created_at < ?2) OR
+		(status = 'in_progress' AND updated_at < CASE WHEN type IN ('update', 'upgrade') THEN ?4 ELSE ?2 END)`
 	// A failed logs action holds why it failed, not logs, so only a completed one is cleared.
 	const clearable = `type = 'logs' AND status = 'completed' AND output_cleared = 0 AND updated_at < ?3`
 	var any bool
 	if err := s.db.Read.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM actions WHERE (?1 = 0 OR machine_id = ?1) AND ((`+expired+`) OR (`+clearable+`)))`,
-		machineID, stale, old).Scan(&any); err != nil || !any {
+		args[:4]...).Scan(&any); err != nil || !any {
 		return err
 	}
 	if _, err := s.db.Write.ExecContext(ctx,
-		`UPDATE actions SET status = 'failed', output = CASE status WHEN 'pending' THEN ?4 ELSE ?5 END, updated_at = ?6
-		 WHERE (?1 = 0 OR machine_id = ?1) AND (`+expired+`)`,
-		machineID, stale, old, notPickedUp, notAnswered, now.Unix()); err != nil {
+		`UPDATE actions SET status = 'failed', output = CASE status WHEN 'pending' THEN ?5 ELSE ?6 END, updated_at = ?7
+		 WHERE (?1 = 0 OR machine_id = ?1) AND (`+expired+`)`, args...); err != nil {
 		return err
 	}
 	res, err := s.db.Write.ExecContext(ctx,
-		`UPDATE actions SET output = NULL, output_cleared = 1, updated_at = ?4 WHERE (?1 = 0 OR machine_id = ?1) AND `+clearable,
-		machineID, stale, old, now.Unix())
+		`UPDATE actions SET output = NULL, output_cleared = 1, updated_at = ?7
+		 WHERE (?1 = 0 OR machine_id = ?1) AND `+clearable, args...)
 	if err != nil {
 		return err
 	}

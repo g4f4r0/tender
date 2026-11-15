@@ -21,8 +21,9 @@ const (
 	// pollWait is how long the hub holds a long poll; the client allows pollTimeout for it.
 	pollWait    = 25
 	pollTimeout = 40 * time.Second
-	// actionTimeout bounds one action.
-	actionTimeout = 5 * time.Minute
+	// actionTimeout bounds one action, and upgradeTimeout an upgrade of the system's packages.
+	actionTimeout  = 5 * time.Minute
+	upgradeTimeout = 40 * time.Minute
 	// maxEncoded keeps the report of a logs action under the hub's 1 MiB body limit, however many
 	// characters JSON has to escape.
 	maxEncoded = 900 << 10
@@ -39,6 +40,20 @@ type Runner interface {
 	Changed()
 }
 
+// System does the actions on the machine itself, outside the daemon's sandbox. cmd/tender wires it.
+type System interface {
+	// Upgrade upgrades the system's packages, security or all, and returns what the upgrade printed.
+	Upgrade(ctx context.Context, packages string) (string, error)
+	// Update starts the job that installs a Tender release. The job restarts the daemon, so how it
+	// ended comes from UpdateResult, maybe in the next daemon.
+	Update(ctx context.Context, version string) error
+	// UpdateResult returns how the last update job to version ended, and false while there is no
+	// result for it yet.
+	UpdateResult(version string) (status, output string, ok bool)
+	// ClearUpdateResult forgets that result, once the hub has it.
+	ClearUpdateResult()
+}
+
 // Daemon long-polls the hub for this machine's actions and runs them one at a time. It claims each
 // before it runs it, and keeps each report until the hub has it. Set the exported fields after
 // NewDaemon. Run drives it; nothing else does.
@@ -51,6 +66,10 @@ type Daemon struct {
 	// StateDir is the daemon's state folder, where reports wait in actions/ until the hub has them.
 	// Empty keeps them in memory only.
 	StateDir string
+	System   System // runs the update and upgrade actions; without it they fail
+	// Busy marks the daemon busy while it runs an action, so an update of Tender waits for it, and
+	// says when an update runs, so the action waits. Nil never waits.
+	Busy func() (release func(), err error)
 
 	poll    *client.Client  // Hub, with room for the long poll
 	pollErr string          // the last poll error logged, so it is logged once
@@ -100,10 +119,20 @@ func (d *Daemon) Run(ctx context.Context) {
 	}
 }
 
+// updateCheck is how often the daemon looks for the update job's result while an update's report
+// waits for it.
+const updateCheck = 5 * time.Second
+
 func (d *Daemon) sleep(ctx context.Context) {
+	wait := d.Every
+	for _, r := range d.waiting {
+		if r.Patch == nil && r.Type == TypeUpdate {
+			wait = min(wait, updateCheck)
+		}
+	}
 	select {
 	case <-ctx.Done():
-	case <-time.After(d.Every):
+	case <-time.After(wait):
 	}
 }
 
@@ -114,6 +143,18 @@ const claimFor = 25 * time.Second
 // run claims an action, does it and reports how it ended. The output, which may be logs, is never
 // logged.
 func (d *Daemon) run(ctx context.Context, a Action) {
+	if a.Type == TypeUpdate {
+		d.runUpdate(ctx, a)
+		return
+	}
+	if d.Busy != nil {
+		release, err := d.Busy()
+		if err != nil { // Tender is updating; the hub hands the action out again in 30 s
+			d.Log.Info("waiting for the update of Tender before an action", "id", a.ID, "type", a.Type, "error", err)
+			return
+		}
+		defer release()
+	}
 	if !d.claim(ctx, a) {
 		return
 	}
@@ -165,7 +206,11 @@ func (d *Daemon) claim(ctx context.Context, a Action) bool {
 
 // do runs the action and returns its report.
 func (d *Daemon) do(ctx context.Context, a Action) *Patch {
-	actx, cancel := context.WithTimeout(ctx, actionTimeout)
+	timeout := actionTimeout
+	if a.Type == TypeUpgrade {
+		timeout = upgradeTimeout
+	}
+	actx, cancel := context.WithTimeout(ctx, timeout)
 	output, err := d.execute(actx, a)
 	cancel()
 	p := Patch{Status: StatusCompleted}
@@ -200,6 +245,10 @@ func (d *Daemon) execute(ctx context.Context, a Action) (string, error) {
 		return d.Services.Service(ctx, a.Type, *a.Service, lines, since)
 	case a.Service == nil && a.Type == TypeLogs:
 		return ReadJournal(ctx, Query{Unit: deref(a.Unit), Priority: deref(a.Priority), Since: since, Lines: lines}, time.Now())
+	case a.Type == TypeUpgrade && d.System == nil:
+		return "", errors.New("this daemon can't upgrade the machine")
+	case a.Type == TypeUpgrade:
+		return d.System.Upgrade(ctx, deref(a.Packages))
 	}
 	return "", fmt.Errorf("this daemon doesn't know the action %q; update Tender on this machine", a.Type)
 }
@@ -215,6 +264,8 @@ func deref(s *string) string {
 func failure(a Action, err error) string {
 	var msg string
 	switch {
+	case a.Type == TypeUpgrade:
+		msg = fmt.Sprintf("Could not upgrade %s: %v", PackagesText(deref(a.Packages)), err)
 	case a.Service == nil:
 		msg = fmt.Sprintf("Could not read the machine's logs: %v", err)
 	case a.Type == TypeLogs:
@@ -241,4 +292,63 @@ func fitJSON(s string) string {
 		}
 		s = s[len(s)/4+i+1:]
 	}
+}
+
+// updateWait is how long the daemon waits for the update job's result before it reports the update
+// failed. The job waits up to 30 minutes for a running backup, then 2 for the health check.
+const updateWait = time.Hour
+
+// runUpdate claims an update and starts the job that installs the release. The job restarts the
+// daemon when it swaps the binary, so the report waits, without a result, in the state folder: this
+// daemon or the next one sends it once the job has left its result. The update doesn't mark the
+// daemon busy: the job itself waits for a running backup or action.
+func (d *Daemon) runUpdate(ctx context.Context, a Action) {
+	if !d.claim(ctx, a) {
+		return
+	}
+	r := &sent{ID: a.ID, Key: client.NewKey(), Type: a.Type, Version: deref(a.Version), Started: time.Now().UTC()}
+	d.keep(r)
+	var err error
+	if d.System == nil {
+		err = errors.New("this daemon can't update Tender")
+	} else {
+		err = d.System.Update(ctx, r.Version)
+	}
+	if ctx.Err() != nil {
+		return // the job restarts the daemon; the next one reports
+	}
+	if !d.updateResult(r) {
+		out := fmt.Sprintf("Could not update Tender to %s: %v.", r.Version, err)
+		if err == nil {
+			out = fmt.Sprintf("The update job to Tender %s ended without saying how. See: journalctl -u tenderupdate.", r.Version)
+		}
+		r.Patch = &Patch{Status: StatusFailed, Output: &out}
+		d.keep(r)
+	}
+	d.Log.Info("action finished", "id", a.ID, "type", a.Type, "version", r.Version, "status", r.Patch.Status)
+	if d.send(ctx, r) && d.System != nil {
+		d.System.ClearUpdateResult()
+	}
+}
+
+// updateResult fills in an update's report from the job's result, and says whether there was one.
+// One that waited longer than updateWait fails.
+func (d *Daemon) updateResult(r *sent) bool {
+	if d.System != nil {
+		if status, output, ok := d.System.UpdateResult(r.Version); ok {
+			if status != StatusCompleted {
+				status = StatusFailed
+			}
+			r.Patch = &Patch{Status: status, Output: &output}
+			d.keep(r)
+			return true
+		}
+	}
+	if time.Since(r.Started) < updateWait {
+		return false
+	}
+	out := fmt.Sprintf("The update job to Tender %s said nothing for %s, so the daemon gave up on it. See: journalctl -u tenderupdate.", r.Version, updateWait)
+	r.Patch = &Patch{Status: StatusFailed, Output: &out}
+	d.keep(r)
+	return true
 }

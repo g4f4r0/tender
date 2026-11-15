@@ -42,6 +42,9 @@ type Daemon struct {
 	StateDir  string
 	ResticBin string // default "restic" on PATH
 	Log       *slog.Logger
+	// Busy marks the daemon busy while a backup runs, so an update of Tender waits for it, and
+	// says when an update runs, so the backup waits for the next tick. Nil never waits.
+	Busy func() (release func(), err error)
 
 	newRunner  func(Settings) (Runner, error)
 	now        func() time.Time
@@ -239,6 +242,14 @@ func (a *Daemon) runDue(ctx context.Context) {
 		return
 	}
 	a.waiting = false
+	if a.Busy != nil {
+		release, err := a.Busy()
+		if err != nil {
+			a.Log.Info("backup due, waiting for the update of Tender", "error", err)
+			return
+		}
+		defer release()
+	}
 
 	a.Log.Info("backup due", "schedule", a.settings.Schedule)
 	o := a.do(ctx, TypeBackup, func(r Runner) Outcome { return r.Backup(ctx, a.Paths, a.Exclude) })

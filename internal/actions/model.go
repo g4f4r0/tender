@@ -8,12 +8,25 @@ const (
 	TypeStop    = "stop"
 	TypeRestart = "restart"
 	TypeLogs    = "logs"
+	TypeUpdate  = "update"  // install a Tender release on the machine; only an update rollout queues it
+	TypeUpgrade = "upgrade" // upgrade the machine's system packages
+
+	PackagesSecurity = "security"
+	PackagesAll      = "all"
 
 	StatusPending    = "pending"
 	StatusInProgress = "in_progress"
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
 )
+
+// PackagesText names an upgrade's packages in a sentence: "the security packages" or "every package".
+func PackagesText(packages string) string {
+	if packages == PackagesAll {
+		return "every package"
+	}
+	return "the " + packages + " packages"
+}
 
 // The limits of a logs action.
 const (
@@ -31,12 +44,14 @@ var Priorities = []string{"emerg", "alert", "crit", "err", "warning", "notice", 
 type Summary struct {
 	ID            int64     `json:"id"`
 	Machine       string    `json:"machine"`  // the machine's name
-	Type          string    `json:"type"`     // start, stop, restart or logs
+	Type          string    `json:"type"`     // start, stop, restart, logs, update or upgrade
 	Service       *string   `json:"service"`  // the service's name; null for the machine's journal
 	Unit          *string   `json:"unit"`     // machine logs only: the systemd unit, or null for every unit
 	Priority      *string   `json:"priority"` // machine logs only: this priority and the more severe ones, or null for all
 	Since         *string   `json:"since"`    // logs only: how far back, such as 1h, or null for no limit
 	Lines         *int      `json:"lines"`    // logs only: at most this many of the newest lines
+	Version       *string   `json:"version"`  // update only: the Tender release, such as 0.3.1
+	Packages      *string   `json:"packages"` // upgrade only: security or all
 	Status        string    `json:"status"`   // pending, in_progress, completed or failed
 	OutputCleared bool      `json:"output_cleared"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -60,6 +75,7 @@ type Input struct {
 	Priority *string `json:"priority,omitempty"` // machine logs only
 	Since    *string `json:"since,omitempty"`    // logs only, such as 30m, 1h or 7d, at most 7d
 	Lines    *int    `json:"lines,omitempty"`    // logs only, 1 to 2000, default 200
+	Packages *string `json:"packages,omitempty"` // upgrade only: security (the default) or all
 }
 
 // Patch is the body of PATCH /v1/machines/{machine}/actions/{id}, with which the daemon reports

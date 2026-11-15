@@ -3,6 +3,7 @@ package backups
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -719,5 +720,32 @@ func TestUnusableSettingsAreLoggedOnce(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "unusable backup settings"); n != 1 {
 		t.Errorf("logged %d times in three ticks, want once:\n%s", n, logs.String())
+	}
+}
+
+// A due backup waits while Tender updates, and holds the daemon busy while it runs.
+func TestBackupWaitsForTheUpdate(t *testing.T) {
+	h := newHub(t)
+	a, stub := testDaemon(t, h)
+	ctx := context.Background()
+	updating, held := true, false
+	a.Busy = func() (func(), error) {
+		if updating {
+			return nil, errors.New("Tender is updating")
+		}
+		held = true
+		return func() { held = false }, nil
+	}
+	a.refreshSettings(ctx)
+	a.runDue(ctx)
+	if len(stub.calls) != 0 {
+		t.Fatalf("a backup ran during the update: %v", stub.calls)
+	}
+	updating = false
+	busyDuring := false
+	a.newRunner = func(Settings) (Runner, error) { busyDuring = busyDuring || held; return stub, nil }
+	a.runDue(ctx)
+	if strings.Join(stub.calls, ",") != "backup,cleanup,check" || !busyDuring || held {
+		t.Errorf("after the update: calls %v, busy during %v, still held %v", stub.calls, busyDuring, held)
 	}
 }
