@@ -54,7 +54,7 @@ tender machines set db --updates manual
 db: updates manual, allowed ports none, security alerts on.
 ```
 
-A release that needs a person, such as one with a manual migration, carries the file `tender-release.json` with `{"auto": false}`. Auto mode never rolls it out; `tender update` still can.
+Each release carries the file `tender-release.json`, listed in its signed `SHA256SUMS`. The workflow copies it from the repository, where it is `{"auto": true}`. For a release that needs a person, such as one with a manual migration, set it to `{"auto": false}` before tagging. Auto mode rolls a release out only when the file is there, signed and says `true`; `tender update` still can.
 
 ## Update now
 
@@ -116,7 +116,7 @@ Read the job's own log on that machine with `journalctl -u tenderupdate`. Auto m
 
 ### Signed releases
 
-The release workflow signs each release's `SHA256SUMS` with an ed25519 key, into `SHA256SUMS.sig`, the base64 of the signature. The private key lives only in a GitHub Actions secret and in the maintainer's secret store. The binary carries the public keys:
+The release workflow builds and tests a release in one job, then signs its `SHA256SUMS` in a separate `sign` job, with an ed25519 key, into `SHA256SUMS.sig`, the base64 of the signature. The `sign` job runs only on tags, in the GitHub environment `release`, whose secret `TENDER_RELEASE_SIGNING_KEY` holds the private key; the maintainer's secret store keeps a copy. It runs no third-party code, only the repository's own `internal/release/sign`, which refuses a key that isn't one of the public keys the binary carries:
 
 ```text
 FFCQetX09NSfXliwZi1eVws0iGQkNwZch0dLQTru3TI=

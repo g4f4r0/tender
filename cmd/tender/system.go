@@ -52,7 +52,7 @@ func newUpdates(d *db.DB, ms *machines.Store, as *actions.Store) *updates.Store 
 		return out, nil
 	}
 	api, download := install.ReleaseURLs(os.Getenv)
-	s := updates.NewStore(d, list, updateActions{as}, updates.GitHub{API: api, Download: download})
+	s := updates.NewStore(d, list, updateActions{as}, updates.GitHub{API: api, Download: download, Keys: install.ReleaseKeys()})
 	s.HubMachine = hubMachine()
 	return s
 }

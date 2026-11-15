@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	releasekeys "github.com/g4f4r0/tender/internal/release"
 )
 
 // Where Tender's releases are. EnvTestGitHub replaces both hosts, for the end-to-end test's fake
@@ -39,25 +41,8 @@ func ReleaseURLs(getenv func(string) string) (api, download string) {
 	return releasesAPI, downloadURL
 }
 
-// releaseKeys are the public keys that sign Tender's releases: base64 of 32-byte ed25519 keys. The
-// release workflow signs each release's SHA256SUMS with the private key, which lives only in a
-// GitHub Actions secret. It is a list, so a new key can ship before the old one is retired.
-var releaseKeys = []string{"FFCQetX09NSfXliwZi1eVws0iGQkNwZch0dLQTru3TI="}
-
-// testReleaseKey is one more key, set only in the end-to-end test's builds with
-// -ldflags "-X github.com/g4f4r0/tender/internal/install.testReleaseKey=...". Release builds leave it empty.
-var testReleaseKey string
-
 // ReleaseKeys returns the keys a release's signature may come from.
-func ReleaseKeys() []ed25519.PublicKey {
-	var out []ed25519.PublicKey
-	for _, k := range append(releaseKeys, testReleaseKey) {
-		if raw, err := base64.StdEncoding.DecodeString(k); err == nil && len(raw) == ed25519.PublicKeySize {
-			out = append(out, ed25519.PublicKey(raw))
-		}
-	}
-	return out
-}
+func ReleaseKeys() []ed25519.PublicKey { return releasekeys.PublicKeys() }
 
 // verifySums checks that sig, the base64 text of SHA256SUMS.sig, is an ed25519 signature of sums
 // by one of keys.
@@ -246,25 +231,43 @@ func ValidVersion(s string) bool {
 	return ok && len(s) <= 64
 }
 
-// ReleaseOptions is the optional asset tender-release.json of a release, for a release that needs a
-// person: {"auto": false} keeps auto mode from rolling it out.
+// ReleaseOptions is the file tender-release.json of a release, which the release workflow writes
+// from the repository's own and lists in SHA256SUMS, so the signature covers it. {"auto": false}
+// keeps auto mode from rolling the release out, for a release that needs a person.
 const ReleaseOptions = "tender-release.json"
 
-// AutoAllowed reports whether auto mode may roll release r out: true unless its tender-release.json
-// says {"auto": false}. A file that can't be read or understood keeps auto mode away too.
-func AutoAllowed(ctx context.Context, download string, r Release) (bool, error) {
-	if !r.HasAsset(ReleaseOptions) {
-		return true, nil
-	}
-	body, err := get(ctx, download+"/"+r.Tag+"/"+ReleaseOptions, maxSumsBytes)
+// AutoAllowed reports whether auto mode may roll release r out: only when its tender-release.json is
+// in SHA256SUMS, signed by one of keys, and says {"auto": true}. Without it, or when the signature
+// or the checksum doesn't match, a person decides; the error then says why.
+func AutoAllowed(ctx context.Context, download string, keys []ed25519.PublicKey, r Release) (bool, error) {
+	base := download + "/" + r.Tag + "/"
+	sums, err := get(ctx, base+checksumsAsset, maxSumsBytes)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("cannot download the checksums of %s: %w", r.Tag, err)
+	}
+	sig, err := get(ctx, base+SignatureAsset, maxSumsBytes)
+	if err != nil {
+		return false, fmt.Errorf("cannot download the signature of %s: %w", r.Tag, err)
+	}
+	if !verifySums(keys, sums, sig) {
+		return false, fmt.Errorf("the signature of %s does not match its checksums", r.Tag)
+	}
+	want := checksumFor(sums, ReleaseOptions)
+	if want == "" {
+		return false, nil // a release from before the file, or one that left it out: a person decides
+	}
+	body, err := get(ctx, base+ReleaseOptions, maxSumsBytes)
+	if err != nil {
+		return false, fmt.Errorf("cannot download %s of %s: %w", ReleaseOptions, r.Tag, err)
+	}
+	if sum(body) != want {
+		return false, fmt.Errorf("%s of %s does not match its checksum", ReleaseOptions, r.Tag)
 	}
 	var opts struct {
-		Auto *bool `json:"auto"`
+		Auto bool `json:"auto"`
 	}
 	if err := json.Unmarshal(body, &opts); err != nil {
 		return false, fmt.Errorf("%s of %s is not valid JSON: %w", ReleaseOptions, r.Tag, err)
 	}
-	return opts.Auto == nil || *opts.Auto, nil
+	return opts.Auto, nil
 }

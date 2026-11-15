@@ -33,6 +33,7 @@ type release struct {
 	key        ed25519.PrivateKey // the release key
 	noSig      bool               // the release has no SHA256SUMS.sig, like v0.2.2
 	binVersion string             // what the release's binary says it is with "tender version"
+	options    string             // tender-release.json; "" for none
 }
 
 var goodSums = sum([]byte(newBinary)) + "  tender_linux_amd64\n"
@@ -73,6 +74,8 @@ func newRelease(t *testing.T, e *env, sums string) *release {
 			_, _ = w.Write([]byte(sig))
 		case strings.HasSuffix(p, "/tender_linux_amd64"):
 			_, _ = w.Write([]byte(newBinary))
+		case strings.HasSuffix(p, "/"+ReleaseOptions) && r.options != "":
+			_, _ = w.Write([]byte(r.options))
 		default:
 			http.NotFound(w, req)
 		}
@@ -502,6 +505,35 @@ func TestReleaseKeysAreEmbedded(t *testing.T) {
 	keys := ReleaseKeys()
 	if len(keys) == 0 || base64.StdEncoding.EncodeToString(keys[0]) != "FFCQetX09NSfXliwZi1eVws0iGQkNwZch0dLQTru3TI=" {
 		t.Errorf("keys = %v", keys)
+	}
+}
+
+// Auto mode may roll a release out only when its tender-release.json is in the signed checksums
+// and says so. Missing, unsigned or changed, it means a person decides.
+func TestAutoAllowedNeedsSignedOptions(t *testing.T) {
+	e := newEnv(t)
+	r := newRelease(t, e, goodSums)
+	rel := Release{Tag: "v0.2.0"}
+	ctx := context.Background()
+	on, off := `{"auto": true}`, `{"auto": false}`
+	for _, c := range []struct {
+		name, options, sums, sig string
+		want                     bool
+	}{
+		{"missing", "", goodSums, "", false},
+		{"signed, auto", on, goodSums + sum([]byte(on)) + "  " + ReleaseOptions + "\n", "", true},
+		{"signed, not auto", off, goodSums + sum([]byte(off)) + "  " + ReleaseOptions + "\n", "", false},
+		{"not in the checksums", on, goodSums, "", false},
+		{"changed", on, goodSums + sum([]byte(off)) + "  " + ReleaseOptions + "\n", "", false},
+		{"bad signature", on, goodSums + sum([]byte(on)) + "  " + ReleaseOptions + "\n", "bm90IGEgc2lnbmF0dXJl\n", false},
+	} {
+		r.mu.Lock()
+		r.options, r.sums, r.sig = c.options, c.sums, c.sig
+		r.mu.Unlock()
+		got, err := AutoAllowed(ctx, e.in.DownloadURL, e.in.ReleaseKeys, rel)
+		if got != c.want {
+			t.Errorf("%s: auto = %v (%v), want %v", c.name, got, err, c.want)
+		}
 	}
 }
 

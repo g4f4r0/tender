@@ -2,6 +2,7 @@ package updates
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -201,8 +202,9 @@ func (s *Store) finish(ctx context.Context, id int64, status string, reason *str
 
 // GitHub asks GitHub's API about Tender's releases.
 type GitHub struct {
-	API      string // the releases API, such as https://api.github.com/repos/g4f4r0/tender/releases
-	Download string // where the release files are
+	API      string              // the releases API, such as https://api.github.com/repos/g4f4r0/tender/releases
+	Download string              // where the release files are
+	Keys     []ed25519.PublicKey // the keys a release's SHA256SUMS must be signed by
 }
 
 // Latest returns the newest stable release and whether auto mode may roll it out.
@@ -214,7 +216,7 @@ func (g GitHub) Latest(ctx context.Context) (string, bool, error) {
 	if err := r.Official(); err != nil {
 		return "", false, err
 	}
-	auto, err := install.AutoAllowed(ctx, g.Download, r)
+	auto, err := install.AutoAllowed(ctx, g.Download, g.Keys, r)
 	return r.Tag[1:], auto, err
 }
 
