@@ -79,7 +79,7 @@ The daemon checks its machine when it starts and every 15 minutes, and reports w
 | Check | What it reads | Alert |
 | --- | --- | --- |
 | Firewall | `ufw status verbose`, or without ufw, the input chains of `nft -j list chains`, or `iptables -S INPUT`. | `security.firewall_off` when no active firewall denies incoming traffic by default. |
-| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port is on the machine's allowlist. |
+| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). A DHCP client's port (UDP 68, or 546 for DHCPv6) is left out: the client only takes the answers of the network's DHCP server. Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port is on the machine's allowlist. |
 | SSH | `PasswordAuthentication` and `PermitRootLogin` from `sshd -T`. | `security.ssh_weak` when `PasswordAuthentication` is `yes`. |
 | Updates | A simulated `apt-get upgrade --with-new-pkgs`, what `tender machines upgrade --all-packages` would install, counting the updates from a security repository, and whether unattended-upgrades is on. | `security.updates_pending` after 3 days, `security.auto_updates_off`. |
 | Reboot | `/var/run/reboot-required` and its age. | `security.reboot_required` after 7 days. |

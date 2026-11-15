@@ -121,7 +121,9 @@ func TestRoutes(t *testing.T) {
 		{"PUT", "/v1/machines/a/services", "", report, 401, "Bearer"},
 		{"PUT", "/v1/machines/a/services", "token-b", report, 403, "another machine"},
 		{"PUT", "/v1/machines/a/services", "token-a", []ServiceInput{}, 422, "The request body must be a JSON object."},
-		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "sleeping"}, 422, "docker must be running or unreachable."},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "sleeping"}, 422, "docker must be running, unreachable or off."},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "off", "services": []any{}}, 422, "Leave services and docker_reason out"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "off", "docker_reason": "refused"}, 422, "Leave services and docker_reason out"},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running"}, 422, "services is required when docker is running"},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "unreachable", "services": []any{}}, 422, "Leave services out"},
 		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []map[string]any{
@@ -140,6 +142,13 @@ func TestRoutes(t *testing.T) {
 		{"PUT", "/v1/machines/a/services", "token-a", UnreachableReport(ReasonTimeout), 204, ""},
 		{"GET", "/v1/machines/a/services", "", nil, 200, `"docker":"unreachable"`},
 		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"unknown"`},
+		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
+		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"running"`},
+		// Docker is turned off: the hub forgets it, as for a machine without Docker, and again changes nothing.
+		{"PUT", "/v1/machines/a/services", "token-a", OffReport(), 204, ""},
+		{"PUT", "/v1/machines/a/services", "token-a", OffReport(), 204, ""},
+		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":null,"docker_reason":null,"data":[{"id":1`},
+		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"removed"`},
 		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
 		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"running"`},
 	} {
@@ -492,6 +501,7 @@ func TestReportJSON(t *testing.T) {
 		{RunningReport(nil), `{"docker":"running","services":[]}`},
 		{RunningReport([]ServiceInput{}), `{"docker":"running","services":[]}`},
 		{UnreachableReport(ReasonRefused), `{"docker":"unreachable","docker_reason":"refused"}`},
+		{OffReport(), `{"docker":"off"}`},
 	} {
 		if b, err := json.Marshal(c.r); err != nil || string(b) != c.want {
 			t.Errorf("%+v = %s, %v; want %s", c.r, b, err, c.want)

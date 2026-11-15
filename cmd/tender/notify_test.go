@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -96,5 +99,68 @@ func TestLoadMachines(t *testing.T) {
 	}
 	if b.Name != "b" || b.Services != nil || b.Docker != "" || b.DockerReportedAt != nil || b.LastSeen != nil || b.HasBackupSettings || b.LastBackup != nil || !b.LastCompletedBackup.IsZero() || b.CreatedAt.IsZero() {
 		t.Errorf("b = %+v", b)
+	}
+}
+
+// Docker turned off resolves the machine's docker.unreachable and its services' problems, through
+// the real stores and rules, and nothing opens again on the next run.
+func TestDockerOffResolves(t *testing.T) {
+	d := schema(t)
+	ctx := context.Background()
+	ms, bs, ss := machines.NewStore(d), backups.NewStore(d, testKey), services.NewStore(d)
+	if _, err := ms.Create(ctx, "ci"); err != nil {
+		t.Fatal(err)
+	}
+	load := loadMachines(ms, bs, ss, logs.NewStore(d, testKey), newSecurity(d, ms), newUpdates(d, ms, newActions(d, testKey)))
+	engine := notifications.NewEngine(notifications.NewStore(d, testKey), nil, notifications.Hub{Name: "hub", URL: "http://hub"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	tick := func(reports ...services.Report) []string {
+		t.Helper()
+		for _, r := range reports {
+			if err := ss.Apply(ctx, 1, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		now := time.Now()
+		if _, err := ms.AddUsage(ctx, 1, machines.UsageInput{DiskUsedPercent: 10, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		list, err := load(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Tick(ctx, now, list); err != nil {
+			t.Fatal(err)
+		}
+		r, err := d.Read.Query(`SELECT event FROM notifications ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = r.Close() }()
+		var events []string
+		for r.Next() {
+			var e string
+			if err := r.Scan(&e); err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, e)
+		}
+		return events
+	}
+	code := int64(1)
+	down := services.RunningReport([]services.ServiceInput{{Name: "web", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code}})
+	unreachable := services.UnreachableReport(services.ReasonRefused)
+	if got, want := tick(down, down), []string{"service.down"}; !slices.Equal(got, want) {
+		t.Fatalf("web down: %v, want %v", got, want)
+	}
+	if got, want := tick(unreachable, unreachable), []string{"service.down", "docker.unreachable"}; !slices.Equal(got, want) {
+		t.Fatalf("Docker unreachable: %v, want %v", got, want)
+	}
+	want := []string{"service.down", "docker.unreachable", "service.down.resolved", "docker.unreachable.resolved"}
+	if got := tick(services.OffReport()); !slices.Equal(got, want) {
+		t.Errorf("after Docker is off: %v, want %v", got, want)
+	}
+	if got := tick(services.OffReport()); !slices.Equal(got, want) {
+		t.Errorf("after a second off report: %v, want %v", got, want)
 	}
 }

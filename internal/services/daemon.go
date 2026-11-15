@@ -105,14 +105,21 @@ func (d *Daemon) Service(ctx context.Context, typ, service string, lines int, si
 
 // reportNow sends the hub the full container list. It first pings Docker: when its socket is
 // there but doesn't answer, or Docker answered on this machine before (see sawDocker) and can't be reached now, it tells
-// the hub Docker is unreachable. A machine that never had Docker sends nothing. A list that fails
-// after Docker answered is logged, and the hub keeps the last one.
+// the hub Docker is unreachable, or that it is off when systemd says Docker is turned off. A
+// machine that never had Docker sends nothing. A list that fails after Docker answered is logged,
+// and the hub keeps the last one.
 func (d *Daemon) reportNow(ctx context.Context) {
 	d.turn.Lock()
 	defer d.turn.Unlock()
 	if err := d.Runtime.Ping(ctx); err != nil {
-		if ctx.Err() == nil {
-			d.unreachable(ctx, err, errors.Is(err, errUnreachable) || d.sawDocker())
+		if ctx.Err() != nil {
+			return
+		}
+		tell := errors.Is(err, errUnreachable) || d.sawDocker()
+		if tell && errors.Is(err, errOff) {
+			d.off(ctx)
+		} else {
+			d.unreachable(ctx, err, tell)
 		}
 		return
 	}
@@ -239,6 +246,15 @@ func (d *Daemon) unreachable(ctx context.Context, err error, tell bool) {
 	if tell {
 		d.send(ctx, UnreachableReport(unreachableReason(err)))
 	}
+}
+
+// off tells the hub Docker is turned off, and logs it once until it changes.
+func (d *Daemon) off(ctx context.Context) {
+	if d.problem != "off" {
+		d.problem = "off"
+		d.Log.Info("Docker is turned off on this machine (docker.service and docker.socket aren't enabled), so Tender doesn't watch its services.")
+	}
+	d.send(ctx, OffReport())
 }
 
 // unreachableReason says why Docker can't be reached, in the hub's words.
