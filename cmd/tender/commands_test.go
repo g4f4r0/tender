@@ -338,11 +338,13 @@ func TestStatus(t *testing.T) {
 	h.pageSize = 1 // one alert per page: status must follow next_cursor
 	h.addServices(t, "web-1", services.Service{Name: "app", State: "running"}, services.Service{Name: "worker", State: "exited"},
 		services.Service{Name: "cron", State: "running"})
+	h.addServices(t, "db-1")
+	h.docker["db-1"] = services.DockerUnreachable
 	out := mustRun(t, h, a, "status")
 	for _, want := range []string{
 		"MACHINE   LAST SEEN      LAST BACKUP   STATUS   SERVICES\n",
 		"web-1     1 minute ago   1 day ago     failed   2/3 running\n",
-		"db-1      never          never         -        -\n",
+		"db-1      never          never         -        Docker unreachable\n",
 		"Open alerts: 2\n",
 		"warning    30 minutes ago   db-1 has never completed a backup.\n",
 		"critical   2 hours ago      The last backup on web-1 failed at 2026-11-13 10:00 UTC: restic said no. restic said no. restic s...\n",

@@ -41,21 +41,23 @@ const waitText = "It waits up to 60 seconds for the machine's daemon. If the dae
 // lookup resolves machine names to ids.
 func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 	mcp.AddReadOnly(m, "list_services", "List services",
-		"List the Docker containers each machine's daemon reports, once a minute, or one machine's. Each service is one container, "+
-			"by its container name: project (the compose project, or null), image, state (created, running, paused, restarting, exited, "+
-			"removing or dead), health (healthy, unhealthy, starting, or null without a health check), exit_code (while exited or dead), "+
-			"restart_count, started_at, alerts_enabled, stopped_by_tender (a Tender stop left it stopped, so it doesn't alert as down) "+
-			"and updated_at (RFC 3339 UTC). A machine without Docker has none.",
-		func(ctx context.Context, in listInput) (server.List[Service], error) {
+		"List the Docker containers each machine's daemon reports, once a minute, by machine, or one machine's. Per machine: docker "+
+			"(running, unreachable when its Docker engine doesn't answer, or null before any report) and data, its services. Each service is "+
+			"one container, by its container name: project (the compose project, or null), image, state (created, running, paused, restarting, "+
+			"exited, removing, dead, or unknown while Docker is unreachable), health (healthy, unhealthy, starting, or null without a health "+
+			"check), exit_code (while exited or dead), restart_count, restart_policy (no, always, unless-stopped or on-failure), started_at, "+
+			"alerts_enabled, stopped_by_tender (a Tender stop left it stopped, so it doesn't alert as down) and updated_at (RFC 3339 UTC). "+
+			"A machine without Docker has none.",
+		func(ctx context.Context, in listInput) (server.List[MachineServices], error) {
 			var id int64
 			if in.Machine != "" {
 				var err error
 				if id, err = mcp.Machine(ctx, lookup, in.Machine); err != nil {
-					return server.List[Service]{}, err
+					return server.List[MachineServices]{}, err
 				}
 			}
-			list, err := s.List(ctx, id)
-			return server.List[Service]{Data: list}, err
+			list, err := s.Machines(ctx, id)
+			return server.List[MachineServices]{Data: list}, err
 		})
 
 	act := func(typ string) func(context.Context, serviceInput) (Action, error) {

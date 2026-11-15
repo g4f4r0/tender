@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -101,7 +104,7 @@ func (h *hub) call(t *testing.T, method, path, token string, body any) (int, str
 
 func TestRoutes(t *testing.T) {
 	h := newTestHub(t)
-	report := []ServiceInput{running("web", "c1"), running("worker", "c2")}
+	report := Report{Docker: DockerRunning, Services: []ServiceInput{running("web", "c1"), running("worker", "c2")}}
 
 	for _, c := range []struct {
 		method, path, token string
@@ -109,15 +112,22 @@ func TestRoutes(t *testing.T) {
 		status              int
 		has                 string
 	}{
+		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":null,"data":[]}`},
+		{"GET", "/v1/services", "", nil, 200, `{"data":[]}`},
 		{"PUT", "/v1/machines/a/services", "", report, 401, "Bearer"},
 		{"PUT", "/v1/machines/a/services", "token-b", report, 403, "another machine"},
-		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{}, 422, "must be []services.ServiceInput"},
-		{"PUT", "/v1/machines/a/services", "token-a", report, 200, `"name":"web"`},
-		{"PUT", "/v1/machines/b/services", "token-b", []ServiceInput{running("db", "c3")}, 200, `"machine":"b"`},
-		{"GET", "/v1/services", "", nil, 200, `"name":"db"`},
-		{"GET", "/v1/machines/a/services", "", nil, 200, `"name":"worker"`},
+		{"PUT", "/v1/machines/a/services", "token-a", []ServiceInput{}, 422, "must be services.Report"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "sleeping"}, 422, "docker must be running or unreachable."},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running"}, 422, "services is required when docker is running"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "unreachable", "services": []any{}}, 422, "Leave services out"},
+		{"PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []map[string]any{
+			{"name": "x", "container_id": "c", "image": "i", "state": "running", "restart_policy": "sometimes"}}}, 422, "restart_policy"},
+		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
+		{"PUT", "/v1/machines/b/services", "token-b", Report{Docker: DockerRunning, Services: []ServiceInput{running("db", "c3")}}, 204, ""},
+		{"GET", "/v1/services", "", nil, 200, `"machine":"b","docker":"running","data":[{"id":3`},
+		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":"running","data":[{"id":1`},
 		{"GET", "/v1/machines/nope/services", "", nil, 404, `Machine \"nope\" doesn't exist.`},
-		{"GET", "/v1/machines/a/services/web", "", nil, 200, `"alerts_enabled":true`},
+		{"GET", "/v1/machines/a/services/web", "", nil, 200, `"restart_policy":"no"`},
 		{"GET", "/v1/machines/a/services/db", "", nil, 404, `Service \"db\" doesn't exist on this machine.`},
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{"alerts_enabled": false}, 200, `"alerts_enabled":false`},
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{"state": "running"}, 400, "unknown field"},
@@ -125,18 +135,24 @@ func TestRoutes(t *testing.T) {
 		{"POST", "/v1/machines/a/services/web/actions", "", map[string]any{"type": "explode"}, 422, "type must be start, stop, restart or logs."},
 		{"POST", "/v1/machines/a/services/web/actions", "", map[string]any{"type": "logs", "lines": 5000}, 422, "lines must be"},
 		{"POST", "/v1/machines/a/services/web/actions", "", map[string]any{"type": "restart"}, 202, `"status":"pending"`},
-		{"GET", "/v1/machines/a/services/actions/1", "", nil, 200, `"type":"restart"`},
-		{"GET", "/v1/machines/b/services/actions/1", "", nil, 404, "Action 1 doesn't exist on this machine."},
-		{"GET", "/v1/machines/a/services/actions/x", "", nil, 404, "is not an id"},
-		{"GET", "/v1/machines/a/services/actions", "", nil, 401, "Bearer"},
-		{"GET", "/v1/machines/a/services/actions?wait=31", "token-a", nil, 400, "wait must be a whole number of seconds from 0 to 30."},
-		{"GET", "/v1/machines/b/services/actions", "token-b", nil, 200, `{"data":[]}`},
-		{"GET", "/v1/machines/a/services/actions", "token-a", nil, 200, `"status":"in_progress"`},
-		{"PATCH", "/v1/machines/a/services/actions/1", "", map[string]any{"status": "completed"}, 401, "Bearer"},
-		{"PATCH", "/v1/machines/a/services/actions/1", "token-a", map[string]any{"status": "pending"}, 422, "status must be completed or failed."},
-		{"PATCH", "/v1/machines/a/services/actions/1", "token-a", map[string]any{"status": "completed"}, 204, ""},
-		{"PATCH", "/v1/machines/a/services/actions/1", "token-a", map[string]any{"status": "completed"}, 409, "not in_progress"},
-		{"GET", "/v1/machines/a/services/actions/1", "", nil, 200, `"status":"completed"`},
+		{"GET", "/v1/machines/a/service-actions/1", "", nil, 200, `"type":"restart"`},
+		{"GET", "/v1/machines/b/service-actions/1", "", nil, 404, "Action 1 doesn't exist on this machine."},
+		{"GET", "/v1/machines/a/service-actions/x", "", nil, 404, "is not an id"},
+		{"GET", "/v1/machines/a/service-actions", "", nil, 401, "Bearer"},
+		{"GET", "/v1/machines/a/service-actions?wait=31", "token-a", nil, 400, "wait must be a whole number of seconds from 0 to 30."},
+		{"GET", "/v1/machines/b/service-actions", "token-b", nil, 200, `{"data":[]}`},
+		{"GET", "/v1/machines/a/service-actions", "token-a", nil, 200, `"status":"in_progress"`},
+		{"PATCH", "/v1/machines/a/service-actions/1", "", map[string]any{"status": "completed"}, 401, "Bearer"},
+		{"PATCH", "/v1/machines/a/service-actions/1", "token-a", map[string]any{"status": "pending"}, 422, "status must be completed or failed."},
+		{"PATCH", "/v1/machines/a/service-actions/1", "token-a", map[string]any{"status": "completed"}, 204, ""},
+		{"PATCH", "/v1/machines/a/service-actions/1", "token-a", map[string]any{"status": "completed"}, 409, "not in_progress"},
+		{"GET", "/v1/machines/a/service-actions/1", "", nil, 200, `"status":"completed"`},
+		// Docker stops answering: the list stays, with every state unknown.
+		{"PUT", "/v1/machines/a/services", "token-a", Report{Docker: DockerUnreachable}, 204, ""},
+		{"GET", "/v1/machines/a/services", "", nil, 200, `"docker":"unreachable"`},
+		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"unknown"`},
+		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
+		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"running"`},
 	} {
 		status, body := h.call(t, c.method, c.path, c.token, c.body)
 		if status != c.status || !strings.Contains(body, c.has) {
@@ -147,7 +163,31 @@ func TestRoutes(t *testing.T) {
 		}
 	}
 	if status, body := h.call(t, "GET", "/v1/machines/a/services/web", "", nil); status != 200 || strings.Contains(body, "_reports") {
-		t.Errorf("internal counts are shown: %s", body)
+		t.Errorf("internal counts are shown: %d %s", status, body)
+	}
+}
+
+// A service may be called "actions": every service route still reaches it.
+func TestServiceCalledActions(t *testing.T) {
+	h := newTestHub(t)
+	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a",
+		Report{Docker: DockerRunning, Services: []ServiceInput{running("actions", "c1")}}); status != 204 {
+		t.Fatalf("report: %d %s", status, body)
+	}
+	for _, c := range []struct {
+		method, path string
+		body         any
+		status       int
+		has          string
+	}{
+		{"GET", "/v1/machines/a/services/actions", nil, 200, `"name":"actions"`},
+		{"PATCH", "/v1/machines/a/services/actions", map[string]any{"alerts_enabled": false}, 200, `"alerts_enabled":false`},
+		{"POST", "/v1/machines/a/services/actions/actions", map[string]any{"type": "logs"}, 202, `"service":"actions"`},
+		{"GET", "/v1/machines/a/service-actions/1", nil, 200, `"service":"actions"`},
+	} {
+		if status, body := h.call(t, c.method, c.path, "", c.body); status != c.status || !strings.Contains(body, c.has) {
+			t.Errorf("%s %s: %d %s, want %d with %q", c.method, c.path, status, body, c.status, c.has)
+		}
 	}
 }
 
@@ -155,7 +195,7 @@ func TestLongPollEndsWhenTheHubStops(t *testing.T) {
 	h := newTestHub(t)
 	done := make(chan int)
 	go func() {
-		status, _ := h.call(t, "GET", "/v1/machines/a/services/actions?wait=30", "token-a", nil)
+		status, _ := h.call(t, "GET", "/v1/machines/a/service-actions?wait=30", "token-a", nil)
 		done <- status
 	}()
 	time.Sleep(300 * time.Millisecond)
@@ -284,5 +324,63 @@ func TestDaemonPermissionDenied(t *testing.T) {
 	d.Run(ctx)
 	if n := strings.Count(logs.String(), `msg="Tender may not use Docker`); n != 1 || !strings.Contains(logs.String(), "level=WARN") {
 		t.Errorf("logged %d times:\n%s", n, logs.String())
+	}
+}
+
+// With Docker's socket there but refusing connections, the daemon tells the hub, once a report,
+// and doesn't poll for actions; when Docker answers again, the next report says so.
+func TestDaemonDockerUnreachable(t *testing.T) {
+	h := newTestHub(t)
+	dir, err := os.MkdirTemp("", "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "docker.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	_ = ln.Close()
+	if _, err := NewStore(h.db).Replace(context.Background(), 1, []ServiceInput{running("web", "c1")}); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs syncBuffer
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", socket, slog.New(slog.NewTextHandler(&logs, nil)))
+	d.Every = 50 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	d.Run(ctx)
+	ms, err := NewStore(h.db).Machines(context.Background(), 1)
+	if err != nil || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() < 2 || ms[0].Data[0].State != StateUnknown {
+		t.Errorf("after the outage: %+v, %v", ms, err)
+	}
+	if n := strings.Count(logs.String(), `msg="Docker is not answering`); n != 1 {
+		t.Errorf("logged %d times:\n%s", n, logs.String())
+	}
+	if strings.Contains(h.logs.String(), "service-actions") {
+		t.Errorf("polled for actions while Docker is unreachable:\n%s", h.logs.String())
+	}
+
+	// Docker is back.
+	_ = os.Remove(socket)
+	f := &fakeDocker{socket: socket, byName: map[string]*fakeContainer{}}
+	f.add(&fakeContainer{ID: "c1", Name: "web", State: "running"})
+	ln, err = net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: f, ReadHeaderTimeout: time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	d = NewDaemon(client.New(h.URL, "token-a"), "a", socket, slog.New(slog.NewTextHandler(&logs, nil)))
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	d.Run(ctx2)
+	ms, _ = NewStore(h.db).Machines(context.Background(), 1)
+	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].State != StateRunning {
+		t.Errorf("after Docker is back: %+v", ms)
 	}
 }

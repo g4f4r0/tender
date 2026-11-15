@@ -12,10 +12,21 @@ const (
 	StateExited     = "exited"
 	StateRemoving   = "removing"
 	StateDead       = "dead"
+	StateUnknown    = "unknown" // the machine's Docker is unreachable; Tender sets it, Docker never does
 
 	HealthHealthy   = "healthy"
 	HealthUnhealthy = "unhealthy"
 	HealthStarting  = "starting"
+
+	// Docker's restart policies. An empty one from Docker means no.
+	PolicyNo            = "no"
+	PolicyAlways        = "always"
+	PolicyUnlessStopped = "unless-stopped"
+	PolicyOnFailure     = "on-failure"
+
+	// What a machine's daemon says about its Docker engine.
+	DockerRunning     = "running"
+	DockerUnreachable = "unreachable" // the socket is there but refuses connections or doesn't answer
 )
 
 // Action types and statuses.
@@ -46,10 +57,11 @@ type Service struct {
 	Project         *string    `json:"project"` // the compose project, or null
 	ContainerID     string     `json:"container_id"`
 	Image           string     `json:"image"`
-	State           string     `json:"state"`     // created, running, paused, restarting, exited, removing or dead
+	State           string     `json:"state"`     // created, running, paused, restarting, exited, removing, dead, or unknown while Docker is unreachable
 	Health          *string    `json:"health"`    // healthy, unhealthy, starting, or null without a health check
 	ExitCode        *int64     `json:"exit_code"` // set while the container is exited or dead
 	RestartCount    int64      `json:"restart_count"`
+	RestartPolicy   string     `json:"restart_policy"` // no, always, unless-stopped or on-failure
 	StartedAt       *time.Time `json:"started_at"`
 	AlertsEnabled   bool       `json:"alerts_enabled"`
 	StoppedByTender bool       `json:"stopped_by_tender"` // a Tender stop left it stopped, so it doesn't alert as down
@@ -65,16 +77,38 @@ type Service struct {
 // ServiceInput is one element of the PUT /v1/machines/{machine}/services body, as the daemon
 // reads it from Docker.
 type ServiceInput struct {
-	Name         string     `json:"name"`
-	Project      *string    `json:"project"`
-	ContainerID  string     `json:"container_id"`
-	Image        string     `json:"image"`
-	State        string     `json:"state"`
-	Health       *string    `json:"health"`
-	ExitCode     *int64     `json:"exit_code"`
-	RestartCount int64      `json:"restart_count"`
-	StartedAt    *time.Time `json:"started_at"`
+	Name          string     `json:"name"`
+	Project       *string    `json:"project"`
+	ContainerID   string     `json:"container_id"`
+	Image         string     `json:"image"`
+	State         string     `json:"state"`
+	Health        *string    `json:"health"`
+	ExitCode      *int64     `json:"exit_code"`
+	RestartCount  int64      `json:"restart_count"`
+	RestartPolicy string     `json:"restart_policy"`
+	StartedAt     *time.Time `json:"started_at"`
 }
+
+// Report is the body of PUT /v1/machines/{machine}/services: {"docker": "running", "services": [...]}
+// when the Engine API answers, the full list, or {"docker": "unreachable"} when its socket refuses
+// connections or doesn't answer. Then the hub keeps the last list with every state unknown.
+type Report struct {
+	Docker   string         `json:"docker"`
+	Services []ServiceInput `json:"services,omitempty"`
+}
+
+// MachineServices is one machine's services, as GET /v1/machines/{machine}/services returns it
+// and each element of GET /v1/services.
+type MachineServices struct {
+	Machine string    `json:"machine"`
+	Docker  *string   `json:"docker"` // running or unreachable, from the latest report; null before any
+	Data    []Service `json:"data"`
+
+	unreachableReports int
+}
+
+// UnreachableReports is how many reports in a row said Docker is unreachable.
+func (m MachineServices) UnreachableReports() int { return m.unreachableReports }
 
 // ServicePatch is the JSON Merge Patch body of PATCH /v1/machines/{machine}/services/{service}.
 type ServicePatch struct {

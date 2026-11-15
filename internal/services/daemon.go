@@ -60,6 +60,10 @@ func (d *Daemon) path(rest string) string {
 	return "/v1/machines/" + url.PathEscape(d.Machine) + "/services" + rest
 }
 
+func (d *Daemon) actionsPath(rest string) string {
+	return "/v1/machines/" + url.PathEscape(d.Machine) + "/service-actions" + rest
+}
+
 // Run reports the containers now and every minute, and runs queued actions, until ctx ends. A
 // machine without Docker reports nothing and polls for nothing; it checks for Docker each minute.
 func (d *Daemon) Run(ctx context.Context) {
@@ -83,7 +87,9 @@ func (d *Daemon) Run(ctx context.Context) {
 	}
 }
 
-// reportNow sends the hub the full container list, or logs once why it can't.
+// reportNow sends the hub the full container list. When Docker's socket is there but doesn't
+// answer, it tells the hub Docker is unreachable. Otherwise it logs once why it can't list them
+// and sends nothing: a machine without Docker has no services.
 func (d *Daemon) reportNow(ctx context.Context) {
 	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	list, err := d.Docker.Containers(lctx)
@@ -94,6 +100,9 @@ func (d *Daemon) reportNow(ctx context.Context) {
 	if err != nil {
 		d.reached.Store(false)
 		d.dockerProblem(err)
+		if errors.Is(err, errUnreachable) {
+			d.send(ctx, Report{Docker: DockerUnreachable})
+		}
 		return
 	}
 	if !d.reached.Swap(true) {
@@ -106,7 +115,12 @@ func (d *Daemon) reportNow(ctx context.Context) {
 		default:
 		}
 	}
-	err = d.Hub.Do(ctx, http.MethodPut, d.path(""), "", list, nil)
+	d.send(ctx, Report{Docker: DockerRunning, Services: list})
+}
+
+// send puts one report on the hub.
+func (d *Daemon) send(ctx context.Context, r Report) {
+	err := d.Hub.Do(ctx, http.MethodPut, d.path(""), "", r, nil)
 	switch {
 	case err == nil:
 		d.hubErr = ""
@@ -123,6 +137,8 @@ func (d *Daemon) dockerProblem(err error) {
 	switch {
 	case errors.Is(err, errNoDocker):
 		problem, log, msg = "none", d.Log.Info, "this machine has no Docker"
+	case errors.Is(err, errUnreachable):
+		problem, msg = "unreachable", "Docker is not answering on this machine; told the hub, which alerts after two minutes"
 	case errors.Is(err, errDenied):
 		problem, msg = "denied", "Tender may not use Docker on this machine. If Docker was installed after Tender, run: sudo tender install refresh"
 	}
@@ -144,7 +160,7 @@ func (d *Daemon) runActions(ctx context.Context) {
 			continue
 		}
 		var list server.List[Action]
-		err := d.poll.Do(ctx, http.MethodGet, d.path("/actions?wait="+strconv.Itoa(pollWait)), "", nil, &list)
+		err := d.poll.Do(ctx, http.MethodGet, d.actionsPath("?wait="+strconv.Itoa(pollWait)), "", nil, &list)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -199,7 +215,7 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 	defer rcancel()
 	key := client.NewKey()
 	for try := 1; ; try++ {
-		err = d.Hub.Do(rctx, http.MethodPatch, d.path("/actions/"+strconv.FormatInt(a.ID, 10)), key, p, nil)
+		err = d.Hub.Do(rctx, http.MethodPatch, d.actionsPath("/"+strconv.FormatInt(a.ID, 10)), key, p, nil)
 		if err == nil || !client.Retryable(err) || try == 3 {
 			break
 		}

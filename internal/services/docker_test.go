@@ -21,7 +21,7 @@ import (
 type fakeContainer struct {
 	ID, Name, Image, State, Health, StartedAt string
 	ExitCode, RestartCount                    int64
-	Project                                   string
+	Project, Policy                           string
 	Tty                                       bool
 	Logs                                      []string // lines; even ones go to stdout, odd ones to stderr
 }
@@ -143,7 +143,7 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			state["Health"] = map[string]string{"Status": c.Health}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"Id": c.ID, "Name": "/" + c.Name, "RestartCount": c.RestartCount,
-			"State": state, "Config": map[string]any{"Tty": c.Tty}})
+			"State": state, "Config": map[string]any{"Tty": c.Tty}, "HostConfig": map[string]any{"RestartPolicy": map[string]string{"Name": c.Policy}}})
 	case r.Method == http.MethodPost && op == "start":
 		if c.State == StateRunning {
 			w.WriteHeader(http.StatusNotModified)
@@ -199,7 +199,7 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func TestContainers(t *testing.T) {
 	f := newFakeDocker(t,
-		&fakeContainer{ID: "aaa", Name: "shop-web-1", Image: "nginx:1.27", State: "running", Health: "healthy", StartedAt: "2026-11-15T09:00:00.123456789Z", RestartCount: 2, Project: "shop"},
+		&fakeContainer{ID: "aaa", Name: "shop-web-1", Image: "nginx:1.27", State: "running", Health: "healthy", StartedAt: "2026-11-15T09:00:00.123456789Z", RestartCount: 2, Project: "shop", Policy: "unless-stopped"},
 		&fakeContainer{ID: "bbb", Name: "worker", Image: "worker:latest", State: "exited", ExitCode: 137},
 		&fakeContainer{ID: "ccc", Name: "odd", Image: "x", State: "hibernating"},
 		&fakeContainer{ID: "ddd", Name: "check", Image: "x", State: "running", Health: "none"},
@@ -214,8 +214,11 @@ func TestContainers(t *testing.T) {
 	web, worker, check := got[0], got[1], got[2]
 	if web.Name != "shop-web-1" || web.ContainerID != "aaa" || web.Image != "nginx:1.27" || web.State != "running" ||
 		web.Health == nil || *web.Health != "healthy" || web.ExitCode != nil || web.RestartCount != 2 ||
-		web.Project == nil || *web.Project != "shop" || web.StartedAt == nil || !web.StartedAt.Equal(time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)) {
+		web.Project == nil || *web.Project != "shop" || web.RestartPolicy != "unless-stopped" || web.StartedAt == nil || !web.StartedAt.Equal(time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)) {
 		t.Errorf("web = %+v", web)
+	}
+	if worker.RestartPolicy != "no" { // Docker's empty name
+		t.Errorf("worker's policy = %q", worker.RestartPolicy)
 	}
 	if worker.State != "exited" || worker.ExitCode == nil || *worker.ExitCode != 137 || worker.Project != nil || worker.StartedAt != nil || worker.Health != nil {
 		t.Errorf("worker = %+v", worker)
@@ -313,8 +316,21 @@ func TestNoDocker(t *testing.T) {
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	_ = ln.Close()
-	if _, err = NewDocker(stale).Containers(ctx); !errors.Is(err, errNoDocker) {
-		t.Errorf("refused: %v, want errNoDocker", err)
+	if _, err = NewDocker(stale).Containers(ctx); !errors.Is(err, errUnreachable) {
+		t.Errorf("refused: %v, want errUnreachable", err)
+	}
+
+	// A socket that takes connections but never answers: Docker is stuck.
+	stuck := filepath.Join(dir, "stuck.sock")
+	hang, err := net.Listen("unix", stuck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hang.Close() }()
+	tctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if _, err = NewDocker(stuck).Containers(tctx); !errors.Is(err, errUnreachable) {
+		t.Errorf("no answer: %v, want errUnreachable", err)
 	}
 
 	// A socket the daemon may not use.

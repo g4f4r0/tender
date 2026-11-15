@@ -38,7 +38,7 @@ func runStatus(args []string, s session) error {
 	if err != nil {
 		return err
 	}
-	svcs, err := listAll[services.Service](hub, "/v1/services")
+	engines, err := listAll[services.MachineServices](hub, "/v1/services")
 	if err != nil {
 		return err
 	}
@@ -59,18 +59,26 @@ func runStatus(args []string, s session) error {
 		for _, sum := range sums {
 			lastBackup[sum.Machine] = sum.LastBackup
 		}
-		running, total := map[string]int{}, map[string]int{}
-		for _, sv := range svcs {
-			total[sv.Machine]++
-			if sv.State == services.StateRunning {
-				running[sv.Machine]++
+		summary := map[string]string{}
+		for _, e := range engines {
+			running := 0
+			for _, sv := range e.Data {
+				if sv.State == services.StateRunning {
+					running++
+				}
+			}
+			switch {
+			case e.Docker != nil && *e.Docker == services.DockerUnreachable:
+				summary[e.Machine] = "Docker unreachable"
+			case len(e.Data) > 0:
+				summary[e.Machine] = fmt.Sprintf("%d/%d running", running, len(e.Data))
 			}
 		}
 		rows := make([][]string, len(ms))
 		for i, m := range ms {
 			rows[i] = []string{m.Name, "never", "never", "-", "-"}
-			if total[m.Name] > 0 {
-				rows[i][4] = fmt.Sprintf("%d/%d running", running[m.Name], total[m.Name])
+			if v := summary[m.Name]; v != "" {
+				rows[i][4] = v
 			}
 			if m.LastSeen != nil {
 				rows[i][1] = ago(s.now(), *m.LastSeen)

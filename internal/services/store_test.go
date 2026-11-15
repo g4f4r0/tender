@@ -300,3 +300,40 @@ func TestWait(t *testing.T) {
 		t.Errorf("wait while stopping: %v after %s", err, time.Since(start))
 	}
 }
+
+func TestUnreachable(t *testing.T) {
+	s := NewStore(newDB(t))
+	ctx := context.Background()
+	if ms, err := s.Machines(ctx, 0); err != nil || len(ms) != 0 {
+		t.Errorf("before any report: %+v, %v", ms, err)
+	}
+	if ms, err := s.Machines(ctx, 2); err != nil || len(ms) != 1 || ms[0].Machine != "b" || ms[0].Docker != nil || len(ms[0].Data) != 0 {
+		t.Errorf("one machine before any report: %+v, %v", ms, err)
+	}
+	down := running("web", "c1")
+	down.State, down.ExitCode = StateExited, ptr(int64(1))
+	if err := s.Apply(ctx, 1, Report{Docker: DockerRunning, Services: []ServiceInput{down}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := s.Apply(ctx, 1, Report{Docker: DockerUnreachable}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ms, err := s.Machines(ctx, 0)
+	if err != nil || len(ms) != 1 || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() != 3 {
+		t.Fatalf("unreachable: %+v, %v", ms, err)
+	}
+	// The list stays with its state unknown; the counts the rules read don't move.
+	if sv := ms[0].Data[0]; sv.State != StateUnknown || sv.DownReports != 1 || *sv.ExitCode != 1 {
+		t.Errorf("service while unreachable = %+v", sv)
+	}
+	// Back: the count goes on from where it was.
+	if err := s.Apply(ctx, 1, Report{Docker: DockerRunning, Services: []ServiceInput{down}}); err != nil {
+		t.Fatal(err)
+	}
+	ms, _ = s.Machines(ctx, 1)
+	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].DownReports != 2 {
+		t.Errorf("back: %+v", ms[0])
+	}
+}

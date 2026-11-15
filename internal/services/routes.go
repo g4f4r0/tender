@@ -12,29 +12,39 @@ import (
 // write timeout, and the daemon's client allows more than this.
 const maxWait = 30
 
-// Routes registers the services REST routes on srv. The daemon's long poll ends early when the
-// hub shuts down.
+// Routes registers the services REST routes on srv. The actions live under /service-actions, so
+// every name is free for a service, "actions" too. The daemon's long poll ends early when the hub
+// shuts down.
 func (s *Store) Routes(srv *server.Server) {
 	stop := srv.Stopping()
-	srv.Handle("GET /v1/services", srv.People(s.list))
-	srv.Handle("GET /v1/machines/{machine}/services", srv.People(s.list))
-	srv.Handle("PUT /v1/machines/{machine}/services", srv.Daemon(s.replace))
-	srv.Handle("GET /v1/machines/{machine}/services/actions", srv.Daemon(func(w http.ResponseWriter, r *http.Request) error {
+	srv.Handle("GET /v1/services", srv.People(s.listAll))
+	srv.Handle("GET /v1/machines/{machine}/services", srv.People(s.listMachine))
+	srv.Handle("PUT /v1/machines/{machine}/services", srv.Daemon(s.report))
+	srv.Handle("GET /v1/machines/{machine}/service-actions", srv.Daemon(func(w http.ResponseWriter, r *http.Request) error {
 		return s.take(w, r, stop)
 	}))
-	srv.Handle("GET /v1/machines/{machine}/services/actions/{id}", srv.People(s.getAction))
-	srv.Handle("PATCH /v1/machines/{machine}/services/actions/{id}", srv.Daemon(s.finish))
+	srv.Handle("GET /v1/machines/{machine}/service-actions/{id}", srv.People(s.getAction))
+	srv.Handle("PATCH /v1/machines/{machine}/service-actions/{id}", srv.Daemon(s.finish))
 	srv.Handle("GET /v1/machines/{machine}/services/{service}", srv.People(s.get))
 	srv.Handle("PATCH /v1/machines/{machine}/services/{service}", srv.People(s.patch))
 	srv.Handle("POST /v1/machines/{machine}/services/{service}/actions", srv.People(s.createAction))
 }
 
-func (s *Store) list(w http.ResponseWriter, r *http.Request) error {
-	list, err := s.List(r.Context(), server.MachineID(r.Context()))
+func (s *Store) listAll(w http.ResponseWriter, r *http.Request) error {
+	list, err := s.Machines(r.Context(), 0)
 	if err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.List[Service]{Data: list})
+	server.WriteJSON(w, http.StatusOK, server.List[MachineServices]{Data: list})
+	return nil
+}
+
+func (s *Store) listMachine(w http.ResponseWriter, r *http.Request) error {
+	list, err := s.Machines(r.Context(), server.MachineID(r.Context()))
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, list[0])
 	return nil
 }
 
@@ -67,19 +77,15 @@ func (s *Store) patch(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Store) replace(w http.ResponseWriter, r *http.Request) error {
-	var in []ServiceInput
+func (s *Store) report(w http.ResponseWriter, r *http.Request) error {
+	var in Report
 	if err := server.Decode(w, r, &in); err != nil {
 		return err
 	}
-	if in == nil {
-		return server.Invalid("The body must be a JSON array of services.")
-	}
-	list, err := s.Replace(r.Context(), server.MachineID(r.Context()), in)
-	if err != nil {
+	if err := s.Apply(r.Context(), server.MachineID(r.Context()), in); err != nil {
 		return err
 	}
-	server.WriteJSON(w, http.StatusOK, server.List[Service]{Data: list})
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
@@ -92,7 +98,7 @@ func (s *Store) createAction(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	w.Header().Set("Location", "/v1/machines/"+r.PathValue("machine")+"/services/actions/"+strconv.FormatInt(a.ID, 10))
+	w.Header().Set("Location", "/v1/machines/"+r.PathValue("machine")+"/service-actions/"+strconv.FormatInt(a.ID, 10))
 	server.WriteJSON(w, http.StatusAccepted, a)
 	return nil
 }

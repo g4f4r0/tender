@@ -54,14 +54,20 @@ func TestServiceTools(t *testing.T) {
 	})
 	cs, rest := connect(t, d), newHub(d, testKey, nil, quiet)
 
-	var list server.List[services.Service]
+	var list server.List[services.MachineServices]
 	structured(t, callTool(t, cs, "list_services", nil), &list)
-	if want := restJSON(t, rest, "/v1/services"); len(list.Data) != 2 || !reflect.DeepEqual(mustJSON(t, list), want) {
+	if want := restJSON(t, rest, "/v1/services"); len(list.Data) != 1 || len(list.Data[0].Data) != 2 || !reflect.DeepEqual(mustJSON(t, list), want) {
 		t.Errorf("list_services = %+v, REST %v", list, want)
 	}
+	if d := list.Data[0].Docker; d == nil || *d != "running" || list.Data[0].Data[0].RestartPolicy != "no" {
+		t.Errorf("docker = %v, restart_policy = %q", d, list.Data[0].Data[0].RestartPolicy)
+	}
 	structured(t, callTool(t, cs, "list_services", map[string]any{"machine": "g4f4r0-apps"}), &list)
-	if len(list.Data) != 0 {
+	if len(list.Data) != 1 || list.Data[0].Docker != nil || len(list.Data[0].Data) != 0 {
 		t.Errorf("apps has %+v", list.Data)
+	}
+	if want := restJSON(t, rest, "/v1/machines/g4f4r0-apps/services"); !reflect.DeepEqual(mustJSON(t, list.Data[0]), want) {
+		t.Errorf("apps: tool %+v, REST %v", list.Data[0], want)
 	}
 	if res := callTool(t, cs, "list_services", map[string]any{"machine": "nope"}); !res.IsError || !strings.Contains(errorText(res), "Call list_machines") {
 		t.Errorf("unknown machine = %s", errorText(res))

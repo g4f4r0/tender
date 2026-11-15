@@ -35,10 +35,12 @@ var states = map[string]bool{StateCreated: true, StateRunning: true, StatePaused
 
 var healths = map[string]bool{HealthHealthy: true, HealthUnhealthy: true, HealthStarting: true}
 
+var policies = map[string]bool{PolicyNo: true, PolicyAlways: true, PolicyUnlessStopped: true, PolicyOnFailure: true}
+
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 const selectServices = `
 SELECT s.id, m.name, s.name, s.project, s.container_id, s.image, s.state, s.health, s.exit_code, s.restart_count,
-       s.started_at, s.alerts_enabled, s.stopped_by_tender, s.down_reports, s.restarting_reports, s.unhealthy_reports,
+       s.restart_policy, s.started_at, s.alerts_enabled, s.stopped_by_tender, s.down_reports, s.restarting_reports, s.unhealthy_reports,
        s.created_at, s.updated_at
 FROM services s JOIN machines m ON m.id = s.machine_id`
 
@@ -49,7 +51,7 @@ func scanService(row scanner) (Service, error) {
 	var started *int64
 	var created, updated int64
 	err := row.Scan(&s.ID, &s.Machine, &s.Name, &s.Project, &s.ContainerID, &s.Image, &s.State, &s.Health, &s.ExitCode,
-		&s.RestartCount, &started, &s.AlertsEnabled, &s.StoppedByTender, &s.DownReports, &s.RestartingReports,
+		&s.RestartCount, &s.RestartPolicy, &started, &s.AlertsEnabled, &s.StoppedByTender, &s.DownReports, &s.RestartingReports,
 		&s.UnhealthyReports, &created, &updated)
 	if started != nil {
 		t := time.Unix(*started, 0).UTC()
@@ -78,6 +80,42 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Service, error) {
 	return out, rows.Err()
 }
 
+// Machines returns the services of one machine, or of every machine that reported any when
+// machineID is 0, with what the latest report said about its Docker, by machine name.
+func (s *Store) Machines(ctx context.Context, machineID int64) ([]MachineServices, error) {
+	rows, err := s.db.Read.QueryContext(ctx, `
+		SELECT m.name, e.docker, coalesce(e.unreachable_reports, 0)
+		FROM machines m LEFT JOIN service_engines e ON e.machine_id = m.id
+		WHERE m.id = ? OR (? = 0 AND (e.id IS NOT NULL OR EXISTS (SELECT 1 FROM services s WHERE s.machine_id = m.id)))
+		ORDER BY m.name`, machineID, machineID)
+	if err != nil {
+		return nil, err
+	}
+	out := []MachineServices{}
+	at := map[string]int{}
+	for rows.Next() {
+		ms := MachineServices{Data: []Service{}}
+		if err := rows.Scan(&ms.Machine, &ms.Docker, &ms.unreachableReports); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		at[ms.Machine] = len(out)
+		out = append(out, ms)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	list, err := s.List(ctx, machineID)
+	if err != nil {
+		return nil, err
+	}
+	for _, sv := range list {
+		if i, ok := at[sv.Machine]; ok {
+			out[i].Data = append(out[i].Data, sv)
+		}
+	}
+	return out, nil
+}
+
 // Get returns one of a machine's services by name.
 func (s *Store) Get(ctx context.Context, machineID int64, name string) (Service, error) {
 	sv, err := scanService(s.db.Read.QueryRowContext(ctx, selectServices+` WHERE s.machine_id = ? AND s.name = ?`, machineID, name))
@@ -99,8 +137,50 @@ func (in ServiceInput) validate() error {
 		return server.Invalid("Service %q has health %q; it must be healthy, unhealthy, starting or null.", in.Name, *in.Health)
 	case in.RestartCount < 0:
 		return server.Invalid("Service %q has a negative restart_count.", in.Name)
+	case !policies[in.RestartPolicy]:
+		return server.Invalid("Service %q has restart_policy %q; it must be no, always, unless-stopped or on-failure.", in.Name, in.RestartPolicy)
 	}
 	return nil
+}
+
+// Apply stores one report of the machine's daemon.
+func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
+	switch r.Docker {
+	case DockerRunning:
+		if r.Services == nil {
+			return server.Invalid("services is required when docker is running; send [] for none.")
+		}
+		_, err := s.Replace(ctx, machineID, r.Services)
+		return err
+	case DockerUnreachable:
+		if r.Services != nil {
+			return server.Invalid("Leave services out when docker is unreachable: the hub keeps the last list.")
+		}
+		return s.Unreachable(ctx, machineID)
+	}
+	return server.Invalid("docker must be running or unreachable.")
+}
+
+// Unreachable records a report that the machine's Docker doesn't answer: the hub keeps the last
+// list and sets every state to unknown. Nothing else about the services changes, so their alerts
+// neither open nor resolve until Docker answers again.
+func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO service_engines (machine_id, docker, unreachable_reports, created_at, updated_at) VALUES (?, 'unreachable', 1, ?, ?)
+		 ON CONFLICT (machine_id) DO UPDATE SET docker = 'unreachable', unreachable_reports = service_engines.unreachable_reports + 1,
+		   updated_at = excluded.updated_at`, machineID, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', updated_at = ? WHERE machine_id = ?`, now, machineID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // previous is what the last report said about a service.
@@ -118,12 +198,17 @@ func streak(holds bool, n int) int {
 	return 0
 }
 
-// Replace makes in the machine's full service list, as the daemon reports it: it adds new
+// Replace makes in the machine's full service list, from a report that Docker is running, as the daemon reports it: it adds new
 // services, updates the others and deletes the ones that are gone, with their actions. A service
 // keeps its alert switch. stopped_by_tender clears once the service runs again.
 func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput) ([]Service, error) {
 	names := make([]string, 0, len(in))
 	seen := map[string]bool{}
+	for i := range in {
+		if in[i].RestartPolicy == "" { // Docker's own word for no policy
+			in[i].RestartPolicy = PolicyNo
+		}
+	}
 	for _, sv := range in {
 		if err := sv.validate(); err != nil {
 			return nil, err
@@ -164,6 +249,12 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 	}
 
 	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO service_engines (machine_id, docker, unreachable_reports, created_at, updated_at) VALUES (?, 'running', 0, ?, ?)
+		 ON CONFLICT (machine_id) DO UPDATE SET docker = 'running', unreachable_reports = 0, updated_at = excluded.updated_at`,
+		machineID, now, now); err != nil {
+		return nil, err
+	}
 	for _, sv := range in {
 		p, known := prev[sv.Name]
 		grew := known && p.containerID == sv.ContainerID && sv.RestartCount > p.restartCount
@@ -180,16 +271,16 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 			started = &u
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO services (machine_id, name, project, container_id, image, state, health, exit_code, restart_count, started_at,
-			   down_reports, restarting_reports, unhealthy_reports, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO services (machine_id, name, project, container_id, image, state, health, exit_code, restart_count, restart_policy,
+			   started_at, down_reports, restarting_reports, unhealthy_reports, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (machine_id, name) DO UPDATE SET project = excluded.project, container_id = excluded.container_id,
 			   image = excluded.image, state = excluded.state, health = excluded.health, exit_code = excluded.exit_code,
-			   restart_count = excluded.restart_count, started_at = excluded.started_at,
+			   restart_count = excluded.restart_count, restart_policy = excluded.restart_policy, started_at = excluded.started_at,
 			   stopped_by_tender = CASE WHEN excluded.state = 'running' THEN 0 ELSE services.stopped_by_tender END,
 			   down_reports = excluded.down_reports, restarting_reports = excluded.restarting_reports,
 			   unhealthy_reports = excluded.unhealthy_reports, updated_at = excluded.updated_at`,
-			machineID, sv.Name, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, started,
+			machineID, sv.Name, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, sv.RestartPolicy, started,
 			down, restarting, unhealthy, now, now)
 		if err != nil {
 			return nil, err

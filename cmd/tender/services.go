@@ -74,14 +74,29 @@ func servicesList(args []string, s session) error {
 	if err != nil {
 		return err
 	}
-	path := "/v1/services"
+	var machines []services.MachineServices
 	if len(rest) == 1 {
-		path = machinePath(rest[0], "/services")
-	}
-	list, err := listAll[services.Service](hub, path)
-	if err != nil {
+		var one services.MachineServices
+		if err := hub.do(http.MethodGet, machinePath(rest[0], "/services"), nil, &one); err != nil {
+			return err
+		}
+		machines = []services.MachineServices{one}
+	} else if machines, err = listAll[services.MachineServices](hub, "/v1/services"); err != nil {
 		return err
 	}
+	var list []services.Service
+	var unreachable []string
+	for _, m := range machines {
+		list = append(list, m.Data...)
+		if m.Docker != nil && *m.Docker == services.DockerUnreachable {
+			unreachable = append(unreachable, m.Machine)
+		}
+	}
+	defer func() {
+		for _, m := range unreachable {
+			say(s.out, "\nDocker is unreachable on %s, so the states of its services are unknown.", m)
+		}
+	}()
 	if len(list) == 0 {
 		if len(rest) == 1 {
 			say(s.out, "%s has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.", rest[0])
@@ -187,7 +202,7 @@ func runAction(hub *hubAPI, machine, service string, in services.ActionInput) (s
 	if err := hub.do(http.MethodPost, servicePath(machine, service, "/actions"), in, &a); err != nil {
 		return a, err
 	}
-	path := machinePath(machine, "/services/actions/"+strconv.FormatInt(a.ID, 10))
+	path := machinePath(machine, "/service-actions/"+strconv.FormatInt(a.ID, 10))
 	deadline := time.Now().Add(actionWait)
 	for !a.Finished() && time.Now().Before(deadline) {
 		time.Sleep(min(actionCheck, time.Until(deadline)))

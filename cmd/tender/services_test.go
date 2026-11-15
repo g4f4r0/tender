@@ -20,19 +20,28 @@ func completeAction(a *services.Action) {
 	}
 }
 
+func (h *fakeHub) machineServices(name string) services.MachineServices {
+	ms := services.MachineServices{Machine: name, Data: append([]services.Service{}, h.services[name]...)}
+	if d, ok := h.docker[name]; ok {
+		ms.Docker = &d
+	}
+	return ms
+}
+
 func (h *fakeHub) listServices(w http.ResponseWriter, r *http.Request) {
-	list := []services.Service{}
 	if name := r.PathValue("machine"); name != "" {
-		if h.machine(w, r) == nil {
-			return
+		if h.machine(w, r) != nil {
+			server.WriteJSON(w, http.StatusOK, h.machineServices(name))
 		}
-		list = append(list, h.services[name]...)
-	} else {
-		for _, m := range h.sortedMachines() {
-			list = append(list, h.services[m.Name]...)
+		return
+	}
+	list := []services.MachineServices{}
+	for _, m := range h.sortedMachines() {
+		if _, ok := h.docker[m.Name]; ok || len(h.services[m.Name]) > 0 {
+			list = append(list, h.machineServices(m.Name))
 		}
 	}
-	server.WriteJSON(w, http.StatusOK, server.List[services.Service]{Data: list})
+	server.WriteJSON(w, http.StatusOK, server.List[services.MachineServices]{Data: list})
 }
 
 func (h *fakeHub) service(w http.ResponseWriter, r *http.Request) *services.Service {
@@ -106,6 +115,7 @@ func (h *fakeHub) addServices(t *testing.T, machine string, list ...services.Ser
 		list[i].ID, list[i].Machine = h.id(), machine
 	}
 	h.services[machine] = append(h.services[machine], list...)
+	h.docker[machine] = services.DockerRunning
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -135,6 +145,16 @@ func TestServicesList(t *testing.T) {
 	if got := mustRun(t, h, a, "services", "list", "apps"); !strings.Contains(got, "worker") {
 		t.Errorf("one machine's list =\n%s", got)
 	}
+
+	// Docker stops answering: the states are unknown, and the list says why.
+	h.docker["apps"] = services.DockerUnreachable
+	for i := range h.services["apps"] {
+		h.services["apps"][i].State = services.StateUnknown
+	}
+	if got := mustRun(t, h, a, "services", "list"); !strings.Contains(got, "apps      cli-proxy-api   unknown") ||
+		!strings.HasSuffix(got, "\nDocker is unreachable on apps, so the states of its services are unknown.\n") {
+		t.Errorf("list while Docker is unreachable =\n%s", got)
+	}
 	mustFail(t, h, a, `Machine "nope" doesn't exist. List the machines with "tender machines list".`, "services", "list", "nope")
 	if got := h.sent(); got[len(got)-1].Path != "/v1/machines/nope/services" {
 		t.Errorf("last request = %+v", got[len(got)-1])
@@ -156,7 +176,7 @@ func TestServicesActions(t *testing.T) {
 		}
 		req := h.sent()
 		if len(req) < 2 || req[0].Method != "POST" || req[0].Path != "/v1/machines/apps/services/web-1/actions" ||
-			strings.TrimSpace(req[0].Body) != `{"type":"`+typ+`"}` || req[1].Method != "GET" || !strings.HasPrefix(req[1].Path, "/v1/machines/apps/services/actions/") {
+			strings.TrimSpace(req[0].Body) != `{"type":"`+typ+`"}` || req[1].Method != "GET" || !strings.HasPrefix(req[1].Path, "/v1/machines/apps/service-actions/") {
 			t.Errorf("%s sent %+v", typ, req)
 		}
 	}
@@ -188,7 +208,7 @@ func TestServicesActions(t *testing.T) {
 		t.Errorf("timeout error = %v", err)
 	}
 	_, err = runCommand(t, h, a, "services", "logs", "apps", "web-1")
-	if err == nil || !strings.Contains(err.Error(), "Its logs will be at GET /v1/machines/apps/services/actions/") {
+	if err == nil || !strings.Contains(err.Error(), "Its logs will be at GET /v1/machines/apps/service-actions/") {
 		t.Errorf("logs timeout error = %v", err)
 	}
 

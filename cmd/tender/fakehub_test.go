@@ -46,6 +46,7 @@ type fakeHub struct {
 	emailOn      bool
 	pageSize     int                           // notifications per page, to exercise next_cursor
 	services     map[string][]services.Service // by machine
+	docker       map[string]string             // what each machine's daemon said about Docker
 	actions      map[int64]*services.Action
 	daemon       func(*services.Action) // finishes an action when it is first read; nil leaves it pending
 }
@@ -62,7 +63,7 @@ func newFakeHub(t *testing.T) *fakeHub {
 		t: t, now: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), nextID: 1, pageSize: 500,
 		machines: map[string]*fakeMachine{}, secrets: map[string]backups.DestinationInput{},
 		settings: map[string]backups.Settings{}, history: map[string]*backups.History{}, emailOn: true,
-		services: map[string][]services.Service{}, actions: map[int64]*services.Action{}, daemon: completeAction,
+		services: map[string][]services.Service{}, docker: map[string]string{}, actions: map[int64]*services.Action{}, daemon: completeAction,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/machines", h.addMachine)
@@ -85,7 +86,7 @@ func newFakeHub(t *testing.T) *fakeHub {
 	mux.HandleFunc("GET /v1/machines/{machine}/services", h.listServices)
 	mux.HandleFunc("PATCH /v1/machines/{machine}/services/{service}", h.patchService)
 	mux.HandleFunc("POST /v1/machines/{machine}/services/{service}/actions", h.createAction)
-	mux.HandleFunc("GET /v1/machines/{machine}/services/actions/{id}", h.getAction)
+	mux.HandleFunc("GET /v1/machines/{machine}/service-actions/{id}", h.getAction)
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))

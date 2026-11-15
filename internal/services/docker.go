@@ -39,8 +39,12 @@ func NewDocker(socket string) *Docker {
 	return &Docker{http: &http.Client{Transport: &http.Transport{DialContext: dial, DisableCompression: true}}}
 }
 
-// errNoDocker means nothing listens on the socket: Docker isn't installed or isn't running.
+// errNoDocker means there is no socket: Docker isn't installed.
 var errNoDocker = errors.New("this machine has no Docker")
+
+// errUnreachable means the socket is there but refuses connections or doesn't answer: the engine
+// is stopped or stuck.
+var errUnreachable = errors.New("Docker is not answering on this machine")
 
 // errDenied means the socket is there but the daemon may not use it.
 var errDenied = errors.New("Tender may not use Docker on this machine")
@@ -48,12 +52,19 @@ var errDenied = errors.New("Tender may not use Docker on this machine")
 // classify turns a failure to reach the socket into errNoDocker or errDenied, keeping the cause.
 func classify(err error) error {
 	switch {
-	case errors.Is(err, syscall.ENOENT), errors.Is(err, syscall.ECONNREFUSED):
+	case errors.Is(err, syscall.ENOENT):
 		return fmt.Errorf("%w: %w", errNoDocker, err)
+	case errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, context.DeadlineExceeded), isTimeout(err):
+		return fmt.Errorf("%w: %w", errUnreachable, err)
 	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
 		return fmt.Errorf("%w: %w", errDenied, err)
 	}
 	return err
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // apiError is an answer from Docker that isn't a success.
@@ -97,7 +108,7 @@ func (d *Docker) getJSON(ctx context.Context, path string, v any) error {
 	}
 	defer func() { _ = body.Close() }()
 	if err := json.NewDecoder(body).Decode(v); err != nil {
-		return fmt.Errorf("read Docker's answer to %s: %w", path, err)
+		return classify(fmt.Errorf("read Docker's answer to %s: %w", path, err))
 	}
 	return nil
 }
@@ -122,6 +133,9 @@ type inspected struct {
 	}
 	Config struct {
 		Tty bool
+	}
+	HostConfig struct {
+		RestartPolicy struct{ Name string }
 	}
 }
 
@@ -154,7 +168,11 @@ func (d *Docker) Containers(ctx context.Context) ([]ServiceInput, error) {
 		if name == "" && len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
-		sv := ServiceInput{Name: name, ContainerID: c.ID, Image: c.Image, State: state, RestartCount: in.RestartCount}
+		sv := ServiceInput{Name: name, ContainerID: c.ID, Image: c.Image, State: state, RestartCount: in.RestartCount,
+			RestartPolicy: in.HostConfig.RestartPolicy.Name}
+		if !policies[sv.RestartPolicy] {
+			sv.RestartPolicy = PolicyNo
+		}
 		if p := c.Labels[composeProject]; p != "" {
 			sv.Project = &p
 		}
