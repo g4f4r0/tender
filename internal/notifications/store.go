@@ -205,6 +205,15 @@ func (s *Store) AddRecipient(ctx context.Context, email string) (Recipient, erro
 	return r, err
 }
 
+// Recipient returns one recipient by id.
+func (s *Store) Recipient(ctx context.Context, id int64) (Recipient, error) {
+	r, err := scanRecipient(s.db.Read.QueryRowContext(ctx, `SELECT id, email, created_at, updated_at FROM notification_recipients WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, server.NotFound("Recipient %d doesn't exist. List the recipients to see their ids.", id)
+	}
+	return r, err
+}
+
 // DeleteRecipient removes a recipient by id.
 func (s *Store) DeleteRecipient(ctx context.Context, id int64) error {
 	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM notification_recipients WHERE id = ?`, id)

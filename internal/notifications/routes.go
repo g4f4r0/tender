@@ -15,6 +15,7 @@ func (s *Store) Routes(srv *server.Server, sender Sender, hub string) {
 	srv.Handle("GET /v1/machines/{machine}/notifications/{id}", srv.People(s.get))
 	srv.Handle("GET /v1/notifications/recipients", srv.People(s.listRecipients))
 	srv.Handle("POST /v1/notifications/recipients", srv.People(s.addRecipient))
+	srv.Handle("GET /v1/notifications/recipients/{id}", srv.People(s.getRecipient))
 	srv.Handle("DELETE /v1/notifications/recipients/{id}", srv.People(s.removeRecipient))
 	srv.Handle("POST /v1/notifications/test", srv.People(func(w http.ResponseWriter, r *http.Request) error {
 		res, err := s.SendTest(r.Context(), sender, hub)
@@ -49,10 +50,32 @@ func (s *Store) addRecipient(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Store) removeRecipient(w http.ResponseWriter, r *http.Request) error {
+// recipientID reads {id}. A value that isn't a number can't name a recipient, so it is a 404.
+func recipientID(r *http.Request) (int64, error) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		return server.NotFound("%q is not an id. List the recipients to see their ids.", r.PathValue("id"))
+		return 0, server.NotFound("%q is not an id. List the recipients to see their ids.", r.PathValue("id"))
+	}
+	return id, nil
+}
+
+func (s *Store) getRecipient(w http.ResponseWriter, r *http.Request) error {
+	id, err := recipientID(r)
+	if err != nil {
+		return err
+	}
+	rec, err := s.Recipient(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, rec)
+	return nil
+}
+
+func (s *Store) removeRecipient(w http.ResponseWriter, r *http.Request) error {
+	id, err := recipientID(r)
+	if err != nil {
+		return err
 	}
 	if err := s.DeleteRecipient(r.Context(), id); err != nil {
 		return err

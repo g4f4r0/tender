@@ -295,6 +295,15 @@ func TestRecipientRoutes(t *testing.T) {
 	}
 
 	path := "/v1/notifications/recipients/" + strconv.FormatInt(added.ID, 10)
+	var one notifications.Recipient
+	if res := send(t, srv, "GET", path, "", &one); res.StatusCode != 200 || one != added {
+		t.Errorf("GET %s: %d %+v, want 200 and %+v", path, res.StatusCode, one, added)
+	}
+	for _, missing := range []string{"/v1/notifications/recipients/999", "/v1/notifications/recipients/x"} {
+		if res := send(t, srv, "GET", missing, "", &p); res.StatusCode != 404 || p.Detail == "" {
+			t.Errorf("GET %s: %d %q, want 404 with a sentence", missing, res.StatusCode, p.Detail)
+		}
+	}
 	if res := send(t, srv, "DELETE", path, "", nil); res.StatusCode != 204 {
 		t.Errorf("delete: %d, want 204", res.StatusCode)
 	}

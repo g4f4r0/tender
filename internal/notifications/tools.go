@@ -20,7 +20,7 @@ type addRecipientInput struct {
 	Email string `json:"email" jsonschema:"bare email address, such as alerts@example.com"`
 }
 
-type removeRecipientInput struct {
+type recipientIDInput struct {
 	ID int64 `json:"id" jsonschema:"recipient id, as list_recipients shows it"`
 }
 
@@ -58,18 +58,24 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup, sender Se
 			return server.List[Recipient]{Data: rs}, err
 		})
 
+	mcp.AddReadOnly(m, "get_recipient", "Get an alert recipient",
+		"Get one recipient by id: id, email, created_at and updated_at (RFC 3339 UTC).",
+		func(ctx context.Context, in recipientIDInput) (Recipient, error) {
+			return s.Recipient(ctx, in.ID)
+		})
+
 	mcp.AddWrite(m, "add_recipient", "Add an alert recipient",
 		"Add an email address that gets every alert email from now on. It must be a bare address, like alerts@example.com. "+
-			"Call send_test_email to check that mail reaches it.",
+			"Call send_test_email to check that mail reaches it. The result is the recipient: id, email, created_at and updated_at.",
 		mcp.WriteOptions{},
 		func(ctx context.Context, in addRecipientInput) (Recipient, error) {
 			return s.AddRecipient(ctx, in.Email)
 		})
 
 	mcp.AddWrite(m, "remove_recipient", "Remove an alert recipient",
-		"Remove a recipient by id, so they stop getting alert emails. Alerts are still recorded when nobody is left.",
+		"Remove a recipient by id, so they stop getting alert emails. Alerts are still recorded when nobody is left. The result names what was removed.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
-		func(ctx context.Context, in removeRecipientInput) (mcp.Removed, error) {
+		func(ctx context.Context, in recipientIDInput) (mcp.Removed, error) {
 			if err := s.DeleteRecipient(ctx, in.ID); err != nil {
 				return mcp.Removed{}, err
 			}
