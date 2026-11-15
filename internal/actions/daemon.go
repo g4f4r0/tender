@@ -363,7 +363,7 @@ func (d *Daemon) runUpdate(ctx context.Context, a Action) {
 	if !d.updateResult(r) {
 		out := fmt.Sprintf("Could not update Tender to %s: %v.", r.Version, err)
 		if err == nil {
-			out = fmt.Sprintf("The update job to Tender %s ended without saying how. See: journalctl -u tenderupdate.", r.Version)
+			out = fmt.Sprintf("The update job to Tender %s ended without saying how. See /var/lib/tender/daemon/tenderupdate.log.", r.Version)
 		}
 		r.Patch = &Patch{Status: StatusFailed, Output: &out}
 		d.keep(r)

@@ -102,7 +102,7 @@ Rollout 4 of 0.3.2, failed, started 12 minutes ago:
   apps: pending
 ```
 
-Read the job's own log on that machine with `journalctl -u tenderupdate`. Auto mode doesn't try that release again. Once you fix the cause, start a rollout by hand with `tender update`.
+The job's own output is in `/var/lib/tender/daemon/tenderupdate.log` on that machine. Auto mode doesn't try that release again. Once you fix the cause, start a rollout by hand with `tender update`.
 
 ## Reference
 
