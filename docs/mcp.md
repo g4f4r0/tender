@@ -2323,7 +2323,7 @@ None. Daemons pick the change up within a minute.
 Removes a sink.
 
 > [!WARNING]
-> Daemons stop sending to the sink within a minute and delete the logs they buffered for it, which are then lost. The logs already sent stay at the sink.
+> Daemons stop sending to the sink within a minute. They keep the logs they buffered for it for 7 days, then delete them, and nothing sends them anywhere: a sink added again is a new sink. The logs already sent stay at the sink.
 
 #### Annotations
 

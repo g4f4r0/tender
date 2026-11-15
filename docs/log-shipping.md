@@ -107,7 +107,7 @@ Updated log sink otel. Machines pick the change up within a minute.
 
 The daemon follows every container. It starts following a new or re-created container as soon as Docker says it started, so even a job that runs for a moment is sent, and lists the containers every 5 seconds in case it missed one. A re-created container is a new container, with logs of its own, so the old one's last lines still go. A container's standard output gets the priority `info`, and its standard error `err`. The daemon reads what `docker logs` shows, so a container whose logs `docker logs` can't read sends nothing.
 
-`tender sinks update otel --disable` stops sending and keeps the sink. Each daemon then deletes the logs it buffered for it, as it does for a machine you take out of `--machines`. `--enable` starts sending again, with the logs from then on.
+`tender sinks update otel --disable` stops sending and keeps the sink. Each daemon keeps what it buffered for the sink and where it had read up to, for 7 days, as it does when you take its machine out of `--machines`. `--enable` within those 7 days resumes from there, so the logs from while the sink was disabled go too, up to its 64 MiB buffer. After 7 days the daemon deletes them, and `--enable` sends the logs from then on.
 
 ## Batches
 
@@ -120,6 +120,8 @@ A sink answers each POST with a 2xx status once it has the records. Any other an
 ## When a sink is down
 
 While a sink fails, the daemon keeps reading logs and keeps their batches on disk, up to 64 MiB for each sink. It retries the oldest batch after 1 second, then waits twice as long each time, up to 1 minute. Once the sink answers, it sends the batches it kept, the oldest first.
+
+A daemon that can't start sending to a sink at all, such as an older daemon that doesn't know the sink's type, reports it as failing, with a `last_error` that starts `can't start sending:`, and tries again every 30 seconds.
 
 When a sink's 64 MiB is full, the daemon drops its oldest batches to make room for new ones, and counts their records in `records_dropped`. A sink that answers `400`, `413` or `422` refused the batch for good, so the daemon drops that batch, counts it and goes on with the next.
 
@@ -248,7 +250,7 @@ Neither the URL nor the endpoint can hold a login. Put it in a header or the sec
 | Retry wait | 1 second, doubling up to 1 minute |
 | Failing time before the alert | 15 minutes |
 
-The daemon keeps each sink's buffer and read positions in `/var/lib/tender/daemon/logs/<sink id>/`. Removing or disabling a sink deletes that folder on every machine within a minute.
+The daemon keeps each sink's buffer and read positions in `/var/lib/tender/daemon/logs/<sink id>/`. When the hub no longer lists a sink for the machine, because it was removed or disabled or the machine was taken out of its `machines`, the daemon keeps that folder for 7 days, then deletes it. A daemon that can't reach the hub, or gets an error from it, keeps sending to the sinks it has.
 
 ## Next steps
 

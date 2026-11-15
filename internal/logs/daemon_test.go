@@ -20,10 +20,11 @@ import (
 
 // fakeHub serves a machine's sinks and keeps its status reports.
 type fakeHub struct {
-	mu      sync.Mutex
-	sinks   []DaemonSink
-	down    bool
-	reports []StatusReport
+	mu       sync.Mutex
+	sinks    []DaemonSink
+	down     bool
+	notFound bool // answers the sinks route with 404, as a hub before log sinks
+	reports  []StatusReport
 }
 
 func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +32,10 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.Unlock()
 	if h.down {
 		http.Error(w, "down", http.StatusServiceUnavailable)
+		return
+	}
+	if h.notFound {
+		http.NotFound(w, r)
 		return
 	}
 	switch {
@@ -95,7 +100,8 @@ func fastDaemon(t *testing.T) {
 }
 
 // The daemon sends to the hub's sinks and reports on them, keeps the sinks for when the hub is
-// down, and deletes a removed sink's state.
+// down or answers 404, keeps a missing sink's state for a week so it resumes when it is back,
+// and deletes it after that.
 func TestDaemon(t *testing.T) {
 	fastDaemon(t)
 	bin, _ := fakeJournalctl(t, false)
@@ -109,9 +115,12 @@ func TestDaemon(t *testing.T) {
 	defer hubSrv.Close()
 
 	state := t.TempDir()
+	var clock sync.Mutex
+	later := time.Duration(0) // how far the daemon's clock is ahead
 	run := func() (context.CancelFunc, chan struct{}) {
 		d := NewDaemon(client.New(hubSrv.URL, "tok"), "apps", state, "/nonexistent.sock", quiet)
 		d.Journalctl = bin
+		d.now = func() time.Time { clock.Lock(); defer clock.Unlock(); return time.Now().Add(later) }
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() { d.Run(ctx); close(done) }()
@@ -142,10 +151,47 @@ func TestDaemon(t *testing.T) {
 		t.Errorf("cursors %s", cur)
 	}
 
-	// the hub is back without the sink: the daemon stops and deletes its state.
-	hub.set(func(h *fakeHub) { h.down, h.sinks = false, nil })
+	// a hub that answers 404 for the route is no reason to stop.
+	hub.set(func(h *fakeHub) { h.down, h.notFound = false, true })
+	time.Sleep(200 * time.Millisecond)
+	if b, _ := os.ReadFile(filepath.Join(state, "logs", "sinks.json")); !strings.Contains(string(b), `"hook"`) {
+		t.Errorf("after a 404 the saved sinks are %s", b)
+	}
+
+	// the hub no longer lists the sink, as when it is disabled: the daemon stops, keeps its state,
+	// and resumes from it when the sink is back.
+	var sink []DaemonSink
+	hub.set(func(h *fakeHub) { sink = h.sinks })
+	hub.set(func(h *fakeHub) { h.notFound, h.sinks = false, []DaemonSink{} })
+	dir := filepath.Join(state, "logs", strconv.Itoa(7))
+	eventually(t, "the sink noted as missing", func() bool {
+		_, err := os.Stat(filepath.Join(dir, missingFile))
+		return err == nil
+	})
+	hub.set(func(h *fakeHub) { h.sinks = sink })
+	eventually(t, "the sink back", func() bool {
+		_, err := os.Stat(filepath.Join(dir, missingFile))
+		return os.IsNotExist(err)
+	})
+	time.Sleep(200 * time.Millisecond)
+	if n := recv.count(); n != 6 {
+		t.Errorf("%d records after the sink came back, want the same 6: it resumes from its cursor", n)
+	}
+
+	// missing for more than a week, its state goes.
+	hub.set(func(h *fakeHub) { h.sinks = []DaemonSink{} })
+	eventually(t, "the sink noted as missing again", func() bool {
+		_, err := os.Stat(filepath.Join(dir, missingFile))
+		return err == nil
+	})
+	if _, err := os.Stat(filepath.Join(dir, "cursors.json")); err != nil {
+		t.Errorf("the state of a sink missing for a moment is gone: %v", err)
+	}
+	clock.Lock()
+	later = stateKept + time.Hour
+	clock.Unlock()
 	eventually(t, "the sink's state gone", func() bool {
-		_, err := os.Stat(filepath.Join(state, "logs", strconv.Itoa(7)))
+		_, err := os.Stat(dir)
 		return os.IsNotExist(err)
 	})
 	cancel()
@@ -154,4 +200,22 @@ func TestDaemon(t *testing.T) {
 	if strings.TrimSpace(string(b)) != "[]" {
 		t.Errorf("saved sinks %s", b)
 	}
+}
+
+// A sink whose pipeline can't start is reported as failing, with why, so the hub alerts on it.
+func TestDaemonReportsAStartFailure(t *testing.T) {
+	fastDaemon(t)
+	hub := &fakeHub{sinks: []DaemonSink{{ID: 9, Name: "future", Type: "kafka", Config: map[string]any{},
+		Sources: Sources{Journal: &JournalSource{Units: []string{}, MinPriority: "info"}}}}}
+	hubSrv := httptest.NewServer(hub)
+	defer hubSrv.Close()
+	d := NewDaemon(client.New(hubSrv.URL, "tok"), "apps", t.TempDir(), "/nonexistent.sock", quiet)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+	eventually(t, "a report of the failure", func() bool {
+		r, ok := hub.lastReport()
+		return ok && len(r.Data) == 1 && r.Data[0].SinkID == 9 && r.Data[0].LastError != nil &&
+			strings.Contains(*r.Data[0].LastError, "doesn't know the sink type") && r.Data[0].FailingSince != nil
+	})
 }

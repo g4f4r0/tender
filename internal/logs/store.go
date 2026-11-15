@@ -610,7 +610,7 @@ func merge(target, patch any) any {
 }
 
 // DeleteSink removes the sink called name and every machine's status of it. Daemons stop
-// sending to it within a minute and delete what they buffered for it.
+// sending to it within a minute, and delete what they buffered for it after 7 days.
 func (s *Store) DeleteSink(ctx context.Context, name string) error {
 	res, err := s.db.Write.ExecContext(ctx, `DELETE FROM log_sinks WHERE name = ?`, name)
 	if err != nil {

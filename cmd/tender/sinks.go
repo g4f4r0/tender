@@ -402,7 +402,7 @@ func sinksUpdate(args []string, s session) error {
 
 func sinksRemove(args []string, s session) error {
 	fs := newFlagSet("sinks remove", "NAME [--hub URL]",
-		"Remove a log sink. Daemons stop sending to it within a minute and delete the logs they buffered for it. "+
+		"Remove a log sink. Daemons stop sending to it within a minute, and delete the logs they buffered for it after 7 days. "+
 			"The logs already sent stay at the sink.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)

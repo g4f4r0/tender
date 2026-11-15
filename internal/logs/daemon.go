@@ -25,6 +25,16 @@ var (
 	reportSoon  = 5 * time.Second  // the soonest it reports after a change
 )
 
+// stateKept is how long a sink the hub no longer lists for this machine keeps its buffer and
+// cursors, so a sink disabled, or missing for a while, resumes where it was.
+const stateKept = 7 * 24 * time.Hour
+
+// startFailure is why a sink's pipeline can't start, and since when.
+type startFailure struct {
+	err   string
+	since time.Time
+}
+
 // Daemon sends this machine's logs to the sinks the hub sets for it, straight to each sink. Set
 // the exported fields after NewDaemon. Run drives it; nothing else touches it.
 type Daemon struct {
@@ -39,6 +49,7 @@ type Daemon struct {
 
 	now       func() time.Time
 	pipelines map[int64]*pipeline
+	failures  map[int64]startFailure // sinks whose pipeline can't start, reported as failing
 	sinks     []DaemonSink
 	changed   chan struct{}
 }
@@ -46,7 +57,7 @@ type Daemon struct {
 // NewDaemon returns a daemon that keeps its state under stateDir/logs.
 func NewDaemon(hub *client.Client, machine, stateDir, dockerSocket string, log *slog.Logger) *Daemon {
 	return &Daemon{Hub: hub, Machine: machine, StateDir: stateDir, DockerSocket: dockerSocket, Journalctl: "journalctl", Log: log,
-		BufferBytes: BufferBytes, now: time.Now, pipelines: map[int64]*pipeline{}, changed: make(chan struct{}, 1)}
+		BufferBytes: BufferBytes, now: time.Now, pipelines: map[int64]*pipeline{}, failures: map[int64]startFailure{}, changed: make(chan struct{}, 1)}
 }
 
 func (d *Daemon) dir() string             { return filepath.Join(d.StateDir, "logs") }
@@ -102,14 +113,13 @@ func (d *Daemon) shutdown() {
 	d.report(ctx)
 }
 
-// refresh asks the hub for this machine's sinks. A hub that doesn't know the route, from before
-// log sinks, has none for it.
+// refresh asks the hub for this machine's sinks. Any failure, a 404 from a hub before log sinks
+// included, keeps the sinks it has: only the hub's list can stop one.
 func (d *Daemon) refresh(ctx context.Context) {
 	var list server.List[DaemonSink]
 	err := d.Hub.Do(ctx, http.MethodGet, d.path("logs/sinks"), "", nil, &list)
-	var e *client.Error
-	if errors.As(err, &e) && e.Status == http.StatusNotFound {
-		list, err = server.List[DaemonSink]{}, nil
+	if err == nil && list.Data == nil {
+		err = errors.New("the hub sent no list of sinks")
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -121,7 +131,8 @@ func (d *Daemon) refresh(ctx context.Context) {
 }
 
 // apply starts, restarts and stops pipelines so they match list. With fromHub, list is the hub's
-// word: it is saved, and the state of sinks it lacks is deleted.
+// word: it is saved. A sink it lacks keeps its state for stateKept, so it resumes if it comes
+// back, as a disabled sink does when enabled again; after that its state is deleted.
 func (d *Daemon) apply(ctx context.Context, list []DaemonSink, fromHub bool) {
 	same := func(a, b DaemonSink) bool {
 		x, _ := json.Marshal(a)
@@ -151,11 +162,25 @@ func (d *Daemon) apply(ctx context.Context, list []DaemonSink, fromHub bool) {
 			err = p.start(ctx)
 		}
 		if err != nil {
-			d.Log.Error("can't send logs to a sink", "sink", s.Name, "error", err)
+			if f, ok := d.failures[s.ID]; !ok || f.err != err.Error() {
+				d.Log.Error("can't send logs to a sink; trying again", "sink", s.Name, "error", err)
+				d.failures[s.ID] = startFailure{err: err.Error(), since: d.now().UTC()}
+				d.soon()
+			}
 			continue
 		}
+		if _, failed := d.failures[s.ID]; failed {
+			delete(d.failures, s.ID)
+			d.soon()
+		}
+		_ = os.Remove(filepath.Join(d.sinkDir(s.ID), missingFile))
 		d.pipelines[s.ID] = p
 		d.Log.Info("sending logs", "sink", s.Name, "type", s.Type)
+	}
+	for id := range d.failures {
+		if _, ok := want[id]; !ok {
+			delete(d.failures, id)
+		}
 	}
 	d.sinks = list
 	if !fromHub {
@@ -174,11 +199,32 @@ func (d *Daemon) apply(ctx context.Context, list []DaemonSink, fromHub bool) {
 	entries, _ := os.ReadDir(d.dir())
 	for _, e := range entries {
 		id, err := strconv.ParseInt(e.Name(), 10, 64)
-		if _, ok := want[id]; err == nil && e.IsDir() && !ok {
-			if err := os.RemoveAll(filepath.Join(d.dir(), e.Name())); err != nil {
-				d.Log.Error("can't delete the buffer of a removed log sink", "error", err)
-			}
+		if _, ok := want[id]; err != nil || !e.IsDir() || ok {
+			continue
 		}
+		d.forget(id)
+	}
+}
+
+// missingFile, in a sink's state folder, holds since when the hub no longer lists the sink.
+const missingFile = "missing.json"
+
+// forget deletes the state of a sink the hub no longer lists once it has been missing for
+// stateKept, and notes when it went missing until then.
+func (d *Daemon) forget(id int64) {
+	dir := d.sinkDir(id)
+	var since time.Time
+	if err := readJSON(filepath.Join(dir, missingFile), &since); err != nil || since.IsZero() {
+		since = d.now().UTC()
+		if err := writeJSON(filepath.Join(dir, missingFile), since); err != nil {
+			d.Log.Error("can't note that a log sink is gone", "error", err)
+		}
+	}
+	if d.now().Sub(since) < stateKept {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		d.Log.Error("can't delete the buffer of a log sink gone for a week", "error", err)
 	}
 }
 
@@ -215,15 +261,25 @@ func (d *Daemon) soon() {
 	}
 }
 
-// report tells the hub how sending to each sink goes. A failed report waits for the next one.
+// report tells the hub how sending to each sink goes: a sink whose pipeline can't start is
+// failing, with why. A failed report waits for the next one.
 func (d *Daemon) report(ctx context.Context) {
-	if len(d.pipelines) == 0 {
+	if len(d.pipelines) == 0 && len(d.failures) == 0 {
 		return
 	}
 	in := StatusReport{Data: []StatusInput{}}
 	for _, s := range d.sinks {
 		if p, ok := d.pipelines[s.ID]; ok {
 			in.Data = append(in.Data, p.report())
+		} else if f, ok := d.failures[s.ID]; ok {
+			var st sinkStatus // the counters it had, if it ever ran
+			_ = readJSON(filepath.Join(d.sinkDir(s.ID), "status.json"), &st)
+			msg, since := "can't start sending: "+f.err, f.since
+			if len(msg) > 1024 {
+				msg = msg[:1024]
+			}
+			in.Data = append(in.Data, StatusInput{SinkID: s.ID, RecordsSent: st.RecordsSent, RecordsDropped: st.RecordsDropped,
+				LastSentAt: st.LastSentAt, LastError: &msg, FailingSince: &since, LastDroppedAt: st.LastDroppedAt})
 		}
 	}
 	if err := d.Hub.Do(ctx, http.MethodPut, d.path("logs/status"), "", in, nil); err != nil && ctx.Err() == nil {

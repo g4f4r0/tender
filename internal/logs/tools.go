@@ -125,7 +125,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 		})
 
 	mcp.AddWrite(m, "remove_log_sink", "Remove a log sink",
-		"Remove a sink. Daemons stop sending to it within a minute and delete the logs they buffered for it, which are then lost. "+
+		"Remove a sink. Daemons stop sending to it within a minute, keep the logs they buffered for it for 7 days, then delete them; nothing sends them anywhere. "+
 			"Logs already sent stay at the sink. The result names what was removed.",
 		mcp.WriteOptions{Destructive: true, Idempotent: true},
 		func(ctx context.Context, in removeSinkInput) (mcp.Removed, error) {
