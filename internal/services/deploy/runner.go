@@ -69,11 +69,8 @@ func (d *Runner) Run(ctx context.Context) {
 		err := d.Hub.Do(ctx, http.MethodGet, d.path("/exposures"), "", nil, &ex)
 		if err == nil {
 			d.mu.Lock()
-			err = d.expose(ctx, ex)
+			_ = d.expose(ctx, ex, "", nil) // it logs what failed
 			d.mu.Unlock()
-			if err != nil {
-				d.Log.Warn("could not apply the exposures of this machine's services", "error", err)
-			}
 			return
 		}
 		if ctx.Err() != nil {
@@ -91,9 +88,11 @@ func (d *Runner) Run(ctx context.Context) {
 }
 
 // expose applies ex with every adapter, each with its own routes, then tells the hub the tailnet
-// name when it changed. An adapter's failure doesn't stop the others.
-func (d *Runner) expose(ctx context.Context, ex Exposures) error {
-	var errs []error
+// name when it changed. An adapter sets every route it can, and one service's failed route never
+// fails another's deploy: expose returns only what belongs to svc, the service of the deploy or
+// remove that called it, which has routes on the adapters in uses. It logs the rest.
+func (d *Runner) expose(ctx context.Context, ex Exposures, svc string, uses map[string]bool) error {
+	var mine []error
 	known := map[string]bool{}
 	for _, e := range d.Exposers {
 		known[e.Name()] = true
@@ -104,18 +103,42 @@ func (d *Runner) expose(ctx context.Context, ex Exposures) error {
 			}
 			t.SetTunnelToken(token)
 		}
-		if err := e.Apply(ctx, ExposeRoutes(ex.Routes, e.Name())); err != nil {
-			errs = append(errs, fmt.Errorf("the %s routes: %w", e.Name(), err))
+		m, others := expose.For(e.Apply(ctx, ExposeRoutes(ex.Routes, e.Name())), svc, uses[e.Name()])
+		if m != nil {
+			mine = append(mine, fmt.Errorf("the %s routes: %w", e.Name(), m))
+		}
+		if others != nil {
+			d.Log.Warn("could not expose all of the routes of this machine's services", "adapter", e.Name(), "error", others)
 		}
 	}
+	saidMine, saidOther := map[string]bool{}, map[string]bool{}
 	for _, r := range ex.Routes {
-		if !known[r.Expose] {
-			errs = append(errs, fmt.Errorf("this daemon can't expose %s routes, such as the one to %s in %s: update Tender on this machine", r.Expose, r.Container, r.Service))
-			known[r.Expose] = true
+		said := saidOther
+		if r.Service == svc {
+			said = saidMine
+		}
+		if known[r.Expose] || said[r.Expose] {
+			continue
+		}
+		said[r.Expose] = true
+		err := fmt.Errorf("this daemon can't expose %s routes, such as the one to %s in %s: update Tender on this machine", r.Expose, r.Container, r.Service)
+		if r.Service == svc {
+			mine = append(mine, err)
+		} else {
+			d.Log.Warn("could not expose all of the routes of this machine's services", "adapter", r.Expose, "error", err)
 		}
 	}
 	d.reportTailnet(ctx)
-	return errors.Join(errs...)
+	return errors.Join(mine...)
+}
+
+// adapters returns the adapters routes are exposed with.
+func adapters(routes []Published) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range routes {
+		out[r.Expose] = true
+	}
+	return out
 }
 
 // reportTailnet tells the hub the machine's tailnet name, when it differs from the last one sent.
@@ -292,7 +315,7 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 		strconv.Itoa(waitTimeoutSeconds))...); err != nil {
 		return out.String(), fmt.Errorf("%v: the containers did not all start and turn healthy. The end of its output:\n%s", err, out.String())
 	}
-	if err := d.expose(ctx, dep.Exposures); err != nil {
+	if err := d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)); err != nil {
 		return out.String(), fmt.Errorf("the service runs, but its routes could not all be exposed: %w", err)
 	}
 	return out.String(), nil
@@ -338,7 +361,7 @@ func (d *Runner) Remove(ctx context.Context, raw json.RawMessage, deleteData boo
 		return out.String(), fmt.Errorf("%v: the service's containers may still run. The end of its output:\n%s", err, out.String())
 	}
 	var errs []error
-	if err := d.expose(ctx, dep.Exposures); err != nil {
+	if err := d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)); err != nil {
 		errs = append(errs, fmt.Errorf("its containers are gone, but its routes could not all be taken out: %w", err))
 	}
 	if run == dir {

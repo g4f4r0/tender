@@ -735,7 +735,7 @@ func (s *Store) Deployment(ctx context.Context, machineID int64, name string) (j
 		}
 	}
 	for _, r := range sv.Routes {
-		d.Routes = append(d.Routes, deploy.Published{Container: r.Container, Port: r.Port, LocalPort: r.LocalPort})
+		d.Routes = append(d.Routes, deploy.Published{Container: r.Container, Port: r.Port, LocalPort: r.LocalPort, Expose: r.Expose})
 	}
 	if d.Registries, err = s.logins(ctx); err != nil {
 		return nil, err

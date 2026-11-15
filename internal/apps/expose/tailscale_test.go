@@ -97,6 +97,12 @@ func TestTailscale(t *testing.T) {
 		"Give the route another https_port, or free the port with: tailscale serve --https=10000 off" {
 		t.Errorf("a port in use: %v", err)
 	}
+	if mine, others := For(err, "blog", true); mine == nil || others != nil {
+		t.Errorf("the port in use isn't blog's route error: mine %v, others %v", mine, others)
+	}
+	if mine, others := For(err, "notes", true); mine != nil || others == nil {
+		t.Errorf("blog's port in use is notes': mine %v, others %v", mine, others)
+	}
 	if got := f.calls(); strings.Join(got, ";") != "serve --bg --https=443 http://127.0.0.1:20005" {
 		t.Errorf("with a port in use = %q", got)
 	}

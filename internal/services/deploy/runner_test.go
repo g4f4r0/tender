@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -53,11 +54,15 @@ func calls(t *testing.T, log string) []string {
 	return strings.Split(strings.TrimSpace(string(b)), "\n")
 }
 
-// fakeExposer records the routes it was given.
+// fakeExposer records the routes it was given. It refuses the routes of the services in refuse, and
+// sets the others; broken fails the whole adapter.
 type fakeExposer struct {
-	mu   sync.Mutex
-	name string
-	got  [][]expose.Route
+	mu     sync.Mutex
+	name   string
+	got    [][]expose.Route
+	refuse map[string]bool
+	broken error
+	set    []string
 }
 
 func (f *fakeExposer) Name() string { return f.name }
@@ -65,7 +70,20 @@ func (f *fakeExposer) Apply(_ context.Context, routes []expose.Route) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.got = append(f.got, routes)
-	return nil
+	if f.broken != nil {
+		return f.broken
+	}
+	var errs []error
+	f.set = nil
+	for _, r := range routes {
+		if f.refuse[r.Service] {
+			errs = append(errs, &expose.RouteError{Service: r.Service, Container: r.Container,
+				Err: errors.New("HTTPS port 8443 is taken, so the route to " + r.Container + " in " + r.Service + " can't have it")})
+			continue
+		}
+		f.set = append(f.set, r.Container+" in "+r.Service)
+	}
+	return errors.Join(errs...)
 }
 
 func newRunner(t *testing.T, docker string, hub *client.Client) (*Runner, *fakeExposer) {
@@ -284,12 +302,55 @@ func TestRunAppliesTheExposures(t *testing.T) {
 		t.Errorf("status = %q", status)
 	}
 	// The cloudflare route has no adapter on this daemon: that is an error to say, not a silent skip.
-	err := r.expose(context.Background(), Exposures{Routes: []Exposed{{Service: "blog", Container: "web", Expose: ExposeCloudflare, LocalPort: 20001}}})
+	err := r.expose(context.Background(), Exposures{Routes: []Exposed{{Service: "blog", Container: "web", Expose: ExposeCloudflare, LocalPort: 20001}}}, "blog", nil)
 	if err == nil || !strings.Contains(err.Error(), "this daemon can't expose cloudflare routes, such as the one to web in blog") {
 		t.Errorf("a route without its adapter: %v", err)
 	}
 	if len(status) != 1 {
 		t.Error("an unchanged tailnet name was sent again")
+	}
+}
+
+// One service's route that can't be set fails only that service's deploy: the other routes are
+// still set, and the other services deploy.
+func TestOneRouteFailsOnlyItsService(t *testing.T) {
+	docker, _ := fakeDocker(t, goodRendered, "never")
+	r, ts := newRunner(t, docker, nil)
+	ts.refuse = map[string]bool{"bad": true}
+	ex := Exposures{Routes: []Exposed{
+		{Service: "bad", Container: "web", Expose: ExposeTailscale, LocalPort: 20002, HTTPSPort: ptr(8443)},
+		{Service: "blog", Container: "web", Expose: ExposeTailscale, LocalPort: 20001, HTTPSPort: ptr(444)},
+		{Service: "notes", Container: "web", Expose: ExposeTailscale, LocalPort: 20000, HTTPSPort: ptr(443)},
+	}}
+	notes := Deployment{Name: "notes", Compose: "services: {}\n", Exposures: ex,
+		Routes: []Published{{Container: "web", Port: 8080, LocalPort: 20000, Expose: ExposeTailscale}}}
+	if out, err := r.Deploy(context.Background(), deployment(t, notes)); err != nil {
+		t.Fatalf("notes failed for bad's route: %v\n%s", err, out)
+	}
+	if strings.Join(ts.set, ", ") != "web in blog, web in notes" {
+		t.Errorf("set = %q; want every route but bad's", ts.set)
+	}
+	bad := notes
+	bad.Name = "bad"
+	bad.Routes = []Published{{Container: "web", Port: 80, LocalPort: 20002, Expose: ExposeTailscale}}
+	_, err := r.Deploy(context.Background(), deployment(t, bad))
+	if err == nil || err.Error() != "the service runs, but its routes could not all be exposed: the tailscale routes: "+
+		"HTTPS port 8443 is taken, so the route to web in bad can't have it" {
+		t.Errorf("bad's deploy: %v", err)
+	}
+	if strings.Join(ts.set, ", ") != "web in blog, web in notes" {
+		t.Errorf("set = %q after bad's deploy", ts.set)
+	}
+
+	// An adapter that fails as a whole fails the deploys of the services that use it, not the others.
+	ts.broken = errors.New("tailscale is not running")
+	if _, err := r.Deploy(context.Background(), deployment(t, notes)); err == nil || !strings.Contains(err.Error(), "the tailscale routes: tailscale is not running") {
+		t.Errorf("notes with tailscale down: %v", err)
+	}
+	plain := notes
+	plain.Name, plain.Routes = "plain", nil
+	if out, err := r.Deploy(context.Background(), deployment(t, plain)); err != nil {
+		t.Errorf("a service without tailscale routes failed for tailscale: %v\n%s", err, out)
 	}
 }
 

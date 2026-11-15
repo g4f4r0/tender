@@ -128,7 +128,7 @@ func (t *Tailscale) serving(ctx context.Context) (map[string]string, error) {
 
 // Apply makes Tailscale Serve serve exactly routes, of the ports Tender owns: it serves each
 // route's HTTPS port and turns off the ports it served before that are no longer routes. A route
-// whose port Serve already uses for something else fails with a sentence, and the others still go.
+// whose port Serve already uses for something else is a *RouteError, and the others still go.
 func (t *Tailscale) Apply(ctx context.Context, routes []Route) error {
 	state, err := t.load()
 	if err != nil {
@@ -153,14 +153,16 @@ func (t *Tailscale) Apply(ctx context.Context, routes []Route) error {
 		current, inUse := used[port]
 		switch {
 		case inUse && !owned:
-			errs = append(errs, fmt.Errorf("tailscale serve on this machine already uses HTTPS port %s for something else, so the route to %s in %s "+
-				"can't have it. Give the route another https_port, or free the port with: tailscale serve --https=%s off", port, r.Container, r.Service, port))
+			errs = append(errs, &RouteError{Service: r.Service, Container: r.Container, Err: fmt.Errorf("tailscale serve on this machine already uses "+
+				"HTTPS port %s for something else, so the route to %s in %s can't have it. Give the route another https_port, or free the port with: "+
+				"tailscale serve --https=%s off", port, r.Container, r.Service, port)})
 			continue
 		case owned && inUse && current == target && state.Ports[port] == target:
 			continue
 		}
 		if _, err := t.run(ctx, "serve", "--bg", "--https="+port, target); err != nil {
-			errs = append(errs, fmt.Errorf("could not serve the route to %s in %s on HTTPS port %s: %w", r.Container, r.Service, port, err))
+			errs = append(errs, &RouteError{Service: r.Service, Container: r.Container,
+				Err: fmt.Errorf("could not serve the route to %s in %s on HTTPS port %s: %w", r.Container, r.Service, port, err)})
 			continue
 		}
 		state.Ports[port] = target

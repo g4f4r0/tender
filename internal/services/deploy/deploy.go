@@ -38,6 +38,7 @@ type Published struct {
 	Container string `json:"container"`
 	Port      int    `json:"port"`
 	LocalPort int    `json:"local_port"`
+	Expose    string `json:"expose"` // tailscale, cloudflare or public
 }
 
 // Login is a registry's login, as the daemon gets it.

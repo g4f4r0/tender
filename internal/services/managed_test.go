@@ -149,7 +149,7 @@ func TestCreateAndReconcile(t *testing.T) {
 	if err := json.Unmarshal(raw, &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.Env["SECRET_KEY"] != "s3cret" || d.Files["config/app.toml"] != "x = 1\n" || len(d.Routes) != 2 || d.Routes[1] != (deploy.Published{Container: "web", Port: 9090, LocalPort: 20001}) ||
+	if d.Env["SECRET_KEY"] != "s3cret" || d.Files["config/app.toml"] != "x = 1\n" || len(d.Routes) != 2 || d.Routes[1] != (deploy.Published{Container: "web", Port: 9090, LocalPort: 20001, Expose: deploy.ExposeTailscale}) ||
 		len(d.Registries) != 1 || d.Registries[0].Password != "token" || len(d.Exposures.Routes) != 2 || *d.Exposures.Routes[1].HTTPSPort != 8443 {
 		t.Errorf("deployment = %+v", d)
 	}
