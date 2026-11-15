@@ -36,8 +36,7 @@ Work with the hub, from any machine that can reach it:
 	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
 	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
 	{"actions COMMAND", "list, show"},
-	{"recipients COMMAND", "list, add, remove"},
-	{"email test", "Send a test email to every recipient"},
+	{"channels COMMAND", "list, add, show, update, remove, test"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
@@ -71,8 +70,7 @@ var hubCommands = map[string]func([]string, session) error{
 	"services":     runServices,
 	"logs":         runLogs,
 	"actions":      runActions,
-	"recipients":   runRecipients,
-	"email":        runEmail,
+	"channels":     runChannels,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.

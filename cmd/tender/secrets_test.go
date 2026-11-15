@@ -64,10 +64,15 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		newKeyID  = "MARKER-NEW-KEY-ID-0d44"
 		newSecret = "MARKER-NEW-SECRET-KEY-e8a1"
 		badPass   = "MARKER-REFUSED-PASSWORD-33f0"
+		// Slack webhook URLs carry their key. Port 1 refuses, so a test reaches no one.
+		slackURL    = "http://127.0.0.1:1/services/MARKER-SLACK-KEY-4c1d"
+		newSlackURL = "http://127.0.0.1:1/services/MARKER-SLACK-KEY-NEW-77ab"
+		toolSlack   = "http://127.0.0.1:1/services/MARKER-SLACK-KEY-TOOL-19fe"
+		hookSecret  = "MARKER-WEBHOOK-SECRET-REPLACED-0b8c"
 	)
-	secrets := []string{keyID, secretKey, password, newKeyID, newSecret, badPass}
+	secrets := []string{keyID, secretKey, password, newKeyID, newSecret, badPass, "MARKER-SLACK-KEY", hookSecret}
 
-	// Set up through REST: a machine, two destinations (one with a generated password), settings, a recipient.
+	// Set up through REST: a machine, two destinations (one with a generated password), settings, and channels.
 	var machine struct{ Token string }
 	status, body := restCall(t, hub.URL, "POST", "/v1/machines", "", map[string]any{"name": "g4f4r0-code"})
 	if status != 201 || json.Unmarshal([]byte(body), &machine) != nil || machine.Token == "" {
@@ -92,9 +97,25 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	if status, _ = restCall(t, hub.URL, "PUT", "/v1/machines/g4f4r0-code/backups/settings", "", map[string]any{"destination": "r2-code", "schedule": "30 3 * * *", "retention_days": 30}); status != 200 {
 		t.Fatalf("set backups: %d", status)
 	}
-	if status, _ = restCall(t, hub.URL, "POST", "/v1/notifications/recipients", "", map[string]any{"email": "johan@example.com"}); status != 201 {
-		t.Fatalf("add recipient: %d", status)
+	if status, _ = restCall(t, hub.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "ops", "type": "email",
+		"config": map[string]any{"to": "johan@example.com"}}); status != 201 {
+		t.Fatalf("add email channel: %d", status)
 	}
+	if status, body = restCall(t, hub.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "chat", "type": "slack",
+		"config": map[string]any{"webhook_url": slackURL}}); status != 201 || strings.Contains(body, "MARKER") {
+		t.Fatalf("add slack channel: %d %s", status, body)
+	}
+	var hook struct{ Config map[string]any }
+	status, body = restCall(t, hub.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "hook", "type": "webhook",
+		"config": map[string]any{"url": "http://127.0.0.1:1/in"}})
+	if status != 201 || json.Unmarshal([]byte(body), &hook) != nil {
+		t.Fatalf("add webhook channel: %d %s", status, body)
+	}
+	made, _ := hook.Config["secret"].(string)
+	if len(made) < 30 {
+		t.Fatalf("the webhook's secret wasn't shown on create: %s", body)
+	}
+	secrets = append(secrets, made)
 	// Daemon traffic, so the token passes through the request log too.
 	if status, _ = restCall(t, hub.URL, "POST", "/v1/machines/g4f4r0-code/usage", machine.Token,
 		map[string]any{"cpu_load": 1, "memory_used_percent": 1, "disk_used_percent": 1, "uptime_seconds": 1, "created_at": "2026-11-14T03:30:00Z"}); status != 201 {
@@ -135,7 +156,7 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		"/v1/backups", "/v1/backups/destinations", "/v1/backups/destinations/r2-code", "/v1/backups/destinations/r2-apps",
 		"/v1/machines/g4f4r0-code/backups", "/v1/machines/g4f4r0-code/backups/settings", "/v1/machines/g4f4r0-code/backups/snapshots",
 		"/v1/machines/g4f4r0-code/backups/history", "/v1/notifications", "/v1/machines/g4f4r0-code/notifications",
-		"/v1/notifications/recipients",
+		"/v1/notifications/channels", "/v1/notifications/channels/chat", "/v1/notifications/channels/hook",
 	} {
 		rest("GET", path, nil)
 	}
@@ -153,6 +174,13 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	rest("DELETE", "/v1/backups/destinations/r2-code", nil)                                                                   // 409, in use
 	rest("GET", "/v1/backups/destinations", nil)                                                                              // after the patch
 	rest("GET", "/v1/machines/g4f4r0-code/backups/settings", nil)
+	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": newSlackURL}})
+	rest("PATCH", "/v1/notifications/channels/chat", map[string]any{"config": map[string]any{"webhook_url": "***"}})          // 422
+	rest("PATCH", "/v1/notifications/channels/hook", map[string]any{"config": map[string]any{"secret": hookSecret}})
+	rest("PATCH", "/v1/notifications/channels/hook", map[string]any{"config": map[string]any{"secret": "short"}, "nope": 1}) // 400
+	rest("POST", "/v1/notifications/test", map[string]any{"channel": "chat"})                                            // fails, port 1
+	rest("POST", "/v1/notifications/test", map[string]any{"channel": "hook"})
+	rest("GET", "/v1/notifications/channels", nil)
 
 	// Every MCP tool, with the same secrets where a tool takes them.
 	for _, c := range []struct {
@@ -166,7 +194,7 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		{"list_backup_snapshots", map[string]any{"machine": "g4f4r0-code"}},
 		{"list_backup_history", map[string]any{"machine": "g4f4r0-code"}},
 		{"list_notifications", nil},
-		{"list_recipients", nil},
+		{"list_channels", nil},
 		{"list_destinations", nil},
 		{"add_destination", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
 			"access_key_id": keyID, "secret_access_key": secretKey, "password": password}}, // 409
@@ -180,9 +208,14 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		{"set_backup", map[string]any{"machine": "g4f4r0-apps", "destination": "r2-apps", "schedule": "0 4 * * *", "retention_days": 7}},
 		{"get_backup_status", nil},
 		{"unset_backup", map[string]any{"machine": "g4f4r0-apps"}},
-		{"add_recipient", map[string]any{"email": "ops@example.com"}},
-		{"send_test_email", nil},
-		{"remove_recipient", map[string]any{"id": 2}},
+		{"add_channel", map[string]any{"name": "tool-chat", "type": "slack", "config": map[string]any{"webhook_url": toolSlack}}},
+		{"add_channel", map[string]any{"name": "chat", "type": "slack", "config": map[string]any{"webhook_url": toolSlack}}}, // 409
+		{"update_channel", map[string]any{"channel": "tool-chat", "config": map[string]any{"webhook_url": newSlackURL}}},
+		{"update_channel", map[string]any{"channel": "hook", "config": map[string]any{"secret": hookSecret}}},
+		{"send_test_notification", map[string]any{"channel": "tool-chat"}},
+		{"send_test_notification", nil},
+		{"list_channels", nil},
+		{"remove_channel", map[string]any{"channel": "tool-chat"}},
 	} {
 		tool(c.name, c.args)
 	}

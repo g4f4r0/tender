@@ -54,6 +54,8 @@ var typeText = map[string]struct{ title, tool string }{
 	TypeServiceUnhealthy:  {"unhealthy", "list_services"},
 	TypeServiceMemoryHigh: {"memory high", "list_services"},
 	TypeDockerUnreachable: {"Docker unreachable", "list_services"},
+
+	TypeChannelFailing: {"a notification channel is failing", "list_channels"},
 }
 
 // Message is one email, before it gets its headers.
@@ -94,7 +96,7 @@ func render(kind string, d emailData) (Message, error) {
 	return Message{Subject: d.Subject, Text: text.String(), HTML: page.String()}, nil
 }
 
-// TestMessage is the email POST /v1/notifications/test and the send_test_email tool send.
+// TestMessage is the email POST /v1/notifications/test and the send_test_notification tool send to an email channel.
 func TestMessage(hub string) (Message, error) { return render(kindTest, emailData{Hub: hub}) }
 
 // Mailer sends email over SMTP with TLS from the first byte (port 465).

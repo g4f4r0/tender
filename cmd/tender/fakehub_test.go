@@ -41,10 +41,8 @@ type fakeHub struct {
 	destinations []backups.Destination
 	secrets      map[string]backups.DestinationInput // by destination name; never returned
 	settings     map[string]backups.Settings
-	recipients   []notifications.Recipient
 	alerts       []notifications.Notification
-	history      map[string]*backups.History // last backup by machine
-	emailOn      bool
+	history      map[string]*backups.History   // last backup by machine
 	pageSize     int                           // notifications per page, to exercise next_cursor
 	services     map[string][]services.Service // by machine
 	docker       map[string]string             // what each machine's daemon said about Docker
@@ -64,7 +62,7 @@ func newFakeHub(t *testing.T) *fakeHub {
 	h := &fakeHub{
 		t: t, now: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), nextID: 1, pageSize: 500,
 		machines: map[string]*fakeMachine{}, secrets: map[string]backups.DestinationInput{},
-		settings: map[string]backups.Settings{}, history: map[string]*backups.History{}, emailOn: true,
+		settings: map[string]backups.Settings{}, history: map[string]*backups.History{},
 		services: map[string][]services.Service{}, docker: map[string]string{}, actions: map[int64]*actions.Action{}, daemon: completeAction,
 	}
 	mux := http.NewServeMux()
@@ -80,10 +78,6 @@ func newFakeHub(t *testing.T) *fakeHub {
 	mux.HandleFunc("GET /v1/backups/destinations", h.listDestinations)
 	mux.HandleFunc("DELETE /v1/backups/destinations/{destination}", h.removeDestination)
 	mux.HandleFunc("GET /v1/notifications", h.listAlerts)
-	mux.HandleFunc("GET /v1/notifications/recipients", h.listRecipients)
-	mux.HandleFunc("POST /v1/notifications/recipients", h.addRecipient)
-	mux.HandleFunc("DELETE /v1/notifications/recipients/{id}", h.removeRecipient)
-	mux.HandleFunc("POST /v1/notifications/test", h.testEmail)
 	mux.HandleFunc("GET /v1/services", h.listServices)
 	mux.HandleFunc("GET /v1/machines/{machine}/services", h.listServices)
 	mux.HandleFunc("PATCH /v1/machines/{machine}/services/{service}", h.patchService)
@@ -330,61 +324,6 @@ func (h *fakeHub) listAlerts(w http.ResponseWriter, r *http.Request) {
 		page.NextCursor = strconv.Itoa(end)
 	}
 	server.WriteJSON(w, http.StatusOK, page)
-}
-
-func (h *fakeHub) listRecipients(w http.ResponseWriter, _ *http.Request) {
-	list := h.recipients
-	if list == nil {
-		list = []notifications.Recipient{}
-	}
-	server.WriteJSON(w, http.StatusOK, server.List[notifications.Recipient]{Data: list})
-}
-
-func (h *fakeHub) addRecipient(w http.ResponseWriter, r *http.Request) {
-	var in notifications.RecipientInput
-	if !decode(w, r, &in) {
-		return
-	}
-	if !strings.Contains(in.Email, "@") {
-		problem(w, http.StatusUnprocessableEntity, "%q is not an email address. Use one like you@example.com.", in.Email)
-		return
-	}
-	for _, x := range h.recipients {
-		if x.Email == in.Email {
-			problem(w, http.StatusConflict, "%s is a recipient already.", in.Email)
-			return
-		}
-	}
-	rec := notifications.Recipient{ID: h.id(), Email: in.Email, CreatedAt: h.now.Add(-2 * time.Hour), UpdatedAt: h.now}
-	h.recipients = append(h.recipients, rec)
-	server.WriteJSON(w, http.StatusCreated, rec)
-}
-
-func (h *fakeHub) removeRecipient(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	for i, x := range h.recipients {
-		if x.ID == id {
-			h.recipients = append(h.recipients[:i], h.recipients[i+1:]...)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
-	problem(w, http.StatusNotFound, "There is no recipient %d.", id)
-}
-
-func (h *fakeHub) testEmail(w http.ResponseWriter, _ *http.Request) {
-	switch {
-	case !h.emailOn:
-		problem(w, http.StatusUnprocessableEntity, "Email is off because the hub has no SMTP server. Run \"sudo tender install hub --smtp-host HOST --smtp-from SENDER\".")
-	case len(h.recipients) == 0:
-		problem(w, http.StatusUnprocessableEntity, "There are no recipients. Add one with \"tender recipients add EMAIL\".")
-	default:
-		to := []string{}
-		for _, x := range h.recipients {
-			to = append(to, x.Email)
-		}
-		server.WriteJSON(w, http.StatusAccepted, notifications.TestResult{SentTo: to})
-	}
 }
 
 // answers is a session's prompt: it hands out the answers in order and records the labels asked.

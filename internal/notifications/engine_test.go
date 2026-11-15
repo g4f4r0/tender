@@ -44,8 +44,8 @@ type rig struct {
 	logs   *bytes.Buffer
 }
 
-// newRig has machine a (id 1), the recipients one@example.com and two@example.com, and an engine
-// that emails through a fake sender.
+// newRig has machine a (id 1), the email channel one to one@example.com, and an engine that
+// emails through a fake sender.
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
@@ -67,14 +67,26 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	sender := &fakeSender{}
-	_, err = d.Write.Exec(`INSERT INTO notification_recipients (email, created_at, updated_at) VALUES
-		('one@example.com', 1, 1), ('two@example.com', 1, 1)`)
+	addEmailChannel(t, d, "one", "one@example.com")
+	logs := &bytes.Buffer{}
+	e := NewEngine(NewStore(d, testKey), sender, testHub, slog.New(slog.NewTextHandler(logs, nil)))
+	e.FailingAfter = 1000 * time.Hour // these tests are about one channel; channels_test.go covers channel_failing
+	return &rig{t: t, db: d, engine: e, sender: sender, logs: logs}
+}
+
+var (
+	testKey = make([]byte, 32)
+	testHub = Hub{Name: "hub1", URL: "https://hub1.example.com"}
+)
+
+// addEmailChannel adds an email channel that gets every alert.
+func addEmailChannel(t *testing.T, d *db.DB, name, to string) {
+	t.Helper()
+	_, err := d.Write.Exec(`INSERT INTO notification_channels (name, type, config, enabled, min_severity, created_at, updated_at)
+		VALUES (?, 'email', json_object('to', ?), 1, 'info', 1, 1)`, name, to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	logs := &bytes.Buffer{}
-	e := NewEngine(NewStore(d), sender, "hub1", slog.New(slog.NewTextHandler(logs, nil)))
-	return &rig{t: t, db: d, engine: e, sender: sender, logs: logs}
 }
 
 // tick runs the rules at t0 plus after.
@@ -130,8 +142,8 @@ func TestOpenSendResolve(t *testing.T) {
 	r := newRig(t)
 	r.tick(0, silent())
 	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
-	if want := []string{"one@example.com", "two@example.com"}; !slices.Equal(r.sender.to[0], want) {
-		t.Errorf("the opened email went to %q, want every recipient %q", r.sender.to[0], want)
+	if want := []string{"one@example.com"}; !slices.Equal(r.sender.to[0], want) {
+		t.Errorf("the opened email went to %q, want the channel's address %q", r.sender.to[0], want)
 	}
 	if !strings.Contains(r.sender.texts[0], "a has never reported to the hub.") || !strings.Contains(r.sender.texts[0], "on hub1.") {
 		t.Errorf("opened text:\n%s", r.sender.texts[0])
@@ -141,7 +153,7 @@ func TestOpenSendResolve(t *testing.T) {
 	r.tick(time.Minute, silent())
 	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
 
-	// A reading arrives: the resolved email goes out, then the row resolves.
+	// A reading arrives: the row resolves and the resolved email goes out.
 	r.tick(5*time.Minute, quiet(5*time.Minute))
 	r.want([]string{"machine_silent critical resolved"}, "a: not reporting", "a: not reporting, resolved")
 	if !strings.Contains(r.sender.texts[1], "resolved as of 2026-11-14 03:35 UTC. It was open for 5 minutes.") {
@@ -175,7 +187,7 @@ func TestResolvesWithoutEmailWhenNeverSent(t *testing.T) {
 func TestFailedSendIsRetriedWithBackoff(t *testing.T) {
 	r := newRig(t)
 	r.sender.fail = true
-	// The first failure retries on the next tick, then the waits are 2, 4 and 8 minutes, then 10.
+	// The waits after each failure are 1, 2, 5, 10 and 30 minutes.
 	var attempts []int
 	for i := range 40 {
 		before := r.sender.calls
@@ -184,14 +196,16 @@ func TestFailedSendIsRetriedWithBackoff(t *testing.T) {
 			attempts = append(attempts, i)
 		}
 	}
-	if want := []int{0, 1, 3, 7, 15, 25, 35}; !slices.Equal(attempts, want) {
+	if want := []int{0, 1, 3, 8, 18}; !slices.Equal(attempts, want) {
 		t.Errorf("attempts at minutes %v, want %v", attempts, want)
 	}
 	r.want([]string{"machine_silent critical pending"})
 
-	// The next attempt that works sends the opened email and the row becomes sent.
+	// Not due yet at 45 minutes; the next attempt, at 48, works: the row becomes sent.
 	r.sender.fail = false
 	r.tick(45*time.Minute, silent())
+	r.want([]string{"machine_silent critical pending"})
+	r.tick(48*time.Minute, silent())
 	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
 }
 
@@ -200,7 +214,7 @@ func TestFailedResolvedEmailIsRetried(t *testing.T) {
 	r.tick(0, silent())
 	r.sender.fail = true
 	r.tick(time.Minute, quiet(time.Minute))
-	r.want([]string{"machine_silent critical sent"}, "a: not reporting") // still open, retried below
+	r.want([]string{"machine_silent critical resolved"}, "a: not reporting") // resolved; its email is retried below
 	r.sender.fail = false
 	r.tick(2*time.Minute, quiet(2*time.Minute))
 	r.want([]string{"machine_silent critical resolved"}, "a: not reporting", "a: not reporting, resolved")
@@ -246,10 +260,10 @@ func TestEscalationBeforeEmailStaysOpened(t *testing.T) {
 	r := newRig(t)
 	r.sender.fail = true
 	r.tick(0, staleAfter(0, 26))
-	r.tick(24*time.Hour, staleAfter(24*time.Hour, 50)) // escalates while nothing was ever sent
+	r.tick(2*time.Hour, staleAfter(2*time.Hour, 50)) // escalates while nothing was ever sent
 	r.want([]string{"backup_stale critical pending"})
 	r.sender.fail = false
-	r.tick(24*time.Hour+3*time.Minute, staleAfter(24*time.Hour+3*time.Minute, 50)) // after the 2 minute wait
+	r.tick(2*time.Hour+3*time.Minute, staleAfter(2*time.Hour+3*time.Minute, 50)) // after the 2 minute wait
 	r.want([]string{"backup_stale critical sent"}, "a: no recent backup")
 }
 
@@ -290,7 +304,7 @@ func TestEmailOff(t *testing.T) {
 	r.want([]string{"machine_silent critical resolved"})
 }
 
-const nobody = "nobody gets alert emails"
+const nobody = "nobody gets alerts"
 
 func TestEmailOffSaysSoOnce(t *testing.T) {
 	r := newRig(t)
@@ -303,9 +317,9 @@ func TestEmailOffSaysSoOnce(t *testing.T) {
 	}
 }
 
-func TestNoRecipients(t *testing.T) {
+func TestNoChannels(t *testing.T) {
 	r := newRig(t)
-	if _, err := r.db.Write.Exec(`DELETE FROM notification_recipients`); err != nil {
+	if _, err := r.db.Write.Exec(`DELETE FROM notification_channels`); err != nil {
 		t.Fatal(err)
 	}
 	// Alerts are recorded and stay pending; nothing is sent; the log says so once.
@@ -320,18 +334,16 @@ func TestNoRecipients(t *testing.T) {
 		t.Errorf("the hub said nobody gets email %d times, want once:\n%s", n, r.logs)
 	}
 
-	// The first recipient gets the email that was owed.
-	if _, err := r.db.Write.Exec(`INSERT INTO notification_recipients (email, created_at, updated_at) VALUES ('late@example.com', 1, 1)`); err != nil {
-		t.Fatal(err)
-	}
+	// The first channel gets the email that was owed.
+	addEmailChannel(t, r.db, "late", "late@example.com")
 	r.tick(3*time.Minute, silent())
 	r.want([]string{"machine_silent critical sent"}, "a: not reporting")
 	if want := []string{"late@example.com"}; !slices.Equal(r.sender.to[0], want) {
 		t.Errorf("sent to %q, want %q", r.sender.to[0], want)
 	}
 
-	// With the last recipient gone, a resolving alert resolves without an email, and the log speaks again.
-	if _, err := r.db.Write.Exec(`DELETE FROM notification_recipients`); err != nil {
+	// With the last channel gone, a resolving alert resolves without an email, and the log speaks again.
+	if _, err := r.db.Write.Exec(`DELETE FROM notification_channels`); err != nil {
 		t.Fatal(err)
 	}
 	r.tick(4*time.Minute, quiet(4*time.Minute))
@@ -354,10 +366,10 @@ func TestIgnoresOtherRows(t *testing.T) {
 
 func TestBackoff(t *testing.T) {
 	var got []string
-	for n := 1; n <= 7; n++ {
+	for n := 0; n <= 7; n++ {
 		got = append(got, fmt.Sprint(backoff(n)))
 	}
-	if want := []string{"0s", "2m0s", "4m0s", "8m0s", "10m0s", "10m0s", "10m0s"}; !slices.Equal(got, want) {
+	if want := []string{"0s", "1m0s", "2m0s", "5m0s", "10m0s", "30m0s", "30m0s", "30m0s"}; !slices.Equal(got, want) {
 		t.Errorf("backoff = %v, want %v", got, want)
 	}
 }

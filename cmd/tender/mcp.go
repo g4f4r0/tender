@@ -11,6 +11,7 @@ import (
 
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/notifications"
 )
 
 // runMCP serves the MCP tools over stdio from the hub's existing database, for a local client
@@ -23,8 +24,8 @@ func runMCP(args []string, log *slog.Logger) error {
 	fs := newFlagSet("mcp", "--stdio [--database PATH]",
 		"Serve the MCP tools over standard input and output, for an AI client on the hub machine. "+
 			"It reads and writes the hub's database directly, so the hub must have run once. Tools that store "+
-			"destination keys need "+config.EnvEncryptionKey+" in the client's environment, and send_test_email needs the "+
-			"TENDER_SMTP_ variables; without them those tools say what is missing.")
+			"destination keys or channel secrets need "+config.EnvEncryptionKey+" in the client's environment, and "+
+			"send_test_notification needs the TENDER_SMTP_ variables for email; without them those tools say what is missing.")
 	stdio := fs.Bool("stdio", false, "serve over standard input and output (required)")
 	fs.StringVar(&database, "database", database, "`PATH` the hub's SQLite database file (default: "+config.EnvDatabase+", else "+defaultDatabase+")")
 	if err := parseFlags(fs, args, os.Stdout); err != nil {
@@ -44,6 +45,8 @@ func runMCP(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	notifications.AdaptersDir = os.Getenv(envAdaptersDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

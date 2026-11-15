@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/g4f4r0/tender/internal/backups"
+	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/services"
@@ -17,6 +18,18 @@ func hubName() string {
 		return "unknown"
 	}
 	return name
+}
+
+// hubIdentity names the hub in what it sends: its host name, and its URL from TENDER_HUB_URL,
+// else http:// and the host name. The hub checked TENDER_HUB_URL when it started.
+func hubIdentity() notifications.Hub {
+	h := notifications.Hub{Name: hubName()}
+	if u, err := config.LoadHubURL(os.Getenv); err == nil && u != "" {
+		h.URL = u
+	} else {
+		h.URL = "http://" + h.Name
+	}
+	return h
 }
 
 // loadMachines returns what the notification rules need to know about every machine, from the

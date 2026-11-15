@@ -447,9 +447,9 @@ Next:
        tender machines add NAME
   3. Set when that machine backs up:
        tender backups set NAME --destination NAME --schedule "30 3 * * *" --retention-days 30
-  4. Choose who gets alerts, then check that the email arrives:
-       tender recipients add you@example.com
-       tender email test
+  4. Choose where alerts go, then check that they arrive:
+       tender channels add ops --type email --to you@example.com
+       tender channels test
   5. Install the daemon on that machine, with the token when it asks:
        curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh \
          | sudo sh -s -- daemon --hub ` + url + ` --machine NAME`

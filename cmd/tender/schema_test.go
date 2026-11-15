@@ -1,15 +1,24 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
+	"io"
 	"io/fs"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"testing/fstest"
 
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/machines"
+	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/server"
 )
 
 // The real schema: every domain's migrations together, as the hub applies them.
@@ -56,11 +65,11 @@ func rows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 func TestSchemaAppliesTwice(t *testing.T) {
 	d := schema(t)
-	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 10 {
-		t.Fatalf("migrations rows = %d, want 10 (machines, backups twice, notifications three times, services, actions, server twice)", n)
+	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 11 {
+		t.Fatalf("migrations rows = %d, want 11 (machines, backups twice, notifications four times, services, actions, server twice)", n)
 	}
 	for _, table := range []string{"machines", "machine_usage", "backup_destinations", "backup_settings",
-		"backup_snapshots", "backup_history", "notifications", "notification_recipients", "service_engines", "services", "actions", "idempotency_keys"} {
+		"backup_snapshots", "backup_history", "notifications", "notification_channels", "notification_deliveries", "service_engines", "services", "actions", "idempotency_keys"} {
 		if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table); n != 1 {
 			t.Errorf("table %s missing", table)
 		}
@@ -122,11 +131,112 @@ func TestSchemaConstraints(t *testing.T) {
 	}
 }
 
-func TestRecipientEmailsAreUniqueInAnyCase(t *testing.T) {
-	d := schema(t)
-	must(t, d, `INSERT INTO notification_recipients (email, created_at, updated_at) VALUES ('johan@example.com', 1, 1)`)
-	if err := exec(t, d, `INSERT INTO notification_recipients (email, created_at, updated_at) VALUES ('Johan@Example.com', 1, 1)`); err == nil {
-		t.Error("the same address in another case was accepted")
+// A real v0.2.2 hub database, made by that release's binary with three recipients, upgrades: each
+// recipient becomes an email channel named after its address, getting every alert.
+func TestV022RecipientsBecomeEmailChannels(t *testing.T) {
+	gz, err := os.ReadFile("testdata/v022-hub.db.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "hub.db")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if n := rows(t, d, `SELECT count(*) FROM notification_recipients`); n != 3 {
+		t.Fatalf("the v0.2.2 database has %d recipients, want 3", n)
+	}
+	if err := d.Migrate(context.Background(), migrations()...); err != nil {
+		t.Fatal(err)
+	}
+	if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE name = 'notification_recipients'`); n != 0 {
+		t.Error("notification_recipients is still there")
+	}
+	srv := httptest.NewServer(newHub(d, testKey, nil, quiet))
+	defer srv.Close()
+	status, body := restCall(t, srv.URL, "GET", "/v1/notifications/channels", "", nil)
+	var list server.List[notifications.Channel]
+	if status != 200 || json.Unmarshal([]byte(body), &list) != nil {
+		t.Fatalf("list: %d %s", status, body)
+	}
+	want := map[string]string{"ops-example-com": "ops@example.com", "alerts-team-tender-example-org": "Alerts.Team+tender@Example.ORG",
+		"first-last-sub-example-co-uk": "first_last@sub.example.co.uk"}
+	if len(list.Data) != 3 {
+		t.Fatalf("channels: %s", body)
+	}
+	for _, c := range list.Data {
+		if want[c.Name] != c.Config["to"] || c.Type != "email" || !c.Enabled || c.MinSeverity != "info" || !server.ValidName(c.Name) ||
+			c.CreatedAt.Unix() != 1794751710 {
+			t.Errorf("channel %+v", c)
+		}
+	}
+	// The upgraded hub works on: a new channel, and the machine v0.2.2 added.
+	if status, body := restCall(t, srv.URL, "POST", "/v1/notifications/channels", "", map[string]any{"name": "more", "type": "email",
+		"config": map[string]any{"to": "more@example.com"}}); status != 201 {
+		t.Errorf("add: %d %s", status, body)
+	}
+	if status, body := restCall(t, srv.URL, "GET", "/v1/machines/apps", "", nil); status != 200 {
+		t.Errorf("machine: %d %s", status, body)
+	}
+}
+
+// The migration names a channel after its address even when two addresses spell the same name,
+// or an address has no letter or digit to keep.
+func TestRecipientNamesMigrate(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	files := fstest.MapFS{}
+	for _, name := range []string{"001_init.sql", "002_recipients.sql", "003_services.sql"} {
+		b, err := fs.ReadFile(notifications.Migrations.Files, "migrations/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files["migrations/"+name] = &fstest.MapFile{Data: b}
+	}
+	ctx := context.Background()
+	if err := d.Migrate(ctx, machines.Migrations, db.Migrations{Domain: "notifications", Files: files, Dir: "migrations"}); err != nil {
+		t.Fatal(err)
+	}
+	must(t, d, `INSERT INTO notification_recipients (id, email, created_at, updated_at) VALUES
+		(1, 'ops@example.com', 1, 1), (2, 'ops.example@com', 1, 1), (3, 'Ops@Example-Com', 2, 2), (4, '__@__', 3, 3), (5, 'ünï@x.de', 4, 4)`)
+	if err := d.Migrate(ctx, migrations()...); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Read.Query(`SELECT name, json_extract(config, '$.to') FROM notification_channels ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = got.Close() }()
+	var names []string
+	for got.Next() {
+		var name, to string
+		if err := got.Scan(&name, &to); err != nil {
+			t.Fatal(err)
+		}
+		if !server.ValidName(name) {
+			t.Errorf("%s: %q is not a valid name", to, name)
+		}
+		names = append(names, name+" "+to)
+	}
+	want := []string{"ops-example-com ops@example.com", "ops-example-com-2 ops.example@com", "ops-example-com-3 Ops@Example-Com",
+		"email-4 __@__", "n--x-de ünï@x.de"}
+	if !slices.Equal(names, want) {
+		t.Errorf("names %q, want %q", names, want)
 	}
 }
 

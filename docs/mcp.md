@@ -16,10 +16,10 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 1. Every result is JSON. It comes as `structuredContent` and as the same JSON in a text block, for clients that read only text. A list is `{"data": [...]}`, with `next_cursor` when there is another page.
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
 3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
-4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_email`, which sends email, sets it to `true`.
+4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only `send_test_notification`, which sends to the channels, sets it to `true`.
 5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs` and `get_machine_logs`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-7. No tool returns bucket keys or repository passwords. The only secrets a tool returns are the ones made for you, shown once: a new machine token, and a destination password the hub generated.
+7. No tool returns bucket keys or repository passwords. No tool returns a channel's secret, such as a Slack webhook URL. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, and a webhook channel's signing secret.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
@@ -51,11 +51,12 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `GET /v1/notifications` | `list_notifications` |
 | `GET /v1/machines/{machine}/notifications` | `list_notifications` |
 | `GET /v1/machines/{machine}/notifications/{id}` | `list_notifications` |
-| `GET /v1/notifications/recipients` | `list_recipients` |
-| `POST /v1/notifications/recipients` | `add_recipient` |
-| `GET /v1/notifications/recipients/{id}` | `get_recipient` |
-| `DELETE /v1/notifications/recipients/{id}` | `remove_recipient` |
-| `POST /v1/notifications/test` | `send_test_email` |
+| `GET /v1/notifications/channels` | `list_channels` |
+| `POST /v1/notifications/channels` | `add_channel` |
+| `GET /v1/notifications/channels/{channel}` | `list_channels` |
+| `PATCH /v1/notifications/channels/{channel}` | `update_channel` |
+| `DELETE /v1/notifications/channels/{channel}` | `remove_channel` |
+| `POST /v1/notifications/test` | `send_test_notification` |
 | `GET /v1/services` | `list_services` |
 | `GET /v1/machines/{machine}/services` | `list_services` |
 | `GET /v1/machines/{machine}/services/{service}` | `list_services` |
@@ -998,7 +999,7 @@ Lists alerts, newest first, optionally of one machine, status or severity.
 
 #### Returns
 
-`data`, the notifications, each with `id`, `machine` (the machine it is about), `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence) and the timestamps. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) explains the statuses and lists the types.
+`data`, the notifications, each with `id`, `machine` (the machine it is about), `service` (the Docker service it is about, else `null`), `type`, `severity`, `status`, `content` (the alert in one sentence), `channel` (the channel a `channel_failing` alert is about, else `null`), the timestamps, and `deliveries`: each event sent to each channel, with `channel`, `event`, `status` (`pending`, `delivered` or `failed`), `attempts` and `error`. `pending` and `sent` are open, and `resolved` is closed. [Alerts](alerts.md) explains the statuses and lists the types.
 
 #### Limits
 
@@ -1023,8 +1024,22 @@ At most 500 notifications a page.
       "severity": "warning",
       "status": "resolved",
       "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "channel": null,
       "created_at": "2026-11-15T11:35:35Z",
-      "updated_at": "2026-11-15T11:36:35Z"
+      "updated_at": "2026-11-15T11:36:35Z",
+      "deliveries": [
+        {
+          "id": 7,
+          "notification_id": 3,
+          "channel": "ops",
+          "event": "opened",
+          "status": "delivered",
+          "attempts": 1,
+          "error": null,
+          "created_at": "2026-11-15T11:35:35Z",
+          "updated_at": "2026-11-15T11:35:36Z"
+        }
+      ]
     }
   ],
   "next_cursor": "MTc5NDc0MjUzNToz"
@@ -1044,9 +1059,9 @@ At most 500 notifications a page.
 | --- | --- |
 | `GET /v1/notifications`, `GET /v1/machines/{machine}/notifications` and `GET /v1/machines/{machine}/notifications/{id}` | `tender status`, which shows the open alerts. |
 
-### `list_recipients`
+### `list_channels`
 
-Lists the email addresses that get every alert email, in the order they were added.
+Lists the channels alerts go to, in the order they were added.
 
 #### Annotations
 
@@ -1060,7 +1075,7 @@ None.
 
 #### Returns
 
-`data`, the recipients, each with `id` (for `remove_recipient`), `email` and the timestamps.
+`data`, the channels, each with `id`, `name`, `type` (`email`, `slack`, `webhook` or `exec`), `config`, `enabled`, `min_severity` (the least severe alert it gets) and the timestamps. A secret in `config` shows as `"***"`, with `<name>_set` set to `true`.
 
 #### Limits
 
@@ -1069,7 +1084,7 @@ None. The list isn't paged.
 #### Example call
 
 ```json
-{"name": "list_recipients", "arguments": {}}
+{"name": "list_channels", "arguments": {}}
 ```
 
 #### Example result
@@ -1079,9 +1094,23 @@ None. The list isn't paged.
   "data": [
     {
       "id": 1,
-      "email": "ops@example.com",
+      "name": "ops",
+      "type": "email",
+      "config": {"to": "ops@example.com"},
+      "enabled": true,
+      "min_severity": "warning",
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
+    },
+    {
+      "id": 2,
+      "name": "chat",
+      "type": "slack",
+      "config": {"webhook_url": "***", "webhook_url_set": true},
+      "enabled": true,
+      "min_severity": "critical",
+      "created_at": "2026-11-15T11:28:02Z",
+      "updated_at": "2026-11-15T11:28:02Z"
     }
   ]
 }
@@ -1095,62 +1124,11 @@ None besides the hub's own failure.
 
 | REST route | CLI command |
 | --- | --- |
-| `GET /v1/notifications/recipients` | `tender recipients list` |
+| `GET /v1/notifications/channels` and `GET /v1/notifications/channels/{channel}` | `tender channels list`, `tender channels show NAME` |
 
-### `get_recipient`
+### `add_channel`
 
-Gets one recipient by id.
-
-#### Annotations
-
-| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
-| --- | --- | --- | --- |
-| `true` | not set | `true` | `false` |
-
-#### Inputs
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | integer | Yes | The recipient's id, as `list_recipients` shows it. |
-
-#### Returns
-
-The recipient, with `id`, `email` and the timestamps.
-
-#### Limits
-
-None.
-
-#### Example call
-
-```json
-{"name": "get_recipient", "arguments": {"id": 1}}
-```
-
-#### Example result
-
-```json
-{
-  "id": 1,
-  "email": "ops@example.com",
-  "created_at": "2026-11-15T11:27:26Z",
-  "updated_at": "2026-11-15T11:27:26Z"
-}
-```
-
-#### Errors
-
-1. `Recipient 1 doesn't exist. List the recipients to see their ids.`
-
-#### Covers
-
-| REST route | CLI command |
-| --- | --- |
-| `GET /v1/notifications/recipients/{id}` | `tender recipients list`, which shows every recipient. |
-
-### `add_recipient`
-
-Adds an email address that gets every alert email from now on.
+Adds a channel that gets every alert at least as severe as its `min_severity`, from now on.
 
 #### Annotations
 
@@ -1158,53 +1136,124 @@ Adds an email address that gets every alert email from now on.
 | --- | --- | --- | --- |
 | `false` | `false` | `false` | `false` |
 
-A second call with the same address fails.
+A second call with the same name fails.
 
 #### Inputs
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `email` | string | Yes | A bare email address, such as `ops@example.com`, without a display name. |
+| `name` | string | Yes | Lowercase letters, digits and hyphens, such as `ops-slack`. |
+| `type` | string | Yes | `email`, `slack`, `webhook` or `exec`. |
+| `config` | object | Yes | The type's config, all strings: `{"to": "ops@example.com"}`, `{"webhook_url": "https://hooks.slack.com/services/..."}`, `{"url": "https://..."}` or `{"command": "my-adapter"}`. [Adapters](adapters.md#channel-types) explains each. |
+| `enabled` | boolean | No | Whether it gets alerts. The default is `true`. |
+| `min_severity` | string | No | `info`, `warning` or `critical`. The default is `warning`. |
 
 #### Returns
 
-The recipient, with `id`, `email` and the timestamps. Call `send_test_email` to check that mail reaches it.
+The channel, as `list_channels` shows it. For a `webhook` channel, `config.secret` is the signing secret the hub made, shown this once: pass it to whoever runs the receiver. Call `send_test_notification` to check that alerts arrive.
 
 #### Limits
 
-None.
+An exec channel's `command` names a program root installed in `/etc/tender/adapters` on the hub. The tool can't supply a path or arguments.
 
 #### Example call
 
 ```json
-{"name": "add_recipient", "arguments": {"email": "ops@example.com"}}
+{"name": "add_channel", "arguments": {"name": "pager", "type": "webhook", "config": {"url": "https://pager.example.com/tender"}}}
 ```
 
 #### Example result
 
 ```json
 {
-  "id": 1,
-  "email": "ops@example.com",
-  "created_at": "2026-11-15T11:27:26Z",
-  "updated_at": "2026-11-15T11:27:26Z"
+  "id": 3,
+  "name": "pager",
+  "type": "webhook",
+  "config": {"secret": "whsec_kq0W2jq7a8Lx3n8vR1tYb5sU9eFh4cGd6pJm0zXwQ2E", "secret_set": true, "url": "https://pager.example.com/tender"},
+  "enabled": true,
+  "min_severity": "warning",
+  "created_at": "2026-11-15T11:30:11Z",
+  "updated_at": "2026-11-15T11:30:11Z"
 }
 ```
 
 #### Errors
 
-1. `email must be a bare address such as alerts@example.com.`
-2. `ops@example.com is already a recipient.`
+1. `A channel called pager already exists. Choose another name, or change that one.`
+2. `type must be one of email, exec, slack, webhook.`
+3. `to must be one bare address such as ops@example.com.`
+4. `command must be the name of a program in /etc/tender/adapters, such as my-adapter: letters, digits, dots, dashes and underscores, with no slash and no "..".`
+5. `Leave secret out: the hub makes it and shows it once.`
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/notifications/recipients` | `tender recipients add EMAIL` |
+| `POST /v1/notifications/channels` | `tender channels add NAME --type TYPE ...` |
 
-### `remove_recipient`
+### `update_channel`
 
-Removes a recipient by id, so they stop getting alert emails.
+Changes a channel's config, turns it on or off, or changes its `min_severity`. Anything left out stays as it is.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel` | string | Yes | The channel's name. |
+| `config` | object | No | Config keys to change. A secret can be replaced, never read. |
+| `enabled` | boolean | No | `true` to turn it on, `false` to turn it off. |
+| `min_severity` | string | No | `info`, `warning` or `critical`. |
+
+#### Returns
+
+The channel, as `list_channels` shows it. Turning a channel off drops what it still owed.
+
+#### Limits
+
+`name` and `type` can't change. Remove the channel and add it again instead.
+
+#### Example call
+
+```json
+{"name": "update_channel", "arguments": {"channel": "chat", "min_severity": "warning"}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 2,
+  "name": "chat",
+  "type": "slack",
+  "config": {"webhook_url": "***", "webhook_url_set": true},
+  "enabled": true,
+  "min_severity": "warning",
+  "created_at": "2026-11-15T11:28:02Z",
+  "updated_at": "2026-11-15T11:41:17Z"
+}
+```
+
+#### Errors
+
+1. `Channel "chat" doesn't exist. List the channels to see their names.`
+2. `config.webhook_url is a secret, which the API never shows. Send its new value, or leave it out to keep it.`
+3. `min_severity must be info, warning or critical.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/notifications/channels/{channel}` | `tender channels update NAME ...` |
+
+### `remove_channel`
+
+Removes a channel, so it gets no more alerts, with its record of deliveries.
 
 #### Annotations
 
@@ -1216,11 +1265,11 @@ Removes a recipient by id, so they stop getting alert emails.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | integer | Yes | The recipient's id, as `list_recipients` shows it. |
+| `channel` | string | Yes | The channel's name. |
 
 #### Returns
 
-`removed`, naming the recipient that was removed. Alerts are still recorded when nobody is left to email.
+`removed`, naming the channel that was removed. Alerts are still recorded when no channel is left.
 
 #### Limits
 
@@ -1229,28 +1278,28 @@ None.
 #### Example call
 
 ```json
-{"name": "remove_recipient", "arguments": {"id": 1}}
+{"name": "remove_channel", "arguments": {"channel": "chat"}}
 ```
 
 #### Example result
 
 ```json
-{"removed": "recipient 1"}
+{"removed": "channel chat"}
 ```
 
 #### Errors
 
-1. `Recipient 1 doesn't exist. List the recipients to see their ids.`
+1. `Channel "chat" doesn't exist. List the channels to see their names.`
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `DELETE /v1/notifications/recipients/{id}` | `tender recipients remove EMAIL`, which takes the address instead of the id. |
+| `DELETE /v1/notifications/channels/{channel}` | `tender channels remove NAME` |
 
-### `send_test_email`
+### `send_test_notification`
 
-Sends the test email to every recipient, to check that alert emails arrive.
+Sends the test event to every enabled channel, or to one, to check that alerts arrive.
 
 #### Annotations
 
@@ -1258,43 +1307,60 @@ Sends the test email to every recipient, to check that alert emails arrive.
 | --- | --- | --- | --- |
 | `false` | `false` | `false` | `true` |
 
-It changes nothing on the hub, but it sends email, which reaches outside the hub. Each call sends again.
+It sends to the channels, which reaches outside the hub. Each call sends again.
 
 #### Inputs
 
-None.
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel` | string | No | Only this channel, even if it is off. Leave it out for every enabled channel. |
 
 #### Returns
 
-`sent_to`, the addresses the email went to.
+`data`, one delivery per channel, with `id`, `notification_id` (`null` for a test), `channel`, `event` (`test`), `status` (`delivered` or `failed`), `attempts`, `error`, which says why one failed, and the timestamps. A test that gets through resolves the channel's `channel_failing` alert.
 
 #### Limits
 
-None.
+Each channel is tried once, all at once, for at most 10 seconds, or 30 for email.
 
 #### Example call
 
 ```json
-{"name": "send_test_email", "arguments": {}}
+{"name": "send_test_notification", "arguments": {}}
 ```
 
 #### Example result
 
 ```json
-{"sent_to": ["ops@example.com"]}
+{
+  "data": [
+    {
+      "id": 9,
+      "notification_id": null,
+      "channel": "ops",
+      "event": "test",
+      "status": "delivered",
+      "attempts": 1,
+      "error": null,
+      "created_at": "2026-11-15T11:42:00Z",
+      "updated_at": "2026-11-15T11:42:01Z"
+    }
+  ]
+}
 ```
 
 #### Errors
 
-1. `Email is off on this hub. Set TENDER_SMTP_HOST and TENDER_SMTP_FROM in /etc/tender/hub.env and restart the hub.`
-2. `There are no recipients to send to. Add one first, such as alerts@example.com.`
-3. `The hub couldn't send the email: ...`, with the SMTP server's reason, followed by `Check the TENDER_SMTP_ settings in /etc/tender/hub.env.`
+1. `There are no enabled channels to test. Add one first, such as an email channel to ops@example.com.`
+2. `Channel "pager" doesn't exist. List the channels to see their names.`
+
+A channel that fails is not an error: its delivery says `failed`, with the reason, such as `Email is off on this hub. Set TENDER_SMTP_HOST and TENDER_SMTP_FROM in /etc/tender/hub.env and restart the hub.`
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/notifications/test` | `tender email test` |
+| `POST /v1/notifications/test` | `tender channels test [NAME]` |
 
 ## Services
 

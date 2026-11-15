@@ -25,8 +25,8 @@ func (noMachines) Lookup(context.Context, string) (int64, error) {
 	return 0, server.NotFound("no machine")
 }
 
-// The test email goes through the real mailer to the fake SMTP server, to every recipient in one message.
-func TestTestEmailReachesEveryRecipient(t *testing.T) {
+// The test goes through the real mailer to the fake SMTP server, one message per email channel.
+func TestTestEmailReachesEveryChannel(t *testing.T) {
 	smtpd := newFakeSMTP(t)
 	d, err := db.Open(filepath.Join(t.TempDir(), "hub.db"))
 	if err != nil {
@@ -46,7 +46,7 @@ func TestTestEmailReachesEveryRecipient(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := server.New(d, slog.New(slog.NewTextHandler(io.Discard, nil)), noMachines{})
-	NewStore(d).Routes(s, smtpd.mailer("right"), "hub1")
+	NewStore(d, testKey).Routes(s, smtpd.mailer("right"), testHub)
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)
 
@@ -62,22 +62,27 @@ func TestTestEmailReachesEveryRecipient(t *testing.T) {
 		return res.StatusCode
 	}
 	if code := post("/v1/notifications/test", ""); code != 422 {
-		t.Fatalf("test without recipients: %d, want 422", code)
+		t.Fatalf("test without channels: %d, want 422", code)
 	}
-	for _, email := range []string{"johan@example.com", "ops@example.com"} {
-		if code := post("/v1/notifications/recipients", `{"email":"`+email+`"}`); code != 201 {
-			t.Fatalf("add %s: %d", email, code)
+	for _, c := range []string{`{"name":"johan","type":"email","config":{"to":"johan@example.com"}}`, `{"name":"ops","type":"email","config":{"to":"ops@example.com"}}`} {
+		if code := post("/v1/notifications/channels", c); code != 201 {
+			t.Fatalf("add %s: %d", c, code)
 		}
 	}
-	if code := post("/v1/notifications/test", ""); code != 202 {
-		t.Fatalf("test: %d, want 202", code)
+	if code := post("/v1/notifications/test", ""); code != 200 {
+		t.Fatalf("test: %d, want 200", code)
 	}
-	got := <-smtpd.got
-	subject, text, _ := parseEmail(t, got)
-	if subject != "Tender test email" || !strings.Contains(text, "hub on hub1") {
-		t.Errorf("got %q %q", subject, text)
+	var rcpts []string
+	for range 2 {
+		got := <-smtpd.got
+		subject, text, _ := parseEmail(t, got)
+		if subject != "Tender test email" || !strings.Contains(text, "hub on hub1") {
+			t.Errorf("got %q %q", subject, text)
+		}
+		rcpts = append(rcpts, got.rcpts...)
 	}
-	if !slices.Equal(got.rcpts, []string{"TO:<johan@example.com>", "TO:<ops@example.com>"}) {
-		t.Errorf("recipients = %q, want both", got.rcpts)
+	slices.Sort(rcpts)
+	if !slices.Equal(rcpts, []string{"TO:<johan@example.com>", "TO:<ops@example.com>"}) {
+		t.Errorf("recipients = %q, want one message to each", rcpts)
 	}
 }

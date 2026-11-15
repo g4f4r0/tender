@@ -96,7 +96,7 @@ func seeded(t *testing.T) *db.DB {
 // connect connects a real MCP client to the tools over the SDK's in-memory transport.
 func connect(t *testing.T, d *db.DB) *sdk.ClientSession { return connectSending(t, d, nil) }
 
-// connectSending is connect with send_test_email sending through sender.
+// connectSending is connect with send_test_notification sending email through sender.
 func connectSending(t *testing.T, d *db.DB, sender notifications.Sender) *sdk.ClientSession {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -162,22 +162,22 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_recipient", "get_service_logs", "list_actions",
-		"list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients", "list_services"}
+	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_service_logs", "list_actions",
+		"list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_machines", "list_notifications", "list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
 		"add_destination": {false, false}, "update_destination": {false, true}, "remove_destination": {true, true},
 		"set_backup": {false, true}, "unset_backup": {true, true},
-		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
+		"add_channel": {false, false}, "update_channel": {false, true}, "remove_channel": {true, true}, "send_test_notification": {false, false},
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
 	}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
-		// Only send_test_email reaches outside the hub.
-		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "send_test_email") {
-			t.Errorf("%s annotations = %+v, want open world only for send_test_email", tool.Name, a)
+		// Only send_test_notification reaches outside the hub.
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "send_test_notification") {
+			t.Errorf("%s annotations = %+v, want open world only for send_test_notification", tool.Name, a)
 			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {

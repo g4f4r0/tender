@@ -20,6 +20,9 @@ const (
 	TypeServiceUnhealthy  = "service_unhealthy"
 	TypeServiceMemoryHigh = "service_memory_high"
 	TypeDockerUnreachable = "docker_unreachable"
+
+	// TypeChannelFailing is about a channel, not a machine: its deliveries have failed for an hour.
+	TypeChannelFailing = "channel_failing"
 )
 
 // The thresholds of the rules.

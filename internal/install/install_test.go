@@ -476,7 +476,7 @@ func TestHubFreshInstall(t *testing.T) {
 	}
 	e.noSecret(t, key)
 	for _, want := range []string{"Published the hub with Tailscale Serve at https://apps.example.ts.net\n", "The hub is running at https://apps.example.ts.net.", "tender destinations add NAME --endpoint URL --bucket BUCKET",
-		"tender machines add NAME", "tender backups set NAME --destination NAME", "tender recipients add you@example.com",
+		"tender machines add NAME", "tender backups set NAME --destination NAME", "tender channels add ops --type email --to you@example.com",
 		"daemon --hub https://apps.example.ts.net --machine NAME", "Alert emails are off until the hub has an SMTP server"} {
 		if !strings.Contains(e.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, e.out.String())

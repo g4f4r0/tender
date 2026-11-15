@@ -1171,13 +1171,13 @@ HTTP/1.1 204 No Content
 
 ## Notifications
 
-A notification is an alert about a machine, its backups or a service, and the emails it sends go to every recipient. See [Alerts](alerts.md) for each type.
+A notification is an alert about a machine, its backups, a service or a notification channel. Each event of an alert goes to every enabled channel that takes its severity, as one delivery per channel. See [Alerts](alerts.md) for each type and [Adapters](adapters.md) for the channel types.
 
 ### `GET /v1/notifications`
 
 Lists every machine's notifications, newest first.
 
-A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-alert-works) explains. `machine` is the machine the alert is about, and `service` is `null` for an alert that isn't about one service.
+A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-alert-works) explains. `machine` is the machine the alert is about, and `service` is `null` for an alert that isn't about one service. `channel` names the channel a `channel_failing` alert is about, and is `null` for every other alert. `deliveries` lists each event sent to each channel, oldest first: its `channel`, `event` (`opened`, `escalated` or `resolved`), `status` (`pending`, `delivered` or `failed`), `attempts` and `error`, which says why the last try failed.
 
 #### Parameters
 
@@ -1191,7 +1191,7 @@ A notification is `pending`, `sent` or `resolved`, as [Alerts](alerts.md#how-an-
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications?limit=2
+curl -s https://apps.your-tailnet.ts.net/v1/notifications?limit=1
 ```
 
 #### Example response
@@ -1210,22 +1210,36 @@ Content-Type: application/json
       "severity": "warning",
       "status": "resolved",
       "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "channel": null,
       "created_at": "2026-11-15T11:35:35Z",
-      "updated_at": "2026-11-15T11:36:35Z"
-    },
-    {
-      "id": 2,
-      "machine": "apps",
-      "service": null,
-      "type": "docker_unreachable",
-      "severity": "critical",
-      "status": "resolved",
-      "content": "Docker on apps can't be reached: its socket refuses connections, so Docker is stopped. Its services' states are unknown until it is back.",
-      "created_at": "2026-11-15T11:32:35Z",
-      "updated_at": "2026-11-15T11:34:35Z"
+      "updated_at": "2026-11-15T11:36:35Z",
+      "deliveries": [
+        {
+          "id": 7,
+          "notification_id": 3,
+          "channel": "ops",
+          "event": "opened",
+          "status": "delivered",
+          "attempts": 1,
+          "error": null,
+          "created_at": "2026-11-15T11:35:35Z",
+          "updated_at": "2026-11-15T11:35:36Z"
+        },
+        {
+          "id": 8,
+          "notification_id": 3,
+          "channel": "ops",
+          "event": "resolved",
+          "status": "delivered",
+          "attempts": 1,
+          "error": null,
+          "created_at": "2026-11-15T11:36:35Z",
+          "updated_at": "2026-11-15T11:36:36Z"
+        }
+      ]
     }
   ],
-  "next_cursor": "MTc5NDc0MjM1NToy"
+  "next_cursor": "MTc5NDc0MjUzNToz"
 }
 ```
 
@@ -1244,7 +1258,7 @@ Content-Type: application/json
 
 ### `GET /v1/machines/{machine}/notifications`
 
-Lists one machine's notifications, newest first.
+Lists one machine's notifications, newest first, in the same shape as [`GET /v1/notifications`](#get-v1notifications).
 
 #### Parameters
 
@@ -1259,7 +1273,7 @@ Lists one machine's notifications, newest first.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?limit=2
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?limit=1
 ```
 
 #### Example response
@@ -1271,26 +1285,40 @@ Content-Type: application/json
 {
   "data": [
     {
-      "id": 3,
-      "machine": "apps",
-      "service": "web",
-      "type": "service_memory_high",
-      "severity": "warning",
-      "status": "resolved",
-      "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
-      "created_at": "2026-11-15T11:35:35Z",
-      "updated_at": "2026-11-15T11:36:35Z"
-    },
-    {
       "id": 2,
       "machine": "apps",
       "service": null,
       "type": "docker_unreachable",
       "severity": "critical",
-      "status": "resolved",
+      "status": "sent",
       "content": "Docker on apps can't be reached: its socket refuses connections, so Docker is stopped. Its services' states are unknown until it is back.",
+      "channel": null,
       "created_at": "2026-11-15T11:32:35Z",
-      "updated_at": "2026-11-15T11:34:35Z"
+      "updated_at": "2026-11-15T11:32:36Z",
+      "deliveries": [
+        {
+          "id": 4,
+          "notification_id": 2,
+          "channel": "ops",
+          "event": "opened",
+          "status": "delivered",
+          "attempts": 1,
+          "error": null,
+          "created_at": "2026-11-15T11:32:35Z",
+          "updated_at": "2026-11-15T11:32:36Z"
+        },
+        {
+          "id": 5,
+          "notification_id": 2,
+          "channel": "pager",
+          "event": "opened",
+          "status": "pending",
+          "attempts": 2,
+          "error": "the webhook answered 503: upstream unavailable",
+          "created_at": "2026-11-15T11:32:35Z",
+          "updated_at": "2026-11-15T11:33:50Z"
+        }
+      ]
     }
   ],
   "next_cursor": "MTc5NDc0MjM1NToy"
@@ -1313,7 +1341,7 @@ Content-Type: application/json
 
 ### `GET /v1/machines/{machine}/notifications/{id}`
 
-Returns one of a machine's notifications.
+Returns one of a machine's notifications, with its deliveries.
 
 #### Parameters
 
@@ -1342,8 +1370,22 @@ Content-Type: application/json
   "severity": "warning",
   "status": "resolved",
   "content": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+  "channel": null,
   "created_at": "2026-11-15T11:35:35Z",
-  "updated_at": "2026-11-15T11:36:35Z"
+  "updated_at": "2026-11-15T11:36:35Z",
+  "deliveries": [
+    {
+      "id": 7,
+      "notification_id": 3,
+      "channel": "ops",
+      "event": "opened",
+      "status": "delivered",
+      "attempts": 1,
+      "error": null,
+      "created_at": "2026-11-15T11:35:35Z",
+      "updated_at": "2026-11-15T11:35:36Z"
+    }
+  ]
 }
 ```
 
@@ -1359,9 +1401,11 @@ Content-Type: application/json
 | --- | --- |
 | `list_notifications` | None. |
 
-### `GET /v1/notifications/recipients`
+### `GET /v1/notifications/channels`
 
-Lists the addresses that get every alert email, in the order you added them.
+Lists the channels alerts go to, in the order you added them.
+
+A channel has a `type` (`email`, `slack`, `webhook` or `exec`), a `config` whose keys depend on the type, `enabled`, and `min_severity`, the least severe alert it gets. A secret in `config` shows as `"***"`, with `<name>_set` set to `true`. [Adapters](adapters.md#channel-types) lists each type's config.
 
 #### Parameters
 
@@ -1370,7 +1414,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications/recipients
+curl -s https://apps.your-tailnet.ts.net/v1/notifications/channels
 ```
 
 #### Example response
@@ -1383,9 +1427,28 @@ Content-Type: application/json
   "data": [
     {
       "id": 1,
-      "email": "ops@example.com",
+      "name": "ops",
+      "type": "email",
+      "config": {
+        "to": "ops@example.com"
+      },
+      "enabled": true,
+      "min_severity": "warning",
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
+    },
+    {
+      "id": 2,
+      "name": "chat",
+      "type": "slack",
+      "config": {
+        "webhook_url": "***",
+        "webhook_url_set": true
+      },
+      "enabled": true,
+      "min_severity": "critical",
+      "created_at": "2026-11-15T11:28:02Z",
+      "updated_at": "2026-11-15T11:28:02Z"
     }
   ]
 }
@@ -1401,24 +1464,30 @@ Content-Type: application/json
 
 | MCP tool | CLI command |
 | --- | --- |
-| `list_recipients` | `tender recipients list` |
+| `list_channels` | `tender channels list` |
 
-### `POST /v1/notifications/recipients`
+### `POST /v1/notifications/channels`
 
-Adds an address that gets every alert email.
+Adds a channel. It gets every alert at least as severe as its `min_severity`, from now on, and any alert still owed because no channel took it.
+
+For a `webhook` channel the hub makes the signing secret. This answer is the only time it shows it: give it to the receiver, which checks the `Tender-Signature` header with it, as [Adapters](adapters.md#verify-a-webhook) shows.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `email` | string | Yes | Body. A bare address, such as `ops@example.com`, without a display name. |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, up to 63 characters, such as `ops-slack`. |
+| `type` | string | Yes | Body. `email`, `slack`, `webhook` or `exec`. |
+| `config` | object | Yes | Body. The type's config, all strings. `email`: `{"to": "ops@example.com"}`. `slack`: `{"webhook_url": "https://hooks.slack.com/services/..."}`. `webhook`: `{"url": "https://..."}`. `exec`: `{"command": "my-adapter"}`. |
+| `enabled` | boolean | No | Body. Whether it gets alerts. The default is `true`. |
+| `min_severity` | string | No | Body. `info`, `warning` or `critical`. The default is `warning`. |
 
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/recipients \
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/channels \
   -H 'Content-Type: application/json' \
-  -d '{"email": "ops@example.com"}'
+  -d '{"name": "pager", "type": "webhook", "config": {"url": "https://pager.example.com/tender"}}'
 ```
 
 #### Example response
@@ -1426,13 +1495,21 @@ curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/recipients \
 ```http
 HTTP/1.1 201 Created
 Content-Type: application/json
-Location: /v1/notifications/recipients/1
+Location: /v1/notifications/channels/pager
 
 {
-  "id": 1,
-  "email": "ops@example.com",
-  "created_at": "2026-11-15T11:27:26Z",
-  "updated_at": "2026-11-15T11:27:26Z"
+  "id": 3,
+  "name": "pager",
+  "type": "webhook",
+  "config": {
+    "secret": "whsec_kq0W2jq7a8Lx3n8vR1tYb5sU9eFh4cGd6pJm0zXwQ2E",
+    "secret_set": true,
+    "url": "https://pager.example.com/tender"
+  },
+  "enabled": true,
+  "min_severity": "warning",
+  "created_at": "2026-11-15T11:30:11Z",
+  "updated_at": "2026-11-15T11:30:11Z"
 }
 ```
 
@@ -1441,29 +1518,29 @@ Location: /v1/notifications/recipients/1
 | Status | When |
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
-| `409` | The address is already a recipient, in any letter case. |
-| `422` | The value isn't one bare email address. |
+| `409` | A channel with this name exists. |
+| `422` | The name, type, severity or config isn't valid: a config key the type doesn't take or lacks, an address that isn't one bare address, a URL that isn't http or https, a `secret` in a webhook's create, or an exec `command` that isn't an executable in `/etc/tender/adapters`. The detail says which. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `add_recipient` | `tender recipients add ops@example.com` |
+| `add_channel` | `tender channels add pager --type webhook --url https://pager.example.com/tender` |
 
-### `GET /v1/notifications/recipients/{id}`
+### `GET /v1/notifications/channels/{channel}`
 
-Returns one recipient.
+Returns one channel, with its secrets hidden.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | integer | Yes | Path. The recipient's id. |
+| `channel` | string | Yes | Path. The channel's name. |
 
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications/recipients/1
+curl -s https://apps.your-tailnet.ts.net/v1/notifications/channels/pager
 ```
 
 #### Example response
@@ -1473,10 +1550,18 @@ HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  "id": 1,
-  "email": "ops@example.com",
-  "created_at": "2026-11-15T11:27:26Z",
-  "updated_at": "2026-11-15T11:27:26Z"
+  "id": 3,
+  "name": "pager",
+  "type": "webhook",
+  "config": {
+    "secret": "***",
+    "secret_set": true,
+    "url": "https://pager.example.com/tender"
+  },
+  "enabled": true,
+  "min_severity": "warning",
+  "created_at": "2026-11-15T11:30:11Z",
+  "updated_at": "2026-11-15T11:30:11Z"
 }
 ```
 
@@ -1484,28 +1569,86 @@ Content-Type: application/json
 
 | Status | When |
 | --- | --- |
-| `404` | No recipient has this id. |
+| `404` | No channel has this name. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `get_recipient` | None. `tender recipients list` shows every recipient. |
+| `list_channels` | `tender channels show pager` |
 
-### `DELETE /v1/notifications/recipients/{id}`
+### `PATCH /v1/notifications/channels/{channel}`
 
-Removes a recipient. Alerts are still recorded when nobody is left.
+Changes a channel's config, turns it on or off, or changes its `min_severity`. Fields left out stay as they are. A `config` key replaces that value; a secret can be replaced but never read.
+
+Turning a channel off fails what it still owed, with the error `The channel was turned off before this was delivered.`, so it sends nothing stale when it is turned on again.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | integer | Yes | Path. The recipient's id. |
+| `channel` | string | Yes | Path. The channel's name. |
+| `config` | object | No | Body. Config keys to change. `null` removes a key, which only an optional one allows. A webhook's new `secret` must be at least 24 characters. |
+| `enabled` | boolean | No | Body. `true` or `false`. |
+| `min_severity` | string | No | Body. `info`, `warning` or `critical`. |
 
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/notifications/recipients/1
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/notifications/channels/chat \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"config": {"webhook_url": "<new Slack webhook URL>"}, "min_severity": "warning"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 2,
+  "name": "chat",
+  "type": "slack",
+  "config": {
+    "webhook_url": "***",
+    "webhook_url_set": true
+  },
+  "enabled": true,
+  "min_severity": "warning",
+  "created_at": "2026-11-15T11:28:02Z",
+  "updated_at": "2026-11-15T11:41:17Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know, such as `name` or `type`, which can't change. |
+| `404` | No channel has this name. |
+| `422` | A value isn't valid, a required key is removed, or a secret is set to `"***"`. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `update_channel` | `tender channels update chat --webhook-url-file PATH --min-severity warning` |
+
+### `DELETE /v1/notifications/channels/{channel}`
+
+Removes a channel and its record of deliveries. Alerts are still recorded when no channel is left.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel` | string | Yes | Path. The channel's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/notifications/channels/chat
 ```
 
 #### Example response
@@ -1518,23 +1661,25 @@ HTTP/1.1 204 No Content
 
 | Status | When |
 | --- | --- |
-| `404` | No recipient has this id. |
+| `404` | No channel has this name. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `remove_recipient` | `tender recipients remove ops@example.com` |
+| `remove_channel` | `tender channels remove chat` |
 
 ### `POST /v1/notifications/test`
 
-Sends a test email to every recipient, to check that alerts arrive.
+Sends the test event to every enabled channel, or to the one you name even when it is off, once each and all at once. It answers when every channel has answered, after at most 10 seconds, or 30 for email.
 
-The subject is `Tender test email`.
+Each try is kept as a delivery, so a test that gets through also resolves the channel's `channel_failing` alert. An email channel's subject is `Tender test email`.
 
 #### Parameters
 
-None.
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel` | string | No | Body. Only this channel. Leave the body out to test every enabled channel. |
 
 #### Example request
 
@@ -1545,12 +1690,33 @@ curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/test
 #### Example response
 
 ```http
-HTTP/1.1 202 Accepted
+HTTP/1.1 200 OK
 Content-Type: application/json
 
 {
-  "sent_to": [
-    "ops@example.com"
+  "data": [
+    {
+      "id": 9,
+      "notification_id": null,
+      "channel": "ops",
+      "event": "test",
+      "status": "delivered",
+      "attempts": 1,
+      "error": null,
+      "created_at": "2026-11-15T11:42:00Z",
+      "updated_at": "2026-11-15T11:42:01Z"
+    },
+    {
+      "id": 10,
+      "notification_id": null,
+      "channel": "pager",
+      "event": "test",
+      "status": "failed",
+      "attempts": 1,
+      "error": "the webhook answered 404: no such hook",
+      "created_at": "2026-11-15T11:42:00Z",
+      "updated_at": "2026-11-15T11:42:00Z"
+    }
   ]
 }
 ```
@@ -1559,14 +1725,15 @@ Content-Type: application/json
 
 | Status | When |
 | --- | --- |
-| `422` | Email is off on this hub, or there are no recipients. |
-| `502` | The hub couldn't send the email, such as when the SMTP server is unreachable, refuses the login or refuses the email. The detail has the reason. |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | No channel has the name you gave. |
+| `422` | No channel is enabled, and you named none. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `send_test_email` | `tender email test` |
+| `send_test_notification` | `tender channels test`, or `tender channels test pager` |
 
 ## Services
 

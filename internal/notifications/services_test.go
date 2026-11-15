@@ -151,7 +151,7 @@ func TestServiceAlertListsItsService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, ok := ns[key{TypeServiceUnhealthy, "a", "web"}]
+	n, ok := ns[key{TypeServiceUnhealthy, "a", "web", ""}]
 	if !ok || n.Service == nil || *n.Service != "web" || n.Severity != SeverityWarning {
 		t.Errorf("open = %+v", ns)
 	}

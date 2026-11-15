@@ -285,39 +285,6 @@ func TestBackups(t *testing.T) {
 	mustFail(t, h, a, `Machine "nope" doesn't exist. List the machines with "tender machines list".`, "backups", "status", "nope")
 }
 
-func TestRecipientsAndEmailTest(t *testing.T) {
-	h := newFakeHub(t)
-	a := &answers{}
-	if out := mustRun(t, h, a, "recipients", "list"); !strings.HasPrefix(out, "No recipients yet, so no alert is emailed.") {
-		t.Errorf("empty list = %q", out)
-	}
-	mustFail(t, h, a, `There are no recipients. Add one with "tender recipients add EMAIL".`, "email", "test")
-
-	if out := mustRun(t, h, a, "recipients", "add", "Ops@Example.com"); !strings.HasPrefix(out, "Added Ops@Example.com. It gets every alert.") {
-		t.Errorf("add output = %q", out)
-	}
-	mustRun(t, h, a, "recipients", "add", "me@example.com")
-	mustFail(t, h, a, `"nope" is not an email address. Use one like you@example.com.`, "recipients", "add", "nope")
-	mustFail(t, h, a, `me@example.com is a recipient already.`, "recipients", "add", "me@example.com")
-
-	if got, want := mustRun(t, h, a, "recipients", "list"), "EMAIL             ADDED\nOps@Example.com   2 hours ago\nme@example.com    2 hours ago\n"; got != want {
-		t.Errorf("list =\n%s\nwant\n%s", got, want)
-	}
-	if out := mustRun(t, h, a, "email", "test"); out != "Sent a test email to Ops@Example.com, me@example.com.\n" {
-		t.Errorf("email test = %q", out)
-	}
-	h.emailOn = false
-	mustFail(t, h, a, `Email is off because the hub has no SMTP server. Run "sudo tender install hub --smtp-host HOST --smtp-from SENDER".`, "email", "test")
-
-	if out := mustRun(t, h, a, "recipients", "remove", "ops@example.com"); out != "Removed Ops@Example.com. It no longer gets alerts.\n" {
-		t.Errorf("remove output = %q", out)
-	}
-	mustFail(t, h, a, `ops@example.com is not a recipient. Run "tender recipients list" to see who is.`, "recipients", "remove", "ops@example.com")
-	if len(h.recipients) != 1 {
-		t.Errorf("%d recipients left, want 1", len(h.recipients))
-	}
-}
-
 func TestStatus(t *testing.T) {
 	h := newFakeHub(t)
 	a := &answers{}
@@ -405,7 +372,7 @@ func TestHubErrorWithoutAProblemBody(t *testing.T) {
 }
 
 func TestGroupsPrintUsage(t *testing.T) {
-	for _, group := range []string{"machines", "destinations", "backups", "recipients", "email"} {
+	for _, group := range []string{"machines", "destinations", "backups", "channels"} {
 		var out bytes.Buffer
 		run := hubCommands[group]
 		if err := run(nil, session{out: &out}); !errors.Is(err, errUsageShown) || !strings.HasPrefix(out.String(), "Usage: tender "+group+" COMMAND\n") {
@@ -426,7 +393,7 @@ func TestEveryHubCommandHasUsageThatFits(t *testing.T) {
 		{"status"}, {"machines", "list"}, {"machines", "add"}, {"machines", "remove"}, {"machines", "rotate-token"},
 		{"destinations", "list"}, {"destinations", "add"}, {"destinations", "remove"},
 		{"backups", "status"}, {"backups", "set"}, {"backups", "unset"},
-		{"recipients", "list"}, {"recipients", "add"}, {"recipients", "remove"}, {"email", "test"},
+		{"channels", "list"}, {"channels", "add"}, {"channels", "show"}, {"channels", "update"}, {"channels", "remove"}, {"channels", "test"},
 	} {
 		var out bytes.Buffer
 		err := hubCommands[args[0]](append(args[1:], "--help"), session{out: &out})
@@ -443,7 +410,7 @@ func TestEveryHubCommandHasUsageThatFits(t *testing.T) {
 			}
 		}
 	}
-	for _, text := range []string{machinesUsage, destinationsUsage, backupsUsage, recipientsUsage, emailUsage} {
+	for _, text := range []string{machinesUsage, destinationsUsage, backupsUsage, channelsUsage} {
 		for _, line := range strings.Split(text, "\n") {
 			if len(line) > 99 {
 				t.Errorf("line over 99 characters: %q", line)

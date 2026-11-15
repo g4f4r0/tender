@@ -90,3 +90,18 @@ func TestHubHosts(t *testing.T) {
 		t.Errorf("a URL in TENDER_HOSTS: %v", err)
 	}
 }
+
+func TestHubURL(t *testing.T) {
+	h, err := LoadHubEnv(env(map[string]string{EnvEncryptionKey: testKey, EnvHubURL: " https://apps.example.ts.net/ "}))
+	if err != nil || h.URL != "https://apps.example.ts.net" {
+		t.Errorf("url = %q, %v", h.URL, err)
+	}
+	if h, err := LoadHubEnv(env(map[string]string{EnvEncryptionKey: testKey})); err != nil || h.URL != "" {
+		t.Errorf("unset: %q, %v", h.URL, err)
+	}
+	for _, bad := range []string{"apps.example.ts.net", "ftp://x", "https://user:pw@x", "https://x/?token=1"} {
+		if _, err := LoadHubEnv(env(map[string]string{EnvEncryptionKey: testKey, EnvHubURL: bad})); err == nil || !strings.Contains(err.Error(), EnvHubURL) {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}

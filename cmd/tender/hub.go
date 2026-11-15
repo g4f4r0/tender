@@ -29,7 +29,7 @@ var hubUsage = `Usage: tender hub [--database PATH] [--listen ADDR]
        tender hub help
 
 ` + wrap("Run the hub: it keeps every machine's state, serves the REST API and the MCP endpoint, and sends "+
-	"alert emails. Run it as a service; \"sudo tender install hub\" sets that up and writes the settings to "+
+	"alerts to the notification channels. Run it as a service; \"sudo tender install hub\" sets that up and writes the settings to "+
 	"/etc/tender/hub.env, which systemd reads. Manage the hub with the other tender commands, which talk to its "+
 	"REST API.", lineWidth, "") + `
 
@@ -45,6 +45,7 @@ Settings, as environment variables:
 	{config.EnvSMTPPassword, "SMTP password"},
 	{config.EnvSMTPFrom, "Sender of alert emails, like Tender <alerts@example.com>."},
 	{"", "Required with " + config.EnvSMTPHost + "."},
+	{config.EnvHubURL, "The hub's URL, which notifications link to (default: http://HOSTNAME)"},
 }) + `
 Options:
 ` + table([]row{
@@ -100,7 +101,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	srv := server.New(d, log, ms)
 	ms.Routes(srv)
 	backups.NewStore(d, key).Routes(srv)
-	notifications.NewStore(d).Routes(srv, sender, hubName())
+	notifications.NewStore(d, key).Routes(srv, sender, hubIdentity())
 	services.NewStore(d).Routes(srv)
 	newActions(d).Routes(srv)
 
@@ -119,7 +120,7 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	s := mcp.New(version, log)
 	ms.RegisterTools(s)
 	backups.NewStore(d, key).RegisterTools(s, ms.Lookup)
-	notifications.NewStore(d).RegisterTools(s, ms.Lookup, sender, hubName())
+	notifications.NewStore(d, key).RegisterTools(s, ms.Lookup, sender, hubIdentity())
 	services.NewStore(d).RegisterTools(s, ms.Lookup)
 	newActions(d).RegisterTools(s, ms.Lookup)
 	return s
@@ -150,11 +151,35 @@ func logsKeep(getenv func(string) string) (time.Duration, error) {
 	return keep, nil
 }
 
+// Settings for tests only: the folder of the exec adapters, and how long a channel's deliveries
+// fail before channel_failing opens.
+const (
+	envAdaptersDir  = "TENDER_ADAPTERS_DIR"
+	envFailingAfter = "TENDER_CHANNEL_FAILING_AFTER"
+)
+
+// failingAfter is how long a channel's deliveries fail before channel_failing: an hour, or envFailingAfter.
+func failingAfter(getenv func(string) string) (time.Duration, error) {
+	v := getenv(envFailingAfter)
+	if v == "" {
+		return time.Hour, nil
+	}
+	after, err := time.ParseDuration(v)
+	if err != nil || after <= 0 {
+		return 0, fmt.Errorf("%s must be a duration such as 1h, got %q", envFailingAfter, v)
+	}
+	return after, nil
+}
+
 // checkKey is an error unless key opens every secret stored in the database at path.
 func checkKey(ctx context.Context, d *db.DB, key []byte, path string) error {
 	if err := backups.NewStore(d, key).CheckKey(ctx); err != nil {
 		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
 			"without it they can't be read, and each destination needs its keys saved again", config.EnvEncryptionKey, path, err)
+	}
+	if err := notifications.NewStore(d, key).CheckKey(ctx); err != nil {
+		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
+			"without it they can't be read, and each channel with a secret needs it saved again", config.EnvEncryptionKey, path, err)
 	}
 	return nil
 }
@@ -185,6 +210,10 @@ func serveHub(args []string, log *slog.Logger) error {
 	if _, err := logsKeep(os.Getenv); err != nil {
 		return err
 	}
+	if _, err := failingAfter(os.Getenv); err != nil {
+		return err
+	}
+	notifications.AdaptersDir = os.Getenv(envAdaptersDir)
 	sender := mailSender(cfg.SMTP)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -208,7 +237,10 @@ func serveHub(args []string, log *slog.Logger) error {
 	go hub.PruneKeys(ctx)
 	go ms.PruneUsage(ctx, log)
 	go newActions(d).Sweep(ctx, log)
-	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
+	engine := notifications.NewEngine(notifications.NewStore(d, cfg.EncryptionKey), sender, hubIdentity(), log)
+	if after, err := failingAfter(os.Getenv); err == nil {
+		engine.FailingAfter = after
+	}
 	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d)))
 	// No write timeout: a daemon's long poll for actions holds its request up to 30 s.
 	srv := &http.Server{

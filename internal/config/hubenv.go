@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,7 @@ const (
 	EnvSMTPPassword  = "TENDER_SMTP_PASSWORD"
 	EnvSMTPFrom      = "TENDER_SMTP_FROM"
 	EnvHosts         = "TENDER_HOSTS"
+	EnvHubURL        = "TENDER_HUB_URL"
 )
 
 // The hub's settings when neither the environment nor a flag sets them.
@@ -37,6 +39,7 @@ type HubEnv struct {
 	Database      string
 	SMTP          *SMTP    // nil when TENDER_SMTP_HOST is not set: email is off
 	Hosts         []string // more names the hub answers to, lowercase, from TENDER_HOSTS
+	URL           string   // how people reach the hub, from TENDER_HUB_URL, for notifications; empty when not set
 }
 
 // SMTP says how the hub sends email: over TLS from the first byte, as on port 465.
@@ -77,7 +80,24 @@ func LoadHubEnv(getenv func(string) string) (HubEnv, error) {
 		}
 		h.Hosts = append(h.Hosts, name)
 	}
+	if h.URL, err = LoadHubURL(getenv); err != nil {
+		return HubEnv{}, err
+	}
 	return h, nil
+}
+
+// LoadHubURL reads TENDER_HUB_URL, the hub's URL that notifications link to, such as
+// https://apps.your-tailnet.ts.net. It is empty when not set.
+func LoadHubURL(getenv func(string) string) (string, error) {
+	v := strings.TrimSuffix(strings.TrimSpace(getenv(EnvHubURL)), "/")
+	if v == "" {
+		return "", nil
+	}
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" {
+		return "", fmt.Errorf("%s must be the URL people reach the hub at, such as https://apps.your-tailnet.ts.net, got %q", EnvHubURL, v)
+	}
+	return v, nil
 }
 
 func noKeyError() error {
