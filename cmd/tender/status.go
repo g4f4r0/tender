@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -8,6 +9,7 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 // maxAlertRunes cuts an alert to one line of the summary; the email has the whole text.
@@ -15,7 +17,7 @@ const maxAlertRunes = 100
 
 func runStatus(args []string, s session) error {
 	fs := newFlagSet("status", "[--hub URL]",
-		"Show the hub's summary: each machine, when it last reported, its last backup and the open alerts.")
+		"Show the hub's summary: each machine, when it last reported, its last backup, how many of its services run and the open alerts.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
@@ -36,6 +38,10 @@ func runStatus(args []string, s session) error {
 	if err != nil {
 		return err
 	}
+	svcs, err := listAll[services.Service](hub, "/v1/services")
+	if err != nil {
+		return err
+	}
 	var alerts []notifications.Notification
 	for _, status := range []string{notifications.StatusPending, notifications.StatusSent} {
 		got, err := listAll[notifications.Notification](hub, "/v1/notifications?limit=500&status="+status)
@@ -53,9 +59,19 @@ func runStatus(args []string, s session) error {
 		for _, sum := range sums {
 			lastBackup[sum.Machine] = sum.LastBackup
 		}
+		running, total := map[string]int{}, map[string]int{}
+		for _, sv := range svcs {
+			total[sv.Machine]++
+			if sv.State == services.StateRunning {
+				running[sv.Machine]++
+			}
+		}
 		rows := make([][]string, len(ms))
 		for i, m := range ms {
-			rows[i] = []string{m.Name, "never", "never", "-"}
+			rows[i] = []string{m.Name, "never", "never", "-", "-"}
+			if total[m.Name] > 0 {
+				rows[i][4] = fmt.Sprintf("%d/%d running", running[m.Name], total[m.Name])
+			}
 			if m.LastSeen != nil {
 				rows[i][1] = ago(s.now(), *m.LastSeen)
 			}
@@ -63,7 +79,7 @@ func runStatus(args []string, s session) error {
 				rows[i][2], rows[i][3] = ago(s.now(), b.CreatedAt), b.Status
 			}
 		}
-		printTable(s.out, []string{"MACHINE", "LAST SEEN", "LAST BACKUP", "STATUS"}, rows)
+		printTable(s.out, []string{"MACHINE", "LAST SEEN", "LAST BACKUP", "STATUS", "SERVICES"}, rows)
 	}
 
 	say(s.out, "")

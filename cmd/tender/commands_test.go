@@ -15,6 +15,7 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 const (
@@ -335,11 +336,13 @@ func TestStatus(t *testing.T) {
 		{ID: 3, Type: "machine_silent", Severity: "critical", Status: "resolved", Content: "old news", CreatedAt: h.now.Add(-9 * time.Hour)},
 	}
 	h.pageSize = 1 // one alert per page: status must follow next_cursor
+	h.addServices(t, "web-1", services.Service{Name: "app", State: "running"}, services.Service{Name: "worker", State: "exited"},
+		services.Service{Name: "cron", State: "running"})
 	out := mustRun(t, h, a, "status")
 	for _, want := range []string{
-		"MACHINE   LAST SEEN      LAST BACKUP   STATUS\n",
-		"web-1     1 minute ago   1 day ago     failed\n",
-		"db-1      never          never         -\n",
+		"MACHINE   LAST SEEN      LAST BACKUP   STATUS   SERVICES\n",
+		"web-1     1 minute ago   1 day ago     failed   2/3 running\n",
+		"db-1      never          never         -        -\n",
 		"Open alerts: 2\n",
 		"warning    30 minutes ago   db-1 has never completed a backup.\n",
 		"critical   2 hours ago      The last backup on web-1 failed at 2026-11-13 10:00 UTC: restic said no. restic said no. restic s...\n",

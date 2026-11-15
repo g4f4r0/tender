@@ -24,8 +24,9 @@ type Server struct {
 func New(version string, log *slog.Logger) *Server {
 	impl := &sdk.Implementation{Name: "tender", Title: "Tender", Version: version}
 	opts := &sdk.ServerOptions{
-		Instructions: "The machines that run Tender: their usage, backups and notifications, and the tools to manage them: " +
-			"machines, backup destinations and settings, and alert recipients. Start with list_machines. " +
+		Instructions: "The machines that run Tender: their usage, backups, Docker services and notifications, and the tools to manage them: " +
+			"machines, backup destinations and settings, services (start, stop, restart, logs, alerts) and alert recipients. " +
+			"Start with list_machines. " +
 			"Secrets you pass to a tool go through this conversation; for real keys the owner is safer typing them into " +
 			"\"tender destinations add\".",
 		// The tool list never changes, so don't offer list-change notifications. Offering them makes

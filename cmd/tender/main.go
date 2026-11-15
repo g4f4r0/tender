@@ -14,22 +14,25 @@ import (
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 var usage = `Tender backs up whole servers on a schedule and reports every run to a hub.
+It also watches and controls each machine's Docker services.
 AI clients can check on it and manage it over MCP.
 
 Usage: tender COMMAND [options]
 
 Work with the hub, from any machine that can reach it:
 ` + table([]row{
-	{"status", "Show the machines, their last backup and the open alerts"},
+	{"status", "Show the machines, their last backup, services and the open alerts"},
 	{"machines COMMAND", "list, add, remove, rotate-token"},
 	{"destinations COMMAND", "list, add, remove"},
 	{"backups COMMAND", "status, set, unset"},
+	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
 	{"recipients COMMAND", "list, add, remove"},
 	{"email test", "Send a test email to every recipient"},
 }) + `
@@ -62,13 +65,14 @@ var hubCommands = map[string]func([]string, session) error{
 	"machines":     runMachines,
 	"destinations": runDestinations,
 	"backups":      runBackups,
+	"services":     runServices,
 	"recipients":   runRecipients,
 	"email":        runEmail,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
-	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, server.Migrations}
+	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, server.Migrations}
 }
 
 func main() {

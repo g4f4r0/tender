@@ -18,6 +18,7 @@ import (
 	"github.com/g4f4r0/tender/internal/mcp"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 const defaultDatabase = config.DefaultDatabase
@@ -81,6 +82,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	ms.Routes(srv)
 	backups.NewStore(d, key).Routes(srv)
 	notifications.NewStore(d).Routes(srv, sender, hubName())
+	services.NewStore(d).Routes(srv)
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
 	tools := newTools(d, key, sender, log).Handler()
@@ -98,6 +100,7 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	ms.RegisterTools(s)
 	backups.NewStore(d, key).RegisterTools(s, ms.Lookup)
 	notifications.NewStore(d).RegisterTools(s, ms.Lookup, sender, hubName())
+	services.NewStore(d).RegisterTools(s, ms.Lookup)
 	return s
 }
 
@@ -156,12 +159,14 @@ func serveHub(args []string, log *slog.Logger) error {
 	go hub.PruneKeys(ctx)
 	go ms.PruneUsage(ctx, log)
 	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
-	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil)))
+	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d)))
+	// No write timeout: a daemon's long poll for service actions holds its request up to 30 s.
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.Guard(hub, cfg.Hosts, log),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	srv.RegisterOnShutdown(hub.StopWaiting)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	log.Info("hub listening", "address", cfg.Listen, "database", cfg.Database, "version", version, "email", sender != nil)

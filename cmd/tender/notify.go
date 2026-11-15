@@ -7,6 +7,7 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 // hubName is the host name that emails say they were sent from.
@@ -19,8 +20,8 @@ func hubName() string {
 }
 
 // loadMachines returns what the notification rules need to know about every machine, from the
-// machines and backups stores. The notifications domain imports neither.
-func loadMachines(ms *machines.Store, bs *backups.Store) func(context.Context) ([]notifications.Machine, error) {
+// machines, backups and services stores. The notifications domain imports none of them.
+func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) func(context.Context) ([]notifications.Machine, error) {
 	return func(ctx context.Context) ([]notifications.Machine, error) {
 		overviews, err := ms.List(ctx)
 		if err != nil {
@@ -38,13 +39,26 @@ func loadMachines(ms *machines.Store, bs *backups.Store) func(context.Context) (
 		if err != nil {
 			return nil, err
 		}
+		svcs, err := ss.List(ctx, 0)
+		if err != nil {
+			return nil, err
+		}
+		byMachine := map[string][]notifications.Service{}
+		for _, s := range svcs {
+			byMachine[s.Machine] = append(byMachine[s.Machine], notifications.Service{
+				Name: s.Name, State: s.State, ExitCode: s.ExitCode, RestartCount: s.RestartCount,
+				AlertsEnabled: s.AlertsEnabled, StoppedByTender: s.StoppedByTender,
+				DownReports: s.DownReports, RestartingReports: s.RestartingReports, UnhealthyReports: s.UnhealthyReports,
+			})
+		}
 		byName := map[string]backups.Summary{}
 		for _, s := range summaries {
 			byName[s.Machine] = s
 		}
 		out := make([]notifications.Machine, len(overviews))
 		for i, o := range overviews {
-			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name]}
+			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name],
+				Services: byMachine[o.Name]}
 			if o.Usage != nil {
 				m.DiskUsedPercent = o.Usage.DiskUsedPercent
 			}

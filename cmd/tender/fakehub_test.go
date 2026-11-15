@@ -17,6 +17,7 @@ import (
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 // sentRequest is one request the fake hub got.
@@ -43,7 +44,10 @@ type fakeHub struct {
 	alerts       []notifications.Notification
 	history      map[string]*backups.History // last backup by machine
 	emailOn      bool
-	pageSize     int // notifications per page, to exercise next_cursor
+	pageSize     int                           // notifications per page, to exercise next_cursor
+	services     map[string][]services.Service // by machine
+	actions      map[int64]*services.Action
+	daemon       func(*services.Action) // finishes an action when it is first read; nil leaves it pending
 }
 
 type fakeMachine struct {
@@ -58,6 +62,7 @@ func newFakeHub(t *testing.T) *fakeHub {
 		t: t, now: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), nextID: 1, pageSize: 500,
 		machines: map[string]*fakeMachine{}, secrets: map[string]backups.DestinationInput{},
 		settings: map[string]backups.Settings{}, history: map[string]*backups.History{}, emailOn: true,
+		services: map[string][]services.Service{}, actions: map[int64]*services.Action{}, daemon: completeAction,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/machines", h.addMachine)
@@ -76,6 +81,11 @@ func newFakeHub(t *testing.T) *fakeHub {
 	mux.HandleFunc("POST /v1/notifications/recipients", h.addRecipient)
 	mux.HandleFunc("DELETE /v1/notifications/recipients/{id}", h.removeRecipient)
 	mux.HandleFunc("POST /v1/notifications/test", h.testEmail)
+	mux.HandleFunc("GET /v1/services", h.listServices)
+	mux.HandleFunc("GET /v1/machines/{machine}/services", h.listServices)
+	mux.HandleFunc("PATCH /v1/machines/{machine}/services/{service}", h.patchService)
+	mux.HandleFunc("POST /v1/machines/{machine}/services/{service}/actions", h.createAction)
+	mux.HandleFunc("GET /v1/machines/{machine}/services/actions/{id}", h.getAction)
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))

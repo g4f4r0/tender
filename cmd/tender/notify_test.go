@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
+	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/services"
 )
 
 func TestLoadMachines(t *testing.T) {
@@ -41,7 +44,16 @@ func TestLoadMachines(t *testing.T) {
 		}
 	}
 
-	got, err := loadMachines(ms, bs)(ctx)
+	ss := services.NewStore(d)
+	code := int64(1)
+	if _, err := ss.Replace(ctx, 1, []services.ServiceInput{{Name: "web-1", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code, RestartCount: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ss.Replace(ctx, 1, []services.ServiceInput{{Name: "web-1", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code, RestartCount: 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadMachines(ms, bs, ss)(ctx)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -51,7 +63,11 @@ func TestLoadMachines(t *testing.T) {
 		a.LastBackup == nil || a.LastBackup.Status != "failed" || a.LastBackup.Error != "boom" || !a.LastBackup.Time.Equal(at) {
 		t.Errorf("a = %+v, last backup %+v", a, a.LastBackup)
 	}
-	if b.Name != "b" || b.LastSeen != nil || b.HasBackupSettings || b.LastBackup != nil || !b.LastCompletedBackup.IsZero() || b.CreatedAt.IsZero() {
+	want := []notifications.Service{{Name: "web-1", State: "exited", ExitCode: &code, RestartCount: 2, AlertsEnabled: true, DownReports: 2}}
+	if !reflect.DeepEqual(a.Services, want) {
+		t.Errorf("a's services = %+v, want %+v", a.Services, want)
+	}
+	if b.Name != "b" || b.Services != nil || b.LastSeen != nil || b.HasBackupSettings || b.LastBackup != nil || !b.LastCompletedBackup.IsZero() || b.CreatedAt.IsZero() {
 		t.Errorf("b = %+v", b)
 	}
 }
