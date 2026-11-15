@@ -2089,7 +2089,7 @@ The same shape as [`deploy_service`](#deploy_service)'s, with an `action` such a
   "output_cleared": false,
   "created_at": "2026-11-15T11:50:00Z",
   "updated_at": "2026-11-15T11:50:04Z",
-  "output": "Kept the folder in /var/lib/tender/services/.removed/blog-1794657004.\n"
+  "output": " Container blog-web-1  Removed\nKept the service's folder, data and all, in /var/lib/tender/services/.removed/blog-1794657004. Delete it when you no longer need it: sudo rm -rf /var/lib/tender/services/.removed/blog-1794657004\n"
 }
 ```
 

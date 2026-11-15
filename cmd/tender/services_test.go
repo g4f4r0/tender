@@ -25,7 +25,8 @@ func completeAction(a *actions.Action) {
 	case a.Type == actions.TypeLogs:
 		a.Output = ptr("2026-11-14T11:59:00.000000000Z tenderd.service daemon started\n")
 	case a.Type == actions.TypeRemove:
-		a.Output = ptr("Kept the folder in /var/lib/tender/services/.removed/" + *a.Service + "-1794657600.\n")
+		kept := "/var/lib/tender/services/.removed/" + *a.Service + "-1794657600"
+		a.Output = ptr("Kept the service's folder, data and all, in " + kept + ". Delete it when you no longer need it: sudo rm -rf " + kept + "\n")
 	}
 }
 
@@ -474,7 +475,8 @@ func TestServicesRemove(t *testing.T) {
 	mustFail(t, h, a, `this removes notes from apps, and deletes its data, with no undo. Run "tender services remove apps notes --delete-data --yes" to confirm`,
 		"services", "remove", "apps", "notes", "--delete-data")
 	out := mustRun(t, h, a, "services", "remove", "apps", "notes", "--yes")
-	if out != "Removed notes from apps.\nKept the folder in /var/lib/tender/services/.removed/notes-1794657600.\n" {
+	if out != "Removed notes from apps.\nKept the service's folder, data and all, in /var/lib/tender/services/.removed/notes-1794657600. "+
+		"Delete it when you no longer need it: sudo rm -rf /var/lib/tender/services/.removed/notes-1794657600\n" {
 		t.Errorf("remove = %q", out)
 	}
 	if req := h.sent(); req[0].Method != "DELETE" || req[0].Path != "/v1/machines/apps/services/notes" || req[0].Query != "" {

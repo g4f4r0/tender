@@ -950,7 +950,9 @@ tender services remove apps notes --yes
 
 ```text
 Removed notes from apps.
-Kept the folder in /var/lib/tender/services/.removed/notes-1794657600.
+ Container notes-web-1  Removed
+ Container notes-worker-1  Removed
+Kept the service's folder, data and all, in /var/lib/tender/services/.removed/notes-1794657600. Delete it when you no longer need it: sudo rm -rf /var/lib/tender/services/.removed/notes-1794657600
 ```
 
 #### Errors
