@@ -55,6 +55,8 @@ type System interface {
 	UpdateResult(version string) (status, output string, ok bool)
 	// ClearUpdateResult forgets that result, once the hub has it.
 	ClearUpdateResult()
+	// UpdateRunning reports whether the update job still runs.
+	UpdateRunning(ctx context.Context) bool
 }
 
 // Daemon long-polls the hub for this machine's actions and runs them one at a time. It claims each
@@ -337,14 +339,10 @@ func fitJSON(s string) string {
 	}
 }
 
-// updateWait is how long the daemon waits for the update job's result before it reports the update
-// failed. The job waits up to 30 minutes for a running backup, then 2 for the health check.
-const updateWait = time.Hour
-
 // runUpdate claims an update and starts the job that installs the release. The job restarts the
 // daemon when it swaps the binary, so the report waits, without a result, in the state folder: this
 // daemon or the next one sends it once the job has left its result. The update doesn't mark the
-// daemon busy: the job itself waits for a running backup or action.
+// daemon busy: the job itself waits for a running backup or action, as long as it takes.
 func (d *Daemon) runUpdate(ctx context.Context, a Action) {
 	if !d.claim(ctx, a) {
 		return
@@ -360,11 +358,11 @@ func (d *Daemon) runUpdate(ctx context.Context, a Action) {
 	if ctx.Err() != nil {
 		return // the job restarts the daemon; the next one reports
 	}
-	if !d.updateResult(r) {
-		out := fmt.Sprintf("Could not update Tender to %s: %v.", r.Version, err)
+	if !d.updateResult(ctx, r) {
 		if err == nil {
-			out = fmt.Sprintf("The update job to Tender %s ended without saying how. See /var/lib/tender/daemon/tenderupdate.log.", r.Version)
+			return // the job runs on; deliver sends the report once it ends
 		}
+		out := fmt.Sprintf("Could not update Tender to %s: %v.", r.Version, err)
 		r.Patch = &Patch{Status: StatusFailed, Output: &out}
 		d.keep(r)
 	}
@@ -374,9 +372,10 @@ func (d *Daemon) runUpdate(ctx context.Context, a Action) {
 	}
 }
 
-// updateResult fills in an update's report from the job's result, and says whether there was one.
-// One that waited longer than updateWait fails.
-func (d *Daemon) updateResult(r *sent) bool {
+// updateResult fills in an update's report from the job's result, and says whether it did. While
+// the job runs, however long it waits for a backup, the report waits too; a job that ended without
+// a result failed.
+func (d *Daemon) updateResult(ctx context.Context, r *sent) bool {
 	if d.System != nil {
 		if status, output, ok := d.System.UpdateResult(r.Version); ok {
 			if status != StatusCompleted {
@@ -386,11 +385,14 @@ func (d *Daemon) updateResult(r *sent) bool {
 			d.keep(r)
 			return true
 		}
+		if d.System.UpdateRunning(ctx) {
+			return false
+		}
+		if _, _, ok := d.System.UpdateResult(r.Version); ok { // it ended just now
+			return d.updateResult(ctx, r)
+		}
 	}
-	if time.Since(r.Started) < updateWait {
-		return false
-	}
-	out := fmt.Sprintf("The update job to Tender %s said nothing for %s, so the daemon gave up on it. See: journalctl -u tenderupdate.", r.Version, updateWait)
+	out := fmt.Sprintf("The update job to Tender %s ended without saying how. See /var/lib/tender/daemon/tenderupdate.log.", r.Version)
 	r.Patch = &Patch{Status: StatusFailed, Output: &out}
 	d.keep(r)
 	return true

@@ -128,14 +128,17 @@ func HoldBusy(dir string) (release func(), err error) {
 	return func() { _ = f.Close() }, nil
 }
 
-// WaitIdle waits until the daemon is idle, at most timeout, and then keeps it from starting a backup
-// or an action until release is called.
+// WaitIdle waits until the daemon is idle, at most timeout, or with a negative timeout for as long as
+// it takes, and then keeps it from starting a backup or an action until release is called.
 func WaitIdle(ctx context.Context, dir string, timeout, every time.Duration) (release func(), err error) {
 	f, err := openBusy(dir)
 	if err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(timeout)
+	if timeout < 0 {
+		deadline = time.Now().Add(100 * 365 * 24 * time.Hour)
+	}
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {

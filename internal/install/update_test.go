@@ -451,6 +451,32 @@ func TestUpdateWaitsForARunningBackup(t *testing.T) {
 	}
 }
 
+// The update job of a rollout waits for a running backup however long it takes: a busy machine
+// isn't a failed update.
+func TestApplyWaitsUntilIdle(t *testing.T) {
+	e := newEnv(t)
+	installBoth(t, e)
+	newRelease(t, e, goodSums)
+	release, err := config.HoldBusy(e.path(config.DefaultStateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.in.BusyWait = 100 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- e.in.Apply(context.Background(), "v0.2.0") }()
+	time.Sleep(400 * time.Millisecond)
+	if e.read(t, "/usr/local/bin/tender") == newBinary {
+		t.Fatal("swapped the binary while the backup ran")
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("%v\n%s", err, e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "Waiting for the running backup or action to finish") {
+		t.Errorf("output = %q", e.out.String())
+	}
+}
+
 func TestUpdateErrors(t *testing.T) {
 	e := newEnv(t)
 	newRelease(t, e, goodSums)

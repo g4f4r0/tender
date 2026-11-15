@@ -31,6 +31,10 @@ const (
 	busyEvery          = 5 * time.Second
 )
 
+// HealthCheckFailed is in the result of an update whose new version wasn't healthy and rolled back.
+// Only such a failure marks a release bad for auto mode.
+const HealthCheckFailed = "failed its health check"
+
 // fetchRelease downloads the tender binary of a release and checks it: the release's SHA256SUMS
 // must carry a valid signature by one of the release keys, and the binary must match it.
 func (in *Installer) fetchRelease(ctx context.Context, tag string) ([]byte, error) {
@@ -209,7 +213,7 @@ func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 		return err
 	}
 	if daemon {
-		release, err := in.waitIdle(ctx)
+		release, err := in.waitIdle(ctx, byHand)
 		if err != nil {
 			return fmt.Errorf("%w, so nothing was changed. Try the update again later", err)
 		}
@@ -236,15 +240,20 @@ func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 		return fmt.Errorf("Tender %s failed its health check (%v), and rolling back to Tender %s failed too: %w. "+
 			"Put %s back at %s and run \"sudo tender install refresh\"", tag, err, in.Version, rerr, in.path(previousBinaryPath), in.path(binaryPath))
 	}
-	return fmt.Errorf("Tender %s failed its health check, so it rolled back to Tender %s: %w", tag, in.Version, err)
+	return fmt.Errorf("Tender %s %s, so it rolled back to Tender %s: %w", tag, HealthCheckFailed, in.Version, err)
 }
 
-// waitIdle waits for a running backup or action to finish, up to BusyWait, and keeps new ones from
-// starting until release.
-func (in *Installer) waitIdle(ctx context.Context) (func(), error) {
+// waitIdle waits for a running backup or action to finish, and keeps new ones from starting until
+// release. By hand it waits up to BusyWait; the job of a rollout waits as long as it takes, since a
+// busy machine isn't a failed update.
+func (in *Installer) waitIdle(ctx context.Context, byHand bool) (func(), error) {
 	dir := in.path(config.DefaultStateDir)
 	if release, err := config.WaitIdle(ctx, dir, 0, busyEvery); err == nil {
 		return release, nil
+	}
+	if !byHand {
+		in.say("Waiting for the running backup or action to finish")
+		return config.WaitIdle(ctx, dir, -1, min(busyEvery, in.BusyWait))
 	}
 	in.say("Waiting up to %s for the running backup or action to finish", in.BusyWait)
 	return config.WaitIdle(ctx, dir, in.BusyWait, min(busyEvery, in.BusyWait))

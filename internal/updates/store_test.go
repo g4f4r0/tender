@@ -267,7 +267,8 @@ func TestFailedUpdateStopsTheRollout(t *testing.T) {
 	if err != nil || len(f) != 1 || f[1].Version != "0.3.1" || !strings.Contains(f[1].Reason, "health check") {
 		t.Errorf("failures = %+v %v", f, err)
 	}
-	r.step(t0.Add(2 * time.Minute)) // auto mode doesn't try 0.3.1 again
+	r.check(t0.Add(2 * time.Minute))
+	r.step(t0.Add(2 * time.Minute)) // auto mode doesn't try 0.3.1 again, even after a new check
 	if rs, _ := r.store.Rollouts(context.Background()); len(rs) != 1 {
 		t.Errorf("auto mode retried a failed release: %d rollouts", len(rs))
 	}
@@ -294,15 +295,44 @@ func TestStepTimeouts(t *testing.T) {
 	r.step(t0.Add(7 * time.Minute))
 	r.want(1, "failed", "hub:failed", "a:pending", "b:pending")
 
+	// A machine that is busy for hours, but reports, isn't a failure: the rollout waits with it.
 	r = newRig(t)
 	r.check(t0)
 	r.step(t0)
-	r.step(t0.Add(49 * time.Minute))
+	for _, after := range []time.Duration{time.Hour, 5 * time.Hour} {
+		r.machine("hub").LastSeen = ptr(t0.Add(after))
+		r.step(t0.Add(after))
+		r.want(1, "in_progress", "hub:in_progress", "a:pending", "b:pending")
+	}
+	// One that goes silent for 30 minutes fails the step.
+	r.step(t0.Add(5*time.Hour + 29*time.Minute))
 	r.want(1, "in_progress", "hub:in_progress", "a:pending", "b:pending")
-	r.step(t0.Add(51 * time.Minute))
+	r.step(t0.Add(5*time.Hour + 31*time.Minute))
 	if ro, _ := r.store.Rollout(context.Background(), 1); ro.Status != StatusFailed || !strings.Contains(*ro.Machines[0].Error, "online") {
 		t.Errorf("rollout = %+v", ro)
 	}
+}
+
+// A release that failed for a reason other than its health check, such as a machine that went
+// offline, isn't bad: auto mode tries it again after the next look at GitHub.
+func TestAutoModeRetriesAfterOtherFailures(t *testing.T) {
+	r := newRig(t)
+	r.check(t0)
+	r.step(t0)
+	a := r.actions.list[0]
+	a.status, a.output = StatusFailed, "Could not update Tender to 0.3.1: the update job failed: cannot download Tender v0.3.1."
+	r.step(t0.Add(time.Minute))
+	r.want(1, "failed", "hub:failed", "a:pending", "b:pending")
+	r.step(t0.Add(2 * time.Minute))
+	if rs, _ := r.store.Rollouts(context.Background()); len(rs) != 1 {
+		t.Fatalf("auto mode retried before the next check: %d rollouts", len(rs))
+	}
+	for i := range r.machines {
+		r.machines[i].LastSeen = ptr(t0.Add(time.Hour))
+	}
+	r.check(t0.Add(time.Hour))
+	r.step(t0.Add(time.Hour))
+	r.want(2, "in_progress", "hub:in_progress", "a:pending", "b:pending")
 }
 
 func TestStartRefuses(t *testing.T) {

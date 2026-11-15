@@ -2308,7 +2308,7 @@ None.
 
 ### `start_update`
 
-Starts a rollout that updates Tender to a stable release, the latest by default, on the machines named or on every machine, one at a time with the hub's own machine first. Each machine checks the release's signature, waits up to 30 minutes for a running backup, swaps the binary and restarts. If it isn't healthy within 2 minutes it rolls back, and the rollout stops there with an `update.failed` alert.
+Starts a rollout that updates Tender to a stable release, the latest by default, on the machines named or on every machine, one at a time with the hub's own machine first. Each machine checks the release's signature, waits for a running backup to finish, however long it takes, swaps the binary and restarts. If it isn't healthy within 2 minutes it rolls back, and the rollout stops there with an `update.failed` alert.
 
 #### Annotations
 

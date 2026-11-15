@@ -141,7 +141,7 @@ func (d *Daemon) load() {
 func (d *Daemon) deliver(ctx context.Context) {
 	ids := make([]int64, 0, len(d.waiting))
 	for id, r := range d.waiting {
-		if r.Patch == nil && r.Type == TypeUpdate && !d.updateResult(r) {
+		if r.Patch == nil && r.Type == TypeUpdate && !d.updateResult(ctx, r) {
 			continue
 		}
 		if r.Patch != nil {

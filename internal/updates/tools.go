@@ -59,8 +59,8 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "start_update", "Update Tender on machines",
 		"Start a rollout that updates Tender to a stable release, the latest by default, on the machines named or on every machine. "+
-			"It updates one machine at a time, the hub's own machine first. Each machine checks the release's signature, waits up to 30 "+
-			"minutes for a running backup, swaps the binary and restarts; if it isn't healthy within 2 minutes it rolls back, and the "+
+			"It updates one machine at a time, the hub's own machine first. Each machine checks the release's signature, waits for a "+
+			"running backup to finish, however long it takes, swaps the binary and restarts; if it isn't healthy within 2 minutes it rolls back, and the "+
 			"rollout stops there with an update.failed alert. It refuses prereleases and downgrades, and machines before v0.3.0. "+
 			"The result is the rollout, which goes on after the tool returns: follow it with get_updates. "+rolloutFields,
 		mcp.WriteOptions{OpenWorld: true},

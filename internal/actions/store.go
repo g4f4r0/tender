@@ -41,9 +41,11 @@ func NewStore(d *db.DB, services Services) *Store {
 const (
 	// lifetime is how long an action may wait for the daemon, or run without an answer.
 	lifetime = 15 * time.Minute
-	// systemLifetime is how long an update or an upgrade may run without an answer: an update waits
-	// up to 30 minutes for a running backup, and an upgrade can take a while too.
-	systemLifetime = 45 * time.Minute
+	// upgradeLifetime is how long an upgrade may run without an answer: it can take a while.
+	upgradeLifetime = 45 * time.Minute
+	// updateLifetime is how long an update may run without an answer. Its job waits for a running
+	// backup as long as it takes, since a busy machine isn't a failed update.
+	updateLifetime = 24 * time.Hour
 	// handOutAgain is how long, in seconds, the daemon has to claim an action it was handed, before
 	// it is handed out again.
 	handOutAgain = "30"
@@ -150,27 +152,27 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Summary, error) {
 // It only reads when there is nothing to do, so a wait doesn't take the write lock.
 func (s *Store) tidy(ctx context.Context, machineID int64, now time.Time) error {
 	// Every statement numbers its arguments the same way: ?1 the machine, ?2 when a pending or a
-	// running action is stale, ?3 when a logs action's output is old, ?4 when a running update or
-	// upgrade is stale, ?5 and ?6 the failures, ?7 now.
-	args := []any{machineID, now.Add(-lifetime).Unix(), now.Add(-s.Keep).Unix(), now.Add(-systemLifetime).Unix(),
-		notPickedUp, notAnswered, now.Unix()}
+	// running action is stale, ?3 when a logs action's output is old, ?4 when a running upgrade and
+	// ?5 a running update is stale, ?6 and ?7 the failures, ?8 now.
+	args := []any{machineID, now.Add(-lifetime).Unix(), now.Add(-s.Keep).Unix(), now.Add(-upgradeLifetime).Unix(),
+		now.Add(-updateLifetime).Unix(), notPickedUp, notAnswered, now.Unix()}
 	const expired = `(status = 'pending' AND created_at < ?2) OR
-		(status = 'in_progress' AND updated_at < CASE WHEN type IN ('update', 'upgrade') THEN ?4 ELSE ?2 END)`
+		(status = 'in_progress' AND updated_at < CASE type WHEN 'upgrade' THEN ?4 WHEN 'update' THEN ?5 ELSE ?2 END)`
 	// A failed logs action holds why it failed, not logs, so only a completed one is cleared.
 	const clearable = `type = 'logs' AND status = 'completed' AND output_cleared = 0 AND updated_at < ?3`
 	var any bool
 	if err := s.db.Read.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM actions WHERE (?1 = 0 OR machine_id = ?1) AND ((`+expired+`) OR (`+clearable+`)))`,
-		args[:4]...).Scan(&any); err != nil || !any {
+		args[:5]...).Scan(&any); err != nil || !any {
 		return err
 	}
 	if _, err := s.db.Write.ExecContext(ctx,
-		`UPDATE actions SET status = 'failed', output = CASE status WHEN 'pending' THEN ?5 ELSE ?6 END, updated_at = ?7
+		`UPDATE actions SET status = 'failed', output = CASE status WHEN 'pending' THEN ?6 ELSE ?7 END, updated_at = ?8
 		 WHERE (?1 = 0 OR machine_id = ?1) AND (`+expired+`)`, args...); err != nil {
 		return err
 	}
 	res, err := s.db.Write.ExecContext(ctx,
-		`UPDATE actions SET output = NULL, output_cleared = 1, updated_at = ?7
+		`UPDATE actions SET output = NULL, output_cleared = 1, updated_at = ?8
 		 WHERE (?1 = 0 OR machine_id = ?1) AND `+clearable, args...)
 	if err != nil {
 		return err

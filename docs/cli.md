@@ -1348,7 +1348,7 @@ Restarted tenderd
 
 Updates Tender to the latest stable release, or to `--version`. With machine names or `--all`, the hub rolls the release out, one machine at a time with the hub's own machine first, and that needs no sudo. Without a machine, it updates this machine, as root. [Updates](updates.md) explains both.
 
-Every update checks the release's signature and checksums, waits up to 30 minutes for a running backup or action, and rolls back if the services aren't healthy within 2 minutes. It refuses prereleases. Only the update by hand can go back to an older release.
+Every update checks the release's signature and checksums, waits for a running backup or action to finish, however long it takes, and rolls back if the services aren't healthy within 2 minutes. It refuses prereleases. Only the update by hand can go back to an older release.
 
 #### Usage
 

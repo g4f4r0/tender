@@ -17,9 +17,9 @@ const (
 	checkEvery = 6 * time.Hour
 	// stepEvery is how often the hub moves the rollout in progress along.
 	stepEvery = 10 * time.Second
-	// stepTimeout is how long one machine's update may take, from its queuing: the update waits up
-	// to 30 minutes for a running backup and has 2 for its health check.
-	stepTimeout = 50 * time.Minute
+	// offlineAfter is how long a machine may go without reporting while it updates before its step
+	// fails. A machine that reports may take as long as its backup does: the update waits for it.
+	offlineAfter = 30 * time.Minute
 	// reportTimeout is how long after its update completed the machine has to report the new version.
 	reportTimeout = 5 * time.Minute
 	// silentAfter is how long a machine may go without reporting before auto mode leaves it out.
@@ -75,17 +75,25 @@ func (s *Store) Step(ctx context.Context, now time.Time) error {
 }
 
 // autoStart starts a rollout of the latest release to the machines in auto mode that run an older
-// version and report, inside the window, unless the release says it needs a person or a rollout of it
-// already failed.
+// version and report, inside the window, unless the release says it needs a person or is bad. A
+// release is bad once it failed a machine's health check. One that failed for another reason, such
+// as a machine that went offline, is tried again after the next look at GitHub.
 func (s *Store) autoStart(ctx context.Context, now time.Time) (int64, error) {
 	st, latest, err := s.settings(ctx)
 	if err != nil || latest.Version == nil || !latest.Auto || !inWindow(st.Window, now) {
 		return 0, err
 	}
-	var failed bool
-	if err := s.db.Read.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM update_rollouts WHERE version = ? AND status = 'failed')`,
-		*latest.Version).Scan(&failed); err != nil || failed {
+	var bad bool
+	var failedAt sql.NullInt64
+	if err := s.db.Read.QueryRowContext(ctx, `SELECT
+		  EXISTS (SELECT 1 FROM update_rollouts r JOIN update_rollout_machines m ON m.rollout_id = r.id
+		          WHERE r.version = ?1 AND m.status = 'failed' AND instr(m.error, ?2) > 0),
+		  (SELECT max(updated_at) FROM update_rollouts WHERE version = ?1 AND status = 'failed')`,
+		*latest.Version, install.HealthCheckFailed).Scan(&bad, &failedAt); err != nil || bad {
 		return 0, err
+	}
+	if failedAt.Valid && (latest.CheckedAt == nil || latest.CheckedAt.Unix() <= failedAt.Int64) {
+		return 0, nil // it failed since the last look at GitHub: wait for the next one
 	}
 	ms, err := s.machines(ctx)
 	if err != nil {
@@ -173,8 +181,8 @@ func (s *Store) advance(ctx context.Context, id int64, now time.Time) error {
 			v = "Tender " + *m.Version
 		}
 		return s.fail(ctx, id, st, errText("The update of %s to Tender %s completed, but %s still reports %s.", m.Name, version, m.Name, v), now)
-	case status != StatusCompleted && now.Sub(st.updated) > stepTimeout:
-		return s.fail(ctx, id, st, errText("The update of %s to Tender %s didn't end within %s. Is the machine online?", m.Name, version, stepTimeout), now)
+	case status != StatusCompleted && now.Sub(st.updated) > offlineAfter && (m.LastSeen == nil || now.Sub(*m.LastSeen) > offlineAfter):
+		return s.fail(ctx, id, st, errText("%s hasn't reported for %s while it updates to Tender %s. Is the machine online?", m.Name, offlineAfter, version), now)
 	}
 	return nil
 }

@@ -69,7 +69,7 @@ func TestJob(t *testing.T) {
 		t.Error("the result of another version counted")
 	}
 	for range 50 {
-		if !j.Running(ctx) {
+		if !j.UpdateRunning(ctx) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -96,7 +96,7 @@ func TestJob(t *testing.T) {
 	if err := j.Update(cctx, "0.3.1"); err == nil {
 		t.Error("the wait outlived its context")
 	}
-	if !j.Running(ctx) {
+	if !j.UpdateRunning(ctx) {
 		t.Error("the job stopped with the wait")
 	}
 }

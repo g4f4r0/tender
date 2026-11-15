@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,14 @@ type fakeSystem struct {
 	// upgrade runs as the upgrade; nil ends it at once.
 	upgrade func(ctx context.Context) (string, error)
 	resumes int
+	// stopped says the update job no longer runs.
+	stopped bool
+}
+
+func (f *fakeSystem) UpdateRunning(context.Context) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.stopped
 }
 
 func (f *fakeSystem) Upgrade(ctx context.Context, packages string) (string, error) {
@@ -231,10 +240,68 @@ func TestUpgradeIsPickedUpAfterARestart(t *testing.T) {
 	}
 }
 
+// The update's report waits for the job as long as the job runs, and fails once the job ended
+// without a result.
+func TestUpdateReportWaitsForTheJob(t *testing.T) {
+	h := newTestHub(t)
+	ctx := context.Background()
+	sys := &fakeSystem{update: func(context.Context, string) error { return nil }} // started, no result yet
+	startSystemDaemon(t, h.URL, t.TempDir(), sys, nil)
+	a, _ := h.store.CreateUpdate(ctx, 1, "0.3.1")
+	eventually(t, "the claim", func() bool { got, _ := h.store.Get(ctx, 1, a.ID); return got.Status == StatusInProgress })
+	time.Sleep(300 * time.Millisecond)
+	if got, _ := h.store.Get(ctx, 1, a.ID); got.Status != StatusInProgress {
+		t.Fatalf("while the job runs = %+v", got)
+	}
+	sys.mu.Lock()
+	sys.stopped = true
+	sys.mu.Unlock()
+	var got Action
+	eventually(t, "the failure", func() bool { got, _ = h.store.Get(ctx, 1, a.ID); return got.Finished() })
+	if got.Status != StatusFailed || !strings.Contains(deref(got.Output), "ended without saying how") {
+		t.Errorf("update = %+v, output %q", got, deref(got.Output))
+	}
+}
+
 // People can't queue an update; only a rollout does.
 func TestPeopleCantQueueAnUpdate(t *testing.T) {
 	h := newTestHub(t)
 	if _, err := h.store.Create(context.Background(), 1, Input{Type: TypeUpdate}); err == nil {
 		t.Error("an update was queued by hand")
+	}
+}
+
+// A running update waits for a backup as long as it takes, so the hub gives it a day before it
+// counts it unanswered; an upgrade gets 45 minutes.
+func TestUpdateLivesADay(t *testing.T) {
+	d := newDB(t)
+	s := NewStore(d, &fakeServices{})
+	ctx := context.Background()
+	u, _ := s.CreateUpdate(ctx, 1, "0.3.1")
+	if err := s.Claim(ctx, 1, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	packages := PackagesSecurity
+	g, _ := s.Create(ctx, 2, Input{Type: TypeUpgrade, Packages: &packages})
+	if err := s.Claim(ctx, 2, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Write.Exec(`UPDATE actions SET updated_at = ?`, time.Now().Add(-5*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.tidy(ctx, 0, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, u.ID); got.Status != StatusInProgress {
+		t.Errorf("update after 5 hours = %s", got.Status)
+	}
+	if got, _ := s.Get(ctx, 2, g.ID); got.Status != StatusFailed {
+		t.Errorf("upgrade after 5 hours = %s", got.Status)
+	}
+	if err := s.tidy(ctx, 0, time.Now().Add(20*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, u.ID); got.Status != StatusFailed {
+		t.Errorf("update after a day = %s", got.Status)
 	}
 }

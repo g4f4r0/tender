@@ -71,9 +71,9 @@ func (j Job) Update(ctx context.Context, version string) error {
 	}
 }
 
-// Running reports whether the update job still runs. It is true when systemd can't say, so a report
+// UpdateRunning reports whether the update job still runs. It is true when systemd can't say, so a report
 // waits rather than fails.
-func (j Job) Running(ctx context.Context) bool {
+func (j Job) UpdateRunning(ctx context.Context) bool {
 	u, err := config.ShowUnit(ctx, UpdateUnit)
 	return err != nil || u.Running()
 }
@@ -97,7 +97,7 @@ func (j Job) UpdateResult(version string) (status, output string, ok bool) {
 // ClearUpdateResult forgets the job's result, once the hub has it.
 func (j Job) ClearUpdateResult() {
 	_ = config.RemoveUpdateResult(j.StateDir)
-	if !j.Running(context.Background()) {
+	if !j.UpdateRunning(context.Background()) {
 		config.ClearUnit(context.Background(), UpdateUnit)
 	}
 }

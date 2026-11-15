@@ -15,7 +15,7 @@ The hub asks GitHub for the latest stable release every 6 hours. A rollout updat
 2. The job downloads the release, checks the signature of its `SHA256SUMS` against the keys built into Tender, then checks the binary against `SHA256SUMS`. A release that isn't signed by Tender's key never installs.
 3. It runs the new binary's `tender version` and checks that it reads the machine's daemon config and hub settings.
 4. It keeps the current binary as `/usr/local/bin/tender.previous`.
-5. It waits up to 30 minutes for a running backup or action to finish, then swaps the binary and restarts the services.
+5. It waits for a running backup or action to finish, however long it takes, then swaps the binary and restarts the services. A busy machine isn't a failed update: the rollout waits with it. Only a machine that stops reporting for 30 minutes fails its step.
 6. Within 2 minutes, `tenderd` must be active and have reported to the hub on the new version. On the hub's machine, `tenderhub` must be active and answer `GET /v1/health` with `200`. When root updates a machine by hand, the hub may be down, so instead of the report the new binary's `tender daemon --check` must pass.
 7. Otherwise it puts the previous binary back, restarts the services and reports the failure.
 
@@ -29,7 +29,7 @@ The hub never updates a machine that runs a development build, such as `0.3.1-4-
 
 The hub's mode applies to every machine that doesn't have its own.
 
-1. In `auto` mode, the default, the hub starts a rollout of each new stable release to the machines in auto mode by itself. It leaves out a machine that hasn't reported for 10 minutes, and a release whose rollout already failed.
+1. In `auto` mode, the default, the hub starts a rollout of each new stable release to the machines in auto mode by itself. It leaves out a machine that hasn't reported for 10 minutes, and a release that failed a machine's health check. A release whose rollout failed for another reason, such as a machine that went offline, it tries again after its next look at GitHub.
 2. In `manual` mode nothing updates until you run `tender update`.
 
 Set the mode, and the hours in UTC when auto mode may start a rollout:
@@ -94,7 +94,7 @@ Each machine takes a minute or two, and longer while a backup runs.
 
 ## When an update fails
 
-The machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. `tender updates show` and the `update.failed` alert give the reason, such as:
+When the new version fails its health check, the machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. `tender updates show` and the `update.failed` alert give the reason, such as:
 
 ```text
 Rollout 4 of 0.3.2, failed, started 12 minutes ago:
@@ -102,7 +102,7 @@ Rollout 4 of 0.3.2, failed, started 12 minutes ago:
   apps: pending
 ```
 
-The job's own output is in `/var/lib/tender/daemon/tenderupdate.log` on that machine. Auto mode doesn't try that release again. Once you fix the cause, start a rollout by hand with `tender update`.
+The job's own output is in `/var/lib/tender/daemon/tenderupdate.log` on that machine. Auto mode doesn't try a release that failed its health check again. Once you fix the cause, start a rollout by hand with `tender update`.
 
 ## Reference
 
