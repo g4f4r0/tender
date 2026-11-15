@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -34,7 +35,8 @@ type Runner interface {
 }
 
 // Daemon runs this machine's backups on the hub's schedule and reports to the hub.
-// Set the exported fields after NewDaemon. Run drives one goroutine; nothing else touches the daemon.
+// Set the exported fields after NewDaemon. Run drives one goroutine; TestDestination, from the
+// actions goroutine, shares only initMu with it.
 type Daemon struct {
 	Hub       *client.Client
 	Machine   string
@@ -52,9 +54,10 @@ type Daemon struct {
 	queue      pendingQueue
 	settings   *Settings
 	schedule   cron.Schedule
-	settingsAt time.Time // last time the hub was asked for settings
-	waiting    bool      // a backup is due but the hub has sent no credentials yet
-	unusable   string    // the last unusable settings the hub sent, logged once
+	settingsAt time.Time  // last time the hub was asked for settings
+	waiting    bool       // a backup is due but the hub has sent no credentials yet
+	unusable   string     // the last unusable settings the hub sent, logged once
+	initMu     sync.Mutex // held while making a repository; destination tests run beside Run
 }
 
 // NewDaemon returns a daemon that keeps its state under stateDir.
@@ -447,13 +450,15 @@ func (a *Daemon) restic(typ string, config map[string]any, passwordFile string) 
 		Secrets:      secrets,
 		CacheDir:     cache,
 		StateDir:     a.StateDir,
+		InitMu:       &a.initMu,
 	}, nil
 }
 
 // TestDestination tries a destination from this machine, for a test action: it opens this
 // machine's repository there with restic cat config, or makes it when there is none. target is
 // the Target the hub handed over with the action; it is never logged or kept. The result says
-// what it found. It touches none of the daemon's backup state, so it can run beside a backup.
+// what it found. It touches none of the daemon's backup state, so it can run beside a backup; the
+// two take turns only to make a repository.
 func (a *Daemon) TestDestination(ctx context.Context, target json.RawMessage) (string, error) {
 	var tg Target
 	if len(target) == 0 || json.Unmarshal(target, &tg) != nil || tg.Name == "" {

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -42,6 +43,10 @@ type Restic struct {
 	Secrets      []string // values hidden in error text, such as keys
 	CacheDir     string
 	StateDir     string // holds the exclude file and TMPDIR
+	// InitMu, when set, is held while making a repository, so a destination test and a backup that
+	// both find none don't make one at once: two restic init runs on one repository can leave it
+	// with the keys of one and the config of the other. The second finds the first's instead.
+	InitMu *sync.Mutex
 }
 
 // Backup runs restic backup, creating the repository first if restic says it doesn't exist.
@@ -67,7 +72,7 @@ func (r *Restic) Backup(ctx context.Context, paths, exclude []string) Outcome {
 			return failed(err)
 		}
 		if code == 10 && !initialized { // repository doesn't exist yet
-			if o := r.init(ctx); o.Status != StatusCompleted {
+			if _, o := r.create(ctx); o.Status != StatusCompleted {
 				return o
 			}
 			continue
@@ -80,12 +85,26 @@ func (r *Restic) Backup(ctx context.Context, paths, exclude []string) Outcome {
 	}
 }
 
-func (r *Restic) init(ctx context.Context) Outcome {
+// create makes the repository with restic init, unless another run made it meanwhile. made says
+// this run made it.
+func (r *Restic) create(ctx context.Context) (made bool, o Outcome) {
+	if r.InitMu != nil {
+		r.InitMu.Lock()
+		defer r.InitMu.Unlock()
+		p, code, err := r.run(ctx, io.Discard, "cat", "config")
+		if err != nil {
+			return false, failed(err)
+		}
+		if code != 10 {
+			return false, r.outcome(code, p, false)
+		}
+	}
 	p, code, err := r.run(ctx, io.Discard, "init")
 	if err != nil {
-		return failed(err)
+		return false, failed(err)
 	}
-	return r.outcome(code, p, false)
+	o = r.outcome(code, p, false)
+	return o.Status == StatusCompleted, o
 }
 
 // Open checks that the repository is there and opens with the password, with restic cat config,
@@ -96,7 +115,7 @@ func (r *Restic) Open(ctx context.Context) (created bool, o Outcome) {
 		return false, failed(err)
 	}
 	if code == 10 { // repository doesn't exist yet
-		return true, r.init(ctx)
+		return r.create(ctx)
 	}
 	return false, r.outcome(code, p, false)
 }
