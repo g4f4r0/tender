@@ -32,7 +32,7 @@ A route to a container that the compose file doesn't have fails the deploy with 
 
 Each adapter takes the whole set of routes of its kind on the machine, every managed service's, and makes the machine match it. It changes only what it created, so running it again changes nothing, and a port or record you set up yourself stays.
 
-The daemon applies the exposures after every deploy and remove, and once when it starts, from `GET /v1/machines/{machine}/exposures`. A service being removed has its routes taken out first. A deploy whose containers run but whose routes could not all be exposed fails with `the service runs, but its routes could not all be exposed:` and why, and one adapter's failure doesn't stop the others.
+The daemon applies the exposures after every deploy and remove, and once when it starts, from `GET /v1/machines/{machine}/exposures`. A service being removed has its routes taken out first. Each adapter sets every route it can. A route that can't be set fails only the deploy of the service it belongs to, with `the service runs, but its routes could not all be exposed:` and a sentence naming the route, so that service's `deploy_status` is `failed` and its `last_error` says why. Every other route stays up, and the other services on the machine still deploy and remove; the daemon logs the failed route as a warning. An adapter that fails as a whole, such as Tailscale missing, fails the deploys of the services with routes on it. One adapter's failure doesn't stop the others.
 
 ## Tailscale
 
