@@ -189,9 +189,12 @@ func TestActions(t *testing.T) {
 	if list, err := s.Take(ctx, 2); err != nil || len(list) != 0 {
 		t.Errorf("machine b took %+v, %v", list, err)
 	}
-	list, err := s.Take(ctx, 1)
-	if err != nil || len(list) != 2 || list[0].ID != logs.ID || list[1].Status != StatusInProgress {
-		t.Fatalf("take = %+v, %v", list, err)
+	// One at a time, oldest first, as the daemon runs them: the next waits as pending.
+	for _, want := range []int64{logs.ID, stop.ID} {
+		list, err := s.Take(ctx, 1)
+		if err != nil || len(list) != 1 || list[0].ID != want || list[0].Status != StatusInProgress {
+			t.Fatalf("take = %+v, %v; want only action %d", list, err, want)
+		}
 	}
 	if again, _ := s.Take(ctx, 1); len(again) != 0 {
 		t.Errorf("taken twice: %+v", again)
@@ -260,10 +263,21 @@ func TestActions(t *testing.T) {
 	}
 
 	// A removed service leaves its actions, still named, such as the stop of a --rm container.
-	last, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
-	if _, err := s.Take(ctx, 1); err != nil {
-		t.Fatal(err)
+	// takeUntil takes actions, oldest first, until it took id.
+	takeUntil := func(id int64) {
+		t.Helper()
+		for {
+			list, err := s.Take(ctx, 1)
+			if err != nil || len(list) == 0 {
+				t.Fatalf("action %d was never taken: %v", id, err)
+			}
+			if list[0].ID == id {
+				return
+			}
+		}
 	}
+	last, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
+	takeUntil(last.ID)
 	if err := s.Finish(ctx, 1, last.ID, ActionPatch{Status: StatusCompleted}); err != nil {
 		t.Fatal(err)
 	}
@@ -281,9 +295,7 @@ func TestActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	late, _ := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStop})
-	if _, err := s.Take(ctx, 1); err != nil {
-		t.Fatal(err)
-	}
+	takeUntil(late.ID)
 	if _, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil {
 		t.Fatal(err)
 	}
@@ -393,6 +405,39 @@ func TestWait(t *testing.T) {
 	if err != nil || len(list) != 1 || time.Since(start) > 2*time.Second {
 		t.Errorf("wait = %+v, %v after %s", list, err, time.Since(start))
 	}
+
+	// Waiting with nothing to do only reads: it works while something else holds the write lock.
+	queued, err := s.CreateAction(ctx, 1, "web", ActionInput{Type: TypeStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE services SET updated_at = updated_at`); err != nil {
+		t.Fatal(err)
+	}
+	lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	if a, err := s.Await(lctx, 1, queued.ID, 300*time.Millisecond); err != nil || a.Status != StatusPending {
+		t.Errorf("await while the write lock is held = %+v, %v", a, err)
+	}
+	cancel()
+	_ = tx.Rollback()
+	if _, err := s.Take(ctx, 1); err != nil { // nothing pending for the wait below
+		t.Fatal(err)
+	}
+	tx, err = s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lctx, cancel = context.WithTimeout(ctx, 3*time.Second)
+	start = time.Now()
+	if list, err := s.Wait(lctx, 1, 300*time.Millisecond, nil); err != nil || len(list) != 0 || time.Since(start) > 2*time.Second {
+		t.Errorf("empty wait while the write lock is held = %+v, %v after %s", list, err, time.Since(start))
+	}
+	cancel()
+	_ = tx.Rollback()
 
 	// The hub shutting down ends the wait at once.
 	stop := make(chan struct{})

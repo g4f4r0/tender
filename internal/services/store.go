@@ -377,9 +377,16 @@ func (s *Store) CreateAction(ctx context.Context, machineID int64, service strin
 	return s.action(ctx, machineID, id)
 }
 
-// expire fails a machine's actions that waited or ran too long without the daemon.
+// expire fails a machine's actions that waited or ran too long without the daemon. It only reads
+// when there are none, so a wait doesn't take the write lock.
 func (s *Store) expire(ctx context.Context, machineID int64, now time.Time) error {
 	cutoff := now.Add(-actionLifetime).Unix()
+	var any bool
+	if err := s.db.Read.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM service_actions WHERE machine_id = ? AND ((status = 'pending' AND created_at < ?) OR (status = 'in_progress' AND updated_at < ?)))`,
+		machineID, cutoff, cutoff).Scan(&any); err != nil || !any {
+		return err
+	}
 	_, err := s.db.Write.ExecContext(ctx,
 		`UPDATE service_actions SET status = 'failed', output = CASE status WHEN 'pending' THEN ? ELSE ? END, updated_at = ?
 		 WHERE machine_id = ? AND ((status = 'pending' AND created_at < ?) OR (status = 'in_progress' AND updated_at < ?))`,
@@ -403,11 +410,15 @@ func (s *Store) Action(ctx context.Context, machineID, id int64) (Action, error)
 	return s.action(ctx, machineID, id)
 }
 
-// Await returns the action once it finished, or as it is after timeout.
+// Await returns the action once it finished, or as it is after timeout. It expires old actions
+// once, then only reads.
 func (s *Store) Await(ctx context.Context, machineID, id int64, timeout time.Duration) (Action, error) {
 	deadline := time.Now().Add(timeout)
+	if err := s.expire(ctx, machineID, time.Now()); err != nil {
+		return Action{}, err
+	}
 	for {
-		a, err := s.Action(ctx, machineID, id)
+		a, err := s.action(ctx, machineID, id)
 		if err != nil || a.Finished() || !time.Now().Before(deadline) {
 			return a, err
 		}
@@ -419,66 +430,63 @@ func (s *Store) Await(ctx context.Context, machineID, id int64, timeout time.Dur
 	}
 }
 
-// Take returns a machine's pending actions, oldest first, and marks them in_progress.
+// Take returns the machine's oldest pending action, marked in_progress, or none. It hands out one
+// at a time because the daemon runs them one at a time: the others stay pending, so none of them
+// expires as unanswered while it waits its turn.
 func (s *Store) Take(ctx context.Context, machineID int64) ([]Action, error) {
-	now := time.Now()
-	if err := s.expire(ctx, machineID, now); err != nil {
+	if err := s.expire(ctx, machineID, time.Now()); err != nil {
 		return nil, err
 	}
-	var ids []int64
-	rows, err := s.db.Write.QueryContext(ctx,
-		`UPDATE service_actions SET status = 'in_progress', updated_at = ? WHERE machine_id = ? AND status = 'pending' RETURNING id`,
-		now.Unix(), machineID)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	out := []Action{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	list, err := json.Marshal(ids)
-	if err != nil {
-		return nil, err
-	}
-	rs, err := s.db.Read.QueryContext(ctx, selectActions+` WHERE a.id IN (SELECT value FROM json_each(?)) ORDER BY a.id`, string(list))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rs.Close() }()
-	for rs.Next() {
-		a, err := scanAction(rs)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rs.Err()
+	return s.takeOne(ctx, machineID)
 }
 
-// Wait is Take, but when nothing is pending it waits up to wait for an action, looking again
-// every half second. It answers early, with what it has, when ctx ends or stop closes.
+func (s *Store) takeOne(ctx context.Context, machineID int64) ([]Action, error) {
+	var id int64
+	err := s.db.Write.QueryRowContext(ctx,
+		`UPDATE service_actions SET status = 'in_progress', updated_at = ? WHERE id = (
+		   SELECT id FROM service_actions WHERE machine_id = ? AND status = 'pending' ORDER BY id LIMIT 1) RETURNING id`,
+		time.Now().Unix(), machineID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []Action{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a, err := s.action(ctx, machineID, id)
+	if err != nil {
+		return nil, err
+	}
+	return []Action{a}, nil
+}
+
+// Wait is Take, but when nothing is pending it waits up to wait for an action, looking again every
+// half second with a read, and writing only to take one. It answers early, with nothing, when ctx
+// ends or stop closes.
 func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, stop <-chan struct{}) ([]Action, error) {
 	deadline := time.Now().Add(wait)
+	if err := s.expire(ctx, machineID, time.Now()); err != nil {
+		return nil, err
+	}
 	for {
-		list, err := s.Take(ctx, machineID)
-		if err != nil || len(list) > 0 || !time.Now().Before(deadline) {
-			return list, err
+		var pending bool
+		if err := s.db.Read.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM service_actions WHERE machine_id = ? AND status = 'pending')`, machineID).Scan(&pending); err != nil {
+			return nil, err
+		}
+		if pending {
+			list, err := s.takeOne(ctx, machineID)
+			if err != nil || len(list) > 0 {
+				return list, err
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return []Action{}, nil
 		}
 		select {
 		case <-ctx.Done():
-			return list, nil
+			return []Action{}, nil
 		case <-stop:
-			return list, nil
+			return []Action{}, nil
 		case <-time.After(min(pollEvery, time.Until(deadline))):
 		}
 	}

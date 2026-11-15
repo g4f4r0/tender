@@ -116,7 +116,8 @@ func (s *Store) getAction(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// take answers the daemon with its pending actions. With ?wait=N it waits up to N seconds for one.
+// take answers the daemon with its oldest pending action, or none. With ?wait=N it waits up to N
+// seconds for one.
 func (s *Store) take(w http.ResponseWriter, r *http.Request, stop <-chan struct{}) error {
 	wait := 0
 	if v := r.URL.Query().Get("wait"); v != "" {
