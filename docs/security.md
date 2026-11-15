@@ -70,11 +70,11 @@ The daemon checks its machine when it starts and every 15 minutes, and reports w
 
 | Check | What it reads | Alert |
 | --- | --- | --- |
-| Firewall | `ufw status verbose`, or without ufw, the input chains of `nft -j list chains`, or `iptables -S INPUT`. | `firewall_off` when no active firewall denies incoming traffic by default. |
-| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Docker's published ports are flagged, because they go around ufw. | `port_exposed`, one per port, unless the port is on the machine's allowlist. |
-| SSH | `PasswordAuthentication` and `PermitRootLogin` from `sshd -T`. | `ssh_weak` when either allows a password. |
-| Updates | A simulated `apt-get dist-upgrade`, counting the updates from a security repository, and whether unattended-upgrades is on. | `security_updates_pending` after 3 days, `auto_updates_off`. |
-| Reboot | `/var/run/reboot-required` and its age. | `reboot_required` after 7 days. |
+| Firewall | `ufw status verbose`, or without ufw, the input chains of `nft -j list chains`, or `iptables -S INPUT`. | `security.firewall_off` when no active firewall denies incoming traffic by default. |
+| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port is on the machine's allowlist. |
+| SSH | `PasswordAuthentication` and `PermitRootLogin` from `sshd -T`. | `security.ssh_weak` when either allows a password. |
+| Updates | A simulated `apt-get dist-upgrade`, counting the updates from a security repository, and whether unattended-upgrades is on. | `security.updates_pending` after 3 days, `security.auto_updates_off`. |
+| Reboot | `/var/run/reboot-required` and its age. | `security.reboot_required` after 7 days. |
 
 See the latest checks of every machine, or one in full:
 
@@ -125,7 +125,7 @@ Upgrading the security packages on apps. This can take a few minutes.
 Upgraded the security packages on apps.
 ```
 
-It runs `unattended-upgrade -v` in the `tenderupgrade` unit. With `--all-packages` it runs `apt-get upgrade`, non-interactive and keeping the config files you changed. A service may restart when its package upgrades. Tender never reboots a machine: when an upgrade needs one, `tender security` and the `reboot_required` alert say so, and you reboot when it suits you.
+It runs `unattended-upgrade -v` in the `tenderupgrade` unit. With `--all-packages` it runs `apt-get upgrade`, non-interactive and keeping the config files you changed. A service may restart when its package upgrades. Tender never reboots a machine: when an upgrade needs one, `tender security` and the `security.reboot_required` alert say so, and you reboot when it suits you.
 
 ## Logs can hold secrets
 

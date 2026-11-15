@@ -19,7 +19,7 @@ The hub asks GitHub for the latest stable release every 6 hours. A rollout updat
 6. Within 2 minutes, `tenderd` must be active and have reported to the hub on the new version. On the hub's machine, `tenderhub` must be active and answer `GET /v1/health` with `200`.
 7. Otherwise it puts the previous binary back, restarts the services and reports the failure.
 
-The hub moves to the next machine once a machine reports the new version. It stops the rollout at the first machine that fails, and opens an `update_failed` alert for it. [Alerts](alerts.md#update-alerts) explains that alert.
+The hub moves to the next machine once a machine reports the new version. It stops the rollout at the first machine that fails, and opens an `update.failed` alert for it. [Alerts](alerts.md#update-alerts) explains that alert.
 
 An update never installs a prerelease, a draft or an older version. Only root can go back to an older release, by hand on that machine, with `sudo tender update --version X.Y.Z`.
 
@@ -92,7 +92,7 @@ Each machine takes a minute or two, and longer while a backup runs.
 
 ## When an update fails
 
-The machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. `tender updates show` and the `update_failed` alert give the reason, such as:
+The machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. `tender updates show` and the `update.failed` alert give the reason, such as:
 
 ```text
 Rollout 4 of 0.3.2, failed, started 12 minutes ago:
@@ -135,5 +135,5 @@ Every update checks the signature, `tender update` by hand too, from Tender v0.3
 ## Next steps
 
 1. [Security](security.md) explains why the daemon runs as root and what its sandbox allows.
-2. [Alerts](alerts.md#update-alerts) explains the `update_failed` alert.
+2. [Alerts](alerts.md#update-alerts) explains the `update.failed` alert.
 3. [CLI reference](cli.md#tender-update) lists every option of `tender update`.

@@ -287,7 +287,7 @@ tender machines set NAME [--updates inherit|auto|manual] [--allow-port PORT ...]
 | --- | --- | --- | --- |
 | `NAME` | string | Yes | The machine's name. |
 | `--updates` | string | No | `auto` or `manual` for the machine's own update mode, or `inherit` for the hub's. |
-| `--allow-port` | string | No | A port with its protocol, such as `41641/udp`, that may listen on a public address without a `port_exposed` alert. Repeat it for more. |
+| `--allow-port` | string | No | A port with its protocol, such as `41641/udp`, that may listen on a public address without a `security.port_exposed` alert. Repeat it for more. |
 | `--deny-port` | string | No | A port to take off the allowlist. Repeat it for more. |
 | `--security-alerts` | string | No | `on` or `off` for the machine's security alerts. |
 | `--hub` | URL | No | The hub's address. |

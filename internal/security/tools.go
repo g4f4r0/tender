@@ -20,7 +20,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			"(Docker publishes it, which goes around ufw), service (its container) and allowed (on the machine's "+
 			"security_allowed_ports). ssh: installed, password_authentication and permit_root_login. updates: pending, security and "+
 			"unattended_upgrades. reboot: required and since. Also id, machine, security_updates_since, collected_at, created_at and updated_at. "+
-			"The alerts firewall_off, port_exposed, ssh_weak, security_updates_pending, auto_updates_off and reboot_required come "+
+			"The alerts security.firewall_off, security.port_exposed, security.ssh_weak, security.updates_pending, security.auto_updates_off and security.reboot_required come "+
 			"from these. Change the allowlist with update_machine, and upgrade packages with upgrade_machine.",
 		func(ctx context.Context, in machineInput) (State, error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)

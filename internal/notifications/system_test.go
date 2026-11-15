@@ -39,21 +39,25 @@ func TestSystemRules(t *testing.T) {
 	}{
 		{"clean", secured(0, clean(), clean()), []string{}},
 		{"one report", secured(0, off(clean()), clean()), []string{}},
-		{"firewall off twice", secured(0, off(clean()), off(clean())), []string{"firewall_off:critical"}},
+		{"firewall off twice", secured(0, off(clean()), off(clean())), []string{"security.firewall_off:critical"}},
 		{"unsupported", secured(0, unsupported, unsupported), []string{}},
 		{"unchecked firewall", secured(0, off(&SecurityReport{}), off(&SecurityReport{})), []string{}},
-		{"ssh", secured(0, weak(clean()), weak(clean())), []string{"ssh_weak:warning"}},
-		{"auto updates", secured(0, manual(clean()), manual(clean())), []string{"auto_updates_off:warning"}},
+		{"ssh", secured(0, weak(clean()), weak(clean())), []string{"security.ssh_weak:warning"}},
+		{"auto updates", secured(0, manual(clean()), manual(clean())), []string{"security.auto_updates_off:warning"}},
 		{"ports", secured(0, ports("8080/tcp", "41641/udp", "5432/tcp")(clean()), ports("8080/tcp", "41641/udp")(clean())),
-			[]string{"port_exposed:warning"}},
+			[]string{"security.port_exposed:warning"}},
 		{"first report", func() Machine { m := secured(0, off(clean()), nil); return m }(), []string{}},
-		{"alerts off", func() Machine { m := secured(0, off(clean()), off(clean())); m.Security.AlertsEnabled = false; return m }(), []string{}},
+		{"alerts off", func() Machine {
+			m := secured(0, off(clean()), off(clean()))
+			m.Security.AlertsEnabled = false
+			return m
+		}(), []string{}},
 		{"silent", secured(-time.Hour, off(clean()), off(clean())), []string{"machine_silent:critical"}},
 		{"update failed", func() Machine {
 			m := quiet(0)
 			m.UpdateFailed = &UpdateFailure{Version: "0.3.1", Reason: "It failed its health check."}
 			return m
-		}(), []string{"update_failed:warning"}},
+		}(), []string{"update.failed:warning"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -77,7 +81,7 @@ func TestSecurityUpdatesAndRebootWait(t *testing.T) {
 		t.Errorf("before 3 and 7 days: %q", got)
 	}
 	got := evaluate(pending(73*time.Hour, 8*24*time.Hour), t0)
-	if s := summary(got); !slices.Equal(s, []string{"security_updates_pending:warning", "reboot_required:warning"}) {
+	if s := summary(got); !slices.Equal(s, []string{"security.updates_pending:warning", "security.reboot_required:warning"}) {
 		t.Fatalf("after 3 and 7 days: %q", s)
 	}
 	if !strings.Contains(got[0].content, "tender machines upgrade a") || !strings.Contains(got[0].content, "4 security updates") ||
@@ -111,18 +115,35 @@ func TestSystemAlertsOpenAndResolve(t *testing.T) {
 		return rep
 	}
 	r.tick(0, secured(0, two("8080/tcp", "5432/tcp"), two("8080/tcp", "5432/tcp")))
-	r.want([]string{"port_exposed warning sent", "port_exposed warning sent"}, "a: 8080/tcp exposed", "a: 5432/tcp exposed")
+	r.want([]string{"security.port_exposed warning sent", "security.port_exposed warning sent"}, "a: 8080/tcp exposed", "a: 5432/tcp exposed")
 
 	r.tick(time.Minute, secured(time.Minute, two("8080/tcp"), two("8080/tcp")))
-	r.want([]string{"port_exposed warning sent", "port_exposed warning resolved"}, "a: 8080/tcp exposed", "a: 5432/tcp exposed", "a: 5432/tcp exposed, resolved")
+	r.want([]string{"security.port_exposed warning sent", "security.port_exposed warning resolved"}, "a: 8080/tcp exposed", "a: 5432/tcp exposed", "a: 5432/tcp exposed, resolved")
 
 	m := secured(time.Minute, clean(), clean())
 	r.tick(20*time.Minute, m) // silent: the open alert stays
-	if rows := r.rows(); rows[0] != "port_exposed warning sent" {
+	if rows := r.rows(); rows[0] != "security.port_exposed warning sent" {
 		t.Errorf("silent machine resolved its port alert: %q", rows)
 	}
 	r.tick(21*time.Minute, secured(21*time.Minute, clean(), clean()))
-	if rows := r.rows(); rows[0] != "port_exposed warning resolved" {
+	if rows := r.rows(); rows[0] != "security.port_exposed warning resolved" {
 		t.Errorf("a clean report kept the alert: %q", rows)
+	}
+}
+
+// The alerts carry dotted event names, as the event registry names them.
+func TestSystemTypeNames(t *testing.T) {
+	for got, want := range map[string]string{
+		TypeFirewallOff:            "security.firewall_off",
+		TypePortExposed:            "security.port_exposed",
+		TypeSSHWeak:                "security.ssh_weak",
+		TypeSecurityUpdatesPending: "security.updates_pending",
+		TypeAutoUpdatesOff:         "security.auto_updates_off",
+		TypeRebootRequired:         "security.reboot_required",
+		TypeUpdateFailed:           "update.failed",
+	} {
+		if got != want {
+			t.Errorf("type %q, want %q", got, want)
+		}
 	}
 }

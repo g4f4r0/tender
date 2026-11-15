@@ -46,7 +46,7 @@ type Listeners struct {
 type SSH struct {
 	Check                  string  `json:"check"`
 	Error                  *string `json:"error"`
-	Installed              bool    `json:"installed"`                // the machine has an SSH server
+	Installed              bool    `json:"installed"`               // the machine has an SSH server
 	PasswordAuthentication *bool   `json:"password_authentication"` // people can log in with a password
 	PermitRootLogin        *string `json:"permit_root_login"`       // yes, no, prohibit-password, forced-commands-only
 }

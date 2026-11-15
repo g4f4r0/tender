@@ -9,13 +9,13 @@ import (
 
 // The alerts about a machine's own system: its security checks and Tender's updates.
 const (
-	TypeFirewallOff            = "firewall_off"
-	TypePortExposed            = "port_exposed"
-	TypeSSHWeak                = "ssh_weak"
-	TypeSecurityUpdatesPending = "security_updates_pending"
-	TypeAutoUpdatesOff         = "auto_updates_off"
-	TypeRebootRequired         = "reboot_required"
-	TypeUpdateFailed           = "update_failed"
+	TypeFirewallOff            = "security.firewall_off"
+	TypePortExposed            = "security.port_exposed"
+	TypeSSHWeak                = "security.ssh_weak"
+	TypeSecurityUpdatesPending = "security.updates_pending"
+	TypeAutoUpdatesOff         = "security.auto_updates_off"
+	TypeRebootRequired         = "security.reboot_required"
+	TypeUpdateFailed           = "update.failed"
 )
 
 const (
@@ -53,9 +53,9 @@ type Security struct {
 // SecurityReport is one report of a machine's checks. A check that didn't run, or reports
 // unsupported, has its Checked false and never alerts.
 type SecurityReport struct {
-	FirewallChecked bool
-	FirewallOn      bool   // active, denying incoming traffic by default
-	Firewall        string // what it found, in words
+	FirewallChecked  bool
+	FirewallOn       bool   // active, denying incoming traffic by default
+	Firewall         string // what it found, in words
 	ListenersChecked bool
 	Listeners        []Listener
 	SSHChecked       bool

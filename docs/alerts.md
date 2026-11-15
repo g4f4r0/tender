@@ -69,12 +69,12 @@ The daemon runs its [security checks](security.md#security-checks) every 15 minu
 
 | Type | Opens when | Severity |
 | --- | --- | --- |
-| `firewall_off` | No active firewall denies incoming traffic by default: ufw is inactive or allows by default, or without ufw no nftables or iptables input policy drops. | `critical` |
-| `port_exposed` | A TCP or UDP port listens on an address other than loopback, link-local or the tailnet, and isn't on the machine's allowlist. One alert per port, such as `8080/tcp exposed`. A port Docker publishes says so, because it goes around ufw. | `warning` |
-| `ssh_weak` | `sshd -T` says `PasswordAuthentication yes` or `PermitRootLogin yes`. | `warning` |
-| `security_updates_pending` | Security updates have been pending for more than 3 days, so unattended-upgrades isn't installing them. | `warning` |
-| `auto_updates_off` | unattended-upgrades isn't installed, or `APT::Periodic::Unattended-Upgrade` is off. | `warning` |
-| `reboot_required` | `/var/run/reboot-required` is more than 7 days old. Tender never reboots a machine. | `warning` |
+| `security.firewall_off` | No active firewall denies incoming traffic by default: ufw is inactive or allows by default, or without ufw no nftables or iptables input policy drops. | `critical` |
+| `security.port_exposed` | A TCP or UDP port listens on an address other than loopback, link-local or the tailnet, and isn't on the machine's allowlist. One alert per port, such as `8080/tcp exposed`. A port Docker publishes says so, because it goes around ufw. | `warning` |
+| `security.ssh_weak` | `sshd -T` says `PasswordAuthentication yes` or `PermitRootLogin yes`. | `warning` |
+| `security.updates_pending` | Security updates have been pending for more than 3 days, so unattended-upgrades isn't installing them. | `warning` |
+| `security.auto_updates_off` | unattended-upgrades isn't installed, or `APT::Periodic::Unattended-Upgrade` is off. | `warning` |
+| `security.reboot_required` | `/var/run/reboot-required` is more than 7 days old. Tender never reboots a machine. | `warning` |
 
 A check that couldn't run, or that says `unsupported` on a system other than Debian or Ubuntu, never opens or resolves an alert. While a machine is silent its security alerts stay as they are.
 
@@ -91,7 +91,7 @@ Install pending security updates with `tender machines upgrade apps`. [Security]
 
 | Type | Opens when | Severity |
 | --- | --- | --- |
-| `update_failed` | An update of Tender on the machine failed and rolled back. It says the version and the reason. | `warning` |
+| `update.failed` | An update of Tender on the machine failed and rolled back. It says the version and the reason. | `warning` |
 
 It resolves once the machine reports that version or a newer one, after a later rollout. [Updates](updates.md#when-an-update-fails) explains what to do.
 
