@@ -92,8 +92,8 @@ func TestMachines(t *testing.T) {
 	mustFail(t, h, a, `machines add needs a machine name. Run "tender machines add --help" for usage.`, "machines", "add")
 	mustFail(t, h, a, `machines add takes one argument, got 2: a b. Run "tender machines add --help" for usage.`, "machines", "add", "a", "b")
 	for _, r := range h.sent() {
-		if r.Auth != "" {
-			t.Errorf("%s %s sent an Authorization header %q; people routes are open", r.Method, r.Path, r.Auth)
+		if r.Auth != "Bearer "+testToken {
+			t.Errorf("%s %s sent the Authorization header %q, want the API token in %s", r.Method, r.Path, r.Auth, envToken)
 		}
 	}
 }

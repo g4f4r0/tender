@@ -68,6 +68,9 @@ var mcpCoverage = map[string]string{
 	"GET /v1/updates/rollouts":                          "get_updates",
 	"POST /v1/updates/rollouts":                         "start_update",
 	"GET /v1/updates/rollouts/{id}":                     "get_updates",
+	"GET /v1/tokens":                                    "list_tokens",
+	"POST /v1/tokens":                                   "none: an agent may not make itself more access; a person runs tender tokens add",
+	"DELETE /v1/tokens/{token}":                         "delete_token",
 	"POST /mcp":                                         "none: it is the MCP endpoint itself",
 	"GET /metrics":                                      "none: it is for Prometheus scrapers, and the typed tools already return the same data",
 }

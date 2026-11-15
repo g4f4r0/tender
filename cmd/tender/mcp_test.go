@@ -163,7 +163,7 @@ func TestToolsList(t *testing.T) {
 	}
 	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
 		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks",
-		"list_machines", "list_notifications", "list_services"}
+		"list_machines", "list_notifications", "list_services", "list_tokens"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
@@ -174,6 +174,7 @@ func TestToolsList(t *testing.T) {
 		"test_destination": {false, true},
 		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
 		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
+		"delete_token": {true, true},
 	}
 	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, and the package mirrors.
 	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine"}
@@ -259,6 +260,7 @@ func restJSON(t *testing.T, h http.Handler, path string) any {
 	t.Helper()
 	req := httptest.NewRequest("GET", path, nil)
 	req.Header.Set("Tailscale-User-Login", "johan@example.com")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	var v any
@@ -465,6 +467,7 @@ func post(t *testing.T, srv *httptest.Server, login bool, body string) (*http.Re
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	if login {
 		req.Header.Set("Tailscale-User-Login", "johan@example.com")
 	}
@@ -487,7 +490,6 @@ func TestMCPOverHTTP(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}`
-	// No login: the hub is reached through the owner's own network access control.
 	res, body := post(t, srv, false, initialize)
 	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") ||
 		!strings.Contains(body, `"serverInfo":{"name":"tender"`) {

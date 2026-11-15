@@ -1,15 +1,16 @@
 # MCP tools
 
-The hub serves 40 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
+The hub serves 42 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
 
 ## Prerequisites
 
 1. A running hub, reachable from the machine where the client runs. See [Install](install.md).
 2. An MCP client that supports streamable HTTP, such as Claude Code, or one that runs a local process over stdio on the hub machine.
+3. For HTTP, an API token for the client, made with `tender tokens add claude-code`. See [Security](security.md#api-tokens).
 
 ## Connect a client
 
-The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp`. On the hub machine, a client can also run `tender mcp --stdio` as a local process. [Connect an AI client](guides/connect-an-ai-client.md) sets up both.
+The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp`, and the client sends its API token as `Authorization: Bearer <token>`. Without one, or with a wrong one, the hub answers `401`. On the hub machine, a client can also run `tender mcp --stdio` as a local process, which reads the database directly and needs no token. [Connect an AI client](guides/connect-an-ai-client.md) sets up both.
 
 ## How the tools behave
 
@@ -19,7 +20,7 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only four set it to `true`: `send_test_notification`, which sends to the channels, `test_destination`, which reaches a backup destination, `start_update`, which installs a release from GitHub, and `upgrade_machine`, which installs packages from the machine's package mirrors.
 5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs`, `test_destination` and `upgrade_machine`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes, or 45 for an upgrade. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-7. No tool returns destination keys, repository passwords, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
+7. No tool returns destination keys, repository passwords, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. No tool makes an API token. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
@@ -79,6 +80,9 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `GET /v1/updates/rollouts` | `get_updates` |
 | `POST /v1/updates/rollouts` | `start_update` |
 | `GET /v1/updates/rollouts/{id}` | `get_updates` |
+| `GET /v1/tokens` | `list_tokens` |
+| `POST /v1/tokens` | None. An AI client may not make itself more access; a person runs `tender tokens add`. |
+| `DELETE /v1/tokens/{token}` | `delete_token` |
 | `POST /mcp` | None. It is the MCP endpoint itself. |
 
 The routes only a machine's daemon calls with its token, such as usage reports and backup runs, have no tools. They are listed in the [API reference](api.md).
@@ -2848,9 +2852,117 @@ None.
 | --- | --- |
 | `DELETE /v1/logs/sinks/{sink}` | `tender sinks remove NAME` |
 
+## Tokens
+
+### `list_tokens`
+
+Lists the API tokens that may use this hub's REST API and MCP endpoint, with when each was last used.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+`data`, one entry per token, by name. Each has `id`, `name`, `last_used_at` (the last request with it, to the minute, `null` before the first) and the timestamps. The tokens themselves are never shown.
+
+#### Limits
+
+None. The list isn't paged.
+
+#### Example call
+
+```json
+{"name": "list_tokens", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{
+  "data": [
+    {
+      "id": 2,
+      "name": "claude-code",
+      "last_used_at": "2026-11-15T12:05:00Z",
+      "created_at": "2026-11-15T12:04:10Z",
+      "updated_at": "2026-11-15T12:04:10Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+None beyond the ones every tool has.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/tokens` | `tender tokens list` |
+
+### `delete_token`
+
+Deletes an API token by name. Every client that sends it, which may be the one calling, is refused from its next request on.
+
+No tool makes a token, so an AI client can't give itself more access. A person makes one with `tender tokens add NAME`.
+
+> [!WARNING]
+> Deleting the last token locks everyone out of the REST API and `/mcp` until the owner runs `sudo tender tokens add NAME` on the hub machine.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The token's name, as `list_tokens` shows it. |
+
+#### Returns
+
+`removed`, the name of the token that was deleted.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "delete_token", "arguments": {"name": "claude-code"}}
+```
+
+#### Example result
+
+```json
+{"removed": "claude-code"}
+```
+
+#### Errors
+
+1. `name is required. Call list_tokens to see the names.`
+2. `Token "claude-code" doesn't exist. List the tokens with: tender tokens list`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/tokens/{token}` | `tender tokens remove NAME --yes` |
+
 ## Next steps
 
 1. [API reference](api.md) describes the same operations over REST.
 2. [CLI reference](cli.md) lists every `tender` command.
 3. [Connect an AI client](guides/connect-an-ai-client.md) walks through connecting Claude Code.
-4. [Security](security.md) explains what the hub protects and how it handles logs.
+4. [Security](security.md) explains what the hub protects, its API tokens and how it handles logs.

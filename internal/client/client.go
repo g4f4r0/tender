@@ -22,8 +22,9 @@ type Client struct {
 	http  *http.Client
 }
 
-// New returns a client for the hub at base, such as https://apps.example.ts.net. An empty token
-// sends no Authorization header, which is what the people routes (the tender command) take.
+// New returns a client for the hub at base, such as https://apps.example.ts.net, that sends token
+// as the bearer token: a machine token for the daemon, an API token for the tender command. An
+// empty token sends no Authorization header.
 func New(base, token string) *Client {
 	return &Client{
 		base:  strings.TrimRight(base, "/"),
