@@ -255,15 +255,7 @@ func (in *Installer) hubHasTokens(ctx context.Context) bool {
 	if in.HubTokens == nil {
 		return false
 	}
-	env, err := os.ReadFile(in.path(hubEnvPath))
-	if err != nil {
-		return false
-	}
-	database := envValue(env, config.EnvDatabase)
-	if database == "" {
-		database = config.DefaultDatabase
-	}
-	has, err := in.HubTokens(ctx, in.path(database))
+	has, err := in.HubTokens(ctx, HubDatabase(in.Root))
 	return err == nil && has
 }
 

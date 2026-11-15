@@ -810,3 +810,20 @@ func TestRefreshMovesTheDaemonToRoot(t *testing.T) {
 		t.Errorf("a second refresh changed the groups:\n%s", got)
 	}
 }
+
+// The hub's database is TENDER_DATABASE from hub.env, else the default, under the root.
+func TestHubDatabase(t *testing.T) {
+	root := t.TempDir()
+	if got := HubDatabase(root); got != filepath.Join(root, config.DefaultDatabase) {
+		t.Errorf("without hub.env: %s", got)
+	}
+	if err := os.MkdirAll(filepath.Join(root, etcDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, hubEnvPath), []byte("TENDER_ENCRYPTION_KEY=k\nTENDER_DATABASE=\"/srv/hub.db\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := HubDatabase(root); got != filepath.Join(root, "/srv/hub.db") {
+		t.Errorf("with TENDER_DATABASE: %s", got)
+	}
+}
