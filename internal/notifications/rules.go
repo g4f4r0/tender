@@ -61,6 +61,7 @@ type Machine struct {
 	// What the daemon's latest report said about the machine's Docker engine: running,
 	// unreachable, or empty before any report, and how many reports in a row said unreachable.
 	Docker                   string
+	DockerReason             string // why it is unreachable: socket_missing, permission_denied, refused, timeout or error
 	DockerUnreachableReports int
 	DockerReportedAt         *time.Time // when the daemon's latest services report arrived; nil before the first
 }
@@ -199,7 +200,7 @@ func evaluate(m Machine, now time.Time) []finding {
 	switch {
 	case m.DockerUnreachableReports >= serviceReports:
 		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
-			fmt.Sprintf("Docker on %s is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.", m.Name), ""})
+			fmt.Sprintf("Docker on %s can't be reached: %s. Its services' states are unknown until it is back.", m.Name, dockerWhy(m.DockerReason)), ""})
 	case m.dockerSilent(now):
 		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
 			fmt.Sprintf("Docker on %s hasn't been reported since %s, though the machine still reports. Its services' states are unknown until it is back.",
@@ -214,6 +215,21 @@ func evaluate(m Machine, now time.Time) []finding {
 		}
 	}
 	return out
+}
+
+// dockerWhy words the daemon's reason that Docker can't be reached.
+func dockerWhy(reason string) string {
+	switch reason {
+	case "socket_missing":
+		return "its socket is gone, so Docker was stopped or removed"
+	case "permission_denied":
+		return "Tender may not use its socket. If Docker was installed after Tender, run: sudo tender install refresh"
+	case "refused":
+		return "its socket refuses connections, so Docker is stopped"
+	case "timeout":
+		return "it didn't answer within 5 seconds, so it is stuck or overloaded"
+	}
+	return "the daemon couldn't say why"
 }
 
 // shouldRun reports whether a stopped service was meant to keep running: it failed, or Docker

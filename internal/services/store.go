@@ -77,7 +77,7 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Service, error) {
 // machineID is 0, with what the latest report said about its Docker, by machine name.
 func (s *Store) Machines(ctx context.Context, machineID int64) ([]MachineServices, error) {
 	rows, err := s.db.Read.QueryContext(ctx, `
-		SELECT m.name, e.docker, coalesce(e.unreachable_reports, 0), e.updated_at
+		SELECT m.name, e.docker, e.docker_reason, coalesce(e.unreachable_reports, 0), e.updated_at
 		FROM machines m LEFT JOIN service_engines e ON e.machine_id = m.id
 		WHERE m.id = ? OR (? = 0 AND (e.id IS NOT NULL OR EXISTS (SELECT 1 FROM services s WHERE s.machine_id = m.id)))
 		ORDER BY m.name`, machineID, machineID)
@@ -89,7 +89,7 @@ func (s *Store) Machines(ctx context.Context, machineID int64) ([]MachineService
 	for rows.Next() {
 		ms := MachineServices{Data: []Service{}}
 		var reported *int64
-		if err := rows.Scan(&ms.Machine, &ms.Docker, &ms.unreachableReports, &reported); err != nil {
+		if err := rows.Scan(&ms.Machine, &ms.Docker, &ms.DockerReason, &ms.unreachableReports, &reported); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if reported != nil {
@@ -153,13 +153,19 @@ func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
 		if r.Services == nil {
 			return server.Invalid("services is required when docker is running; send [] for none.")
 		}
+		if r.DockerReason != "" {
+			return server.Invalid("docker_reason is only for docker unreachable.")
+		}
 		_, err := s.Replace(ctx, machineID, *r.Services)
 		return err
 	case DockerUnreachable:
 		if r.Services != nil {
 			return server.Invalid("Leave services out when docker is unreachable: the hub keeps the last list.")
 		}
-		return s.Unreachable(ctx, machineID)
+		if !reasons[r.DockerReason] {
+			return server.Invalid("docker_reason must be socket_missing, permission_denied, refused, timeout or error when docker is unreachable.")
+		}
+		return s.Unreachable(ctx, machineID, r.DockerReason)
 	}
 	return server.Invalid("docker must be running or unreachable.")
 }
@@ -167,7 +173,7 @@ func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
 // Unreachable records a report that the machine's Docker doesn't answer: the hub keeps the last
 // list and sets every state to unknown, but a removed one's. The counts of reports in a row start again, so two
 // reports can't span the outage; the alert rules keep open alerts as they are meanwhile.
-func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
+func (s *Store) Unreachable(ctx context.Context, machineID int64, reason string) error {
 	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -175,9 +181,9 @@ func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().Unix()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO service_engines (machine_id, docker, unreachable_reports, created_at, updated_at) VALUES (?, 'unreachable', 1, ?, ?)
-		 ON CONFLICT (machine_id) DO UPDATE SET docker = 'unreachable', unreachable_reports = service_engines.unreachable_reports + 1,
-		   updated_at = excluded.updated_at`, machineID, now, now); err != nil {
+		`INSERT INTO service_engines (machine_id, docker, docker_reason, unreachable_reports, created_at, updated_at) VALUES (?, 'unreachable', ?, 1, ?, ?)
+		 ON CONFLICT (machine_id) DO UPDATE SET docker = 'unreachable', docker_reason = excluded.docker_reason,
+		   unreachable_reports = service_engines.unreachable_reports + 1, updated_at = excluded.updated_at`, machineID, reason, now, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', exit_code = NULL, down_reports = 0, restarting_reports = 0,
@@ -266,7 +272,7 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 	now := time.Now().Unix()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO service_engines (machine_id, docker, unreachable_reports, created_at, updated_at) VALUES (?, 'running', 0, ?, ?)
-		 ON CONFLICT (machine_id) DO UPDATE SET docker = 'running', unreachable_reports = 0, updated_at = excluded.updated_at`,
+		 ON CONFLICT (machine_id) DO UPDATE SET docker = 'running', docker_reason = NULL, unreachable_reports = 0, updated_at = excluded.updated_at`,
 		machineID, now, now); err != nil {
 		return nil, err
 	}

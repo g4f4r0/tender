@@ -69,7 +69,7 @@ func TestLoadMachines(t *testing.T) {
 		t.Errorf("a's services = %+v, docker %q; want %+v", a.Services, a.Docker, want)
 	}
 	for range 2 {
-		if err := ss.Unreachable(ctx, 1); err != nil {
+		if err := ss.Unreachable(ctx, 1, services.ReasonRefused); err != nil {
 			t.Fatal(err)
 		}
 	}

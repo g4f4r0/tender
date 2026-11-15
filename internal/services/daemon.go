@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/client"
@@ -233,8 +234,23 @@ func (d *Daemon) rememberDocker() {
 func (d *Daemon) unreachable(ctx context.Context, err error, tell bool) {
 	d.dockerProblem(err, tell)
 	if tell {
-		d.send(ctx, UnreachableReport())
+		d.send(ctx, UnreachableReport(unreachableReason(err)))
 	}
+}
+
+// unreachableReason says why Docker can't be reached, in the hub's words.
+func unreachableReason(err error) string {
+	switch {
+	case errors.Is(err, errNoDocker):
+		return ReasonSocketMissing
+	case errors.Is(err, errDenied):
+		return ReasonPermissionDenied
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return ReasonRefused
+	case errors.Is(err, context.DeadlineExceeded), isTimeout(err):
+		return ReasonTimeout
+	}
+	return ReasonError
 }
 
 // send puts one report on the hub.

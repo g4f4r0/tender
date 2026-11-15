@@ -281,7 +281,7 @@ func TestDockerUnreachableAlert(t *testing.T) {
 	if want := []string{"a: web stopped", "a: Docker unreachable"}; !slices.Equal(r.sender.subjects, want) {
 		t.Errorf("emails = %q, want %q", r.sender.subjects, want)
 	}
-	if !strings.Contains(r.sender.texts[1], "Docker on a is not answering") {
+	if !strings.Contains(r.sender.texts[1], "Docker on a can't be reached: ") {
 		t.Errorf("text:\n%s", r.sender.texts[1])
 	}
 
@@ -331,5 +331,23 @@ func TestDockerReportsStop(t *testing.T) {
 	r.tick(6*time.Minute, m)
 	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent"}; !slices.Equal(got, want) {
 		t.Errorf("rows = %q, want %q", got, want)
+	}
+}
+
+// The docker_unreachable alert says why Docker can't be reached, as the daemon said.
+func TestDockerUnreachableSaysWhy(t *testing.T) {
+	for reason, want := range map[string]string{
+		"refused":           "its socket refuses connections, so Docker is stopped",
+		"timeout":           "it didn't answer within 5 seconds, so it is stuck or overloaded",
+		"socket_missing":    "its socket is gone, so Docker was stopped or removed",
+		"permission_denied": "Tender may not use its socket. If Docker was installed after Tender, run: sudo tender install refresh",
+		"":                  "the daemon couldn't say why",
+	} {
+		m := up(0)
+		m.Docker, m.DockerReason, m.DockerUnreachableReports = "unreachable", reason, 2
+		f := evaluate(m, t0)
+		if len(f) != 1 || !strings.Contains(f[0].content, "Docker on a can't be reached: "+want+".") || strings.Contains(f[0].content, "refuses connections or doesn't answer") {
+			t.Errorf("%q: %+v", reason, f)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -114,7 +116,7 @@ func TestRoutes(t *testing.T) {
 		status              int
 		has                 string
 	}{
-		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":null,"data":[]}`},
+		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":null,"docker_reason":null,"data":[]}`},
 		{"GET", "/v1/services", "", nil, 200, `{"data":[]}`},
 		{"PUT", "/v1/machines/a/services", "", report, 401, "Bearer"},
 		{"PUT", "/v1/machines/a/services", "token-b", report, 403, "another machine"},
@@ -126,8 +128,8 @@ func TestRoutes(t *testing.T) {
 			{"name": "x", "container_id": "c", "image": "i", "state": "running", "restart_policy": "sometimes"}}}, 422, "restart_policy"},
 		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
 		{"PUT", "/v1/machines/b/services", "token-b", RunningReport([]ServiceInput{running("db", "c3")}), 204, ""},
-		{"GET", "/v1/services", "", nil, 200, `"machine":"b","docker":"running","data":[{"id":3`},
-		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":"running","data":[{"id":1`},
+		{"GET", "/v1/services", "", nil, 200, `"machine":"b","docker":"running","docker_reason":null,"data":[{"id":3`},
+		{"GET", "/v1/machines/a/services", "", nil, 200, `{"machine":"a","docker":"running","docker_reason":null,"data":[{"id":1`},
 		{"GET", "/v1/machines/nope/services", "", nil, 404, `Machine \"nope\" doesn't exist.`},
 		{"GET", "/v1/machines/a/services/web", "", nil, 200, `"restart_policy":"no"`},
 		{"GET", "/v1/machines/a/services/db", "", nil, 404, `Service \"db\" doesn't exist on this machine.`},
@@ -135,7 +137,7 @@ func TestRoutes(t *testing.T) {
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{"state": "running"}, 400, "unknown field"},
 		{"PATCH", "/v1/machines/a/services/web", "", map[string]any{}, 200, `"alerts_enabled":false`},
 		// Docker stops answering: the list stays, with every state unknown.
-		{"PUT", "/v1/machines/a/services", "token-a", UnreachableReport(), 204, ""},
+		{"PUT", "/v1/machines/a/services", "token-a", UnreachableReport(ReasonTimeout), 204, ""},
 		{"GET", "/v1/machines/a/services", "", nil, 200, `"docker":"unreachable"`},
 		{"GET", "/v1/machines/a/services/worker", "", nil, 200, `"state":"unknown"`},
 		{"PUT", "/v1/machines/a/services", "token-a", report, 204, ""},
@@ -430,7 +432,8 @@ func TestDaemonDockerUnreachable(t *testing.T) {
 	defer cancel()
 	d.Run(ctx)
 	ms, err := NewStore(h.db).Machines(context.Background(), 1)
-	if err != nil || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() < 2 || ms[0].Data[0].State != StateUnknown {
+	if err != nil || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() < 2 || ms[0].Data[0].State != StateUnknown ||
+		ms[0].DockerReason == nil || *ms[0].DockerReason != ReasonRefused {
 		t.Errorf("after the outage: %+v, %v", ms, err)
 	}
 	if n := strings.Count(logs.String(), `msg="Docker is not answering`); n != 1 {
@@ -467,7 +470,7 @@ func TestDaemonZeroContainers(t *testing.T) {
 	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, slog.New(slog.NewTextHandler(&logs, nil)))
 	ctx := context.Background()
 	s := NewStore(h.db)
-	if err := s.Apply(ctx, 1, UnreachableReport()); err != nil {
+	if err := s.Apply(ctx, 1, UnreachableReport(ReasonSocketMissing)); err != nil {
 		t.Fatal(err)
 	}
 	d.reportNow(ctx)
@@ -488,7 +491,7 @@ func TestReportJSON(t *testing.T) {
 	}{
 		{RunningReport(nil), `{"docker":"running","services":[]}`},
 		{RunningReport([]ServiceInput{}), `{"docker":"running","services":[]}`},
-		{UnreachableReport(), `{"docker":"unreachable"}`},
+		{UnreachableReport(ReasonRefused), `{"docker":"unreachable","docker_reason":"refused"}`},
 	} {
 		if b, err := json.Marshal(c.r); err != nil || string(b) != c.want {
 			t.Errorf("%+v = %s, %v; want %s", c.r, b, err, c.want)
@@ -502,7 +505,7 @@ func TestReportOfNoContainers(t *testing.T) {
 	if status, body := h.call(t, "PUT", "/v1/machines/a/services", "token-a", map[string]any{"docker": "running", "services": []any{}}); status != 204 {
 		t.Fatalf("PUT: %d %s", status, body)
 	}
-	if status, body := h.call(t, "GET", "/v1/machines/a/services", "", nil); status != 200 || !strings.Contains(body, `{"machine":"a","docker":"running","data":[]}`) {
+	if status, body := h.call(t, "GET", "/v1/machines/a/services", "", nil); status != 200 || !strings.Contains(body, `{"machine":"a","docker":"running","docker_reason":null,"data":[]}`) {
 		t.Errorf("GET: %d %s", status, body)
 	}
 }
@@ -556,5 +559,20 @@ func TestDaemonRemembersDocker(t *testing.T) {
 	ms, err := NewStore(h.db).Machines(ctx, 1)
 	if err != nil || ms[0].Docker == nil || *ms[0].Docker != DockerUnreachable {
 		t.Errorf("after a restart without Docker: %+v, %v; want unreachable", ms, err)
+	}
+}
+
+// The daemon tells the hub why Docker can't be reached.
+func TestUnreachableReason(t *testing.T) {
+	for want, err := range map[string]error{
+		ReasonSocketMissing:    fmt.Errorf("%w: %w", errNoDocker, syscall.ENOENT),
+		ReasonPermissionDenied: fmt.Errorf("%w: %w", errDenied, syscall.EACCES),
+		ReasonRefused:          fmt.Errorf("%w: %w", errUnreachable, syscall.ECONNREFUSED),
+		ReasonTimeout:          fmt.Errorf("%w: %w", errUnreachable, context.DeadlineExceeded),
+		ReasonError:            errors.New("Docker answered 500: boom"),
+	} {
+		if got := unreachableReason(err); got != want {
+			t.Errorf("%v: reason %q, want %q", err, got, want)
+		}
 	}
 }

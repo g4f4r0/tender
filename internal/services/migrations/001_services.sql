@@ -1,12 +1,15 @@
 -- The Docker engine of each machine whose daemon reports services: running, or unreachable when
--- its socket refuses connections. unreachable_reports counts those reports in a row.
+-- the daemon can't reach it, with docker_reason saying why: socket_missing, permission_denied,
+-- refused, timeout or error. unreachable_reports counts those reports in a row.
 CREATE TABLE service_engines (
   id                  INTEGER PRIMARY KEY,
   machine_id          INTEGER NOT NULL UNIQUE REFERENCES machines(id) ON DELETE CASCADE,
   docker              TEXT NOT NULL CHECK (docker IN ('running', 'unreachable')),
+  docker_reason       TEXT CHECK (docker_reason IN ('socket_missing', 'permission_denied', 'refused', 'timeout', 'error')),
   unreachable_reports INTEGER NOT NULL DEFAULT 0,
   created_at          INTEGER NOT NULL,
-  updated_at          INTEGER NOT NULL
+  updated_at          INTEGER NOT NULL,
+  CHECK ((docker = 'unreachable') = (docker_reason IS NOT NULL))
 ) STRICT;
 
 -- One row per container, keyed by its name, so settings such as alerts_enabled follow the name

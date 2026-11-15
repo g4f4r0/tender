@@ -27,8 +27,17 @@ const (
 
 	// What a machine's daemon says about its Docker engine.
 	DockerRunning     = "running"
-	DockerUnreachable = "unreachable" // the socket is there but refuses connections or doesn't answer
+	DockerUnreachable = "unreachable" // the daemon can't reach it; DockerReason says why
+
+	// Why a daemon can't reach Docker, once it had it.
+	ReasonSocketMissing    = "socket_missing"    // the socket is gone
+	ReasonPermissionDenied = "permission_denied" // the daemon may not use the socket
+	ReasonRefused          = "refused"           // the socket refuses connections: Docker is stopped
+	ReasonTimeout          = "timeout"           // Docker didn't answer within 5 seconds
+	ReasonError            = "error"             // anything else
 )
+
+var reasons = map[string]bool{ReasonSocketMissing: true, ReasonPermissionDenied: true, ReasonRefused: true, ReasonTimeout: true, ReasonError: true}
 
 // The limits of a service's logs, as the actions domain asks for them.
 const (
@@ -59,16 +68,16 @@ type Service struct {
 	RestartPolicy string     `json:"restart_policy"` // no, always, unless-stopped or on-failure
 	StartedAt     *time.Time `json:"started_at"`
 	// Usage from the latest report, while it runs; null when stopped or when Docker couldn't say.
-	MemoryBytes      *int64    `json:"memory_bytes"`       // less the page cache it can drop
-	MemoryLimitBytes *int64    `json:"memory_limit_bytes"` // null without a limit
-	CPUPercent       *float64  `json:"cpu_percent"`        // 100 is one whole CPU; null on its first report and after a restart
-	AlertsEnabled    bool      `json:"alerts_enabled"`
-	StoppedByTender  bool      `json:"stopped_by_tender"` // a Tender stop left it stopped, so it doesn't alert as down
+	MemoryBytes      *int64   `json:"memory_bytes"`       // less the page cache it can drop
+	MemoryLimitBytes *int64   `json:"memory_limit_bytes"` // null without a limit
+	CPUPercent       *float64 `json:"cpu_percent"`        // 100 is one whole CPU; null on its first report and after a restart
+	AlertsEnabled    bool     `json:"alerts_enabled"`
+	StoppedByTender  bool     `json:"stopped_by_tender"` // a Tender stop left it stopped, so it doesn't alert as down
 	// RemovedAt is when a report first lacked the container, while its state is removed. The hub
 	// deletes the service 7 days after it; a container back under the name before then keeps it.
 	RemovedAt *time.Time `json:"removed_at"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"` // the daemon's report updates it every minute
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"` // the daemon's report updates it every minute
 
 	// How many reports in a row found it down, restarting or unhealthy. The alert rules read them.
 	DownReports       int `json:"-"`
@@ -100,21 +109,25 @@ type ServiceInput struct {
 }
 
 // Report is the body of PUT /v1/machines/{machine}/services: {"docker": "running", "services": [...]}
-// when the Engine API answers, the full list and [] for none, or {"docker": "unreachable"} when its
-// socket refuses connections or doesn't answer. Then the hub keeps the last list with every state
+// when the Engine API answers, the full list and [] for none, or {"docker": "unreachable",
+// "docker_reason": "refused"} when the daemon can't reach it, with why. Then the hub keeps the last list with every state
 // unknown. Make one with RunningReport or UnreachableReport, so a running report always carries
 // its list and an unreachable one never does.
 type Report struct {
-	Docker   string          `json:"docker"`
-	Services *[]ServiceInput `json:"services,omitempty"`
+	Docker       string          `json:"docker"`
+	DockerReason string          `json:"docker_reason,omitempty"` // why, when unreachable
+	Services     *[]ServiceInput `json:"services,omitempty"`
 }
 
 // MachineServices is one machine's services, as GET /v1/machines/{machine}/services returns it
 // and each element of GET /v1/services.
 type MachineServices struct {
-	Machine string    `json:"machine"`
-	Docker  *string   `json:"docker"` // running or unreachable, from the latest report; null before any
-	Data    []Service `json:"data"`
+	Machine string  `json:"machine"`
+	Docker  *string `json:"docker"` // running or unreachable, from the latest report; null before any
+	// DockerReason says why Docker is unreachable: socket_missing, permission_denied, refused,
+	// timeout or error. It is null while Docker runs.
+	DockerReason *string   `json:"docker_reason"`
+	Data         []Service `json:"data"`
 
 	unreachableReports int
 	reportedAt         *time.Time
@@ -139,5 +152,7 @@ func RunningReport(list []ServiceInput) Report {
 	return Report{Docker: DockerRunning, Services: &list}
 }
 
-// UnreachableReport is a report that Docker doesn't answer. It carries no list.
-func UnreachableReport() Report { return Report{Docker: DockerUnreachable} }
+// UnreachableReport is a report that the daemon can't reach Docker, and why. It carries no list.
+func UnreachableReport(reason string) Report {
+	return Report{Docker: DockerUnreachable, DockerReason: reason}
+}

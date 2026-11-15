@@ -245,7 +245,7 @@ func TestUsage(t *testing.T) {
 		t.Errorf("no limit = %+v", sv)
 	}
 	report(&high, &gib, nil)
-	if err := s.Unreachable(ctx, 1); err != nil {
+	if err := s.Unreachable(ctx, 1, ReasonRefused); err != nil {
 		t.Fatal(err)
 	}
 	if sv, _ := s.Get(ctx, 1, "web"); sv.MemoryBytes != nil || sv.CPUPercent != nil || sv.MemoryHighReports != 0 {
@@ -277,13 +277,23 @@ func TestUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 3 {
-		if err := s.Apply(ctx, 1, UnreachableReport()); err != nil {
+		if err := s.Apply(ctx, 1, UnreachableReport(ReasonRefused)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	ms, err := s.Machines(ctx, 0)
-	if err != nil || len(ms) != 1 || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() != 3 {
+	if err != nil || len(ms) != 1 || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() != 3 ||
+		ms[0].DockerReason == nil || *ms[0].DockerReason != ReasonRefused {
 		t.Fatalf("unreachable: %+v, %v", ms, err)
+	}
+	for name, bad := range map[string]Report{
+		"no reason":           {Docker: DockerUnreachable},
+		"unknown reason":      {Docker: DockerUnreachable, DockerReason: "gremlins"},
+		"reason when it runs": {Docker: DockerRunning, DockerReason: ReasonTimeout, Services: &[]ServiceInput{}},
+	} {
+		if err := s.Apply(ctx, 1, bad); status(err) != http.StatusUnprocessableEntity {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 	// The list stays with its state unknown and no exit code, and the counts start again, so two reports in a row
 	// can't span the outage.
@@ -294,7 +304,7 @@ func TestUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	ms, _ = s.Machines(ctx, 1)
-	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].DownReports != 1 {
+	if *ms[0].Docker != DockerRunning || ms[0].UnreachableReports() != 0 || ms[0].Data[0].DownReports != 1 || ms[0].DockerReason != nil {
 		t.Errorf("back: %+v", ms[0])
 	}
 }
@@ -367,7 +377,7 @@ func TestRemovedService(t *testing.T) {
 	if err := s.Check(ctx, 1, "worker"); status(err) != http.StatusConflict {
 		t.Errorf("an action on a removed service: %v", err)
 	}
-	if err := s.Unreachable(ctx, 1); err != nil {
+	if err := s.Unreachable(ctx, 1, ReasonRefused); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.Get(ctx, 1, "worker"); got.State != StateRemoved {

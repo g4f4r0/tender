@@ -58,6 +58,9 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 				if e.Docker != nil {
 					m.Docker = *e.Docker
 				}
+				if e.DockerReason != nil {
+					m.DockerReason = *e.DockerReason
+				}
 				m.DockerUnreachableReports, m.DockerReportedAt = e.UnreachableReports(), e.ReportedAt()
 				for _, s := range e.Data {
 					m.Services = append(m.Services, notifications.Service{
