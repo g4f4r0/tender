@@ -52,6 +52,7 @@ var typeText = map[string]struct{ title, tool string }{
 	TypeServiceDown:       {"stopped", "list_services"},
 	TypeServiceRestarting: {"keeps restarting", "list_services"},
 	TypeServiceUnhealthy:  {"unhealthy", "list_services"},
+	TypeDockerUnreachable: {"Docker unreachable", "list_services"},
 }
 
 // Message is one email, before it gets its headers.

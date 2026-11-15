@@ -39,17 +39,13 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 		if err != nil {
 			return nil, err
 		}
-		svcs, err := ss.List(ctx, 0)
+		engines, err := ss.Machines(ctx, 0)
 		if err != nil {
 			return nil, err
 		}
-		byMachine := map[string][]notifications.Service{}
-		for _, s := range svcs {
-			byMachine[s.Machine] = append(byMachine[s.Machine], notifications.Service{
-				Name: s.Name, State: s.State, ExitCode: s.ExitCode, RestartCount: s.RestartCount,
-				AlertsEnabled: s.AlertsEnabled, StoppedByTender: s.StoppedByTender,
-				DownReports: s.DownReports, RestartingReports: s.RestartingReports, UnhealthyReports: s.UnhealthyReports,
-			})
+		byMachine := map[string]services.MachineServices{}
+		for _, e := range engines {
+			byMachine[e.Machine] = e
 		}
 		byName := map[string]backups.Summary{}
 		for _, s := range summaries {
@@ -57,8 +53,20 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 		}
 		out := make([]notifications.Machine, len(overviews))
 		for i, o := range overviews {
-			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name],
-				Services: byMachine[o.Name]}
+			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name]}
+			if e, ok := byMachine[o.Name]; ok {
+				if e.Docker != nil {
+					m.Docker = *e.Docker
+				}
+				m.DockerUnreachableReports = e.UnreachableReports()
+				for _, s := range e.Data {
+					m.Services = append(m.Services, notifications.Service{
+						Name: s.Name, State: s.State, ExitCode: s.ExitCode, RestartCount: s.RestartCount, RestartPolicy: s.RestartPolicy,
+						AlertsEnabled: s.AlertsEnabled, StoppedByTender: s.StoppedByTender,
+						DownReports: s.DownReports, RestartingReports: s.RestartingReports, UnhealthyReports: s.UnhealthyReports,
+					})
+				}
+			}
 			if o.Usage != nil {
 				m.DiskUsedPercent = o.Usage.DiskUsedPercent
 			}

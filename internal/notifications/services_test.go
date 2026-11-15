@@ -29,6 +29,12 @@ func TestEvaluateServices(t *testing.T) {
 		{"down in five reports", down(5), []string{"service_down:critical"}},
 		{"down, alerts off", func() Service { s := down(2); s.AlertsEnabled = false; return s }(), []string{}},
 		{"stopped by Tender", func() Service { s := down(3); s.StoppedByTender = true; return s }(), []string{}},
+		{"finished: exit 0, policy no", Service{Name: "job", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "no", AlertsEnabled: true, DownReports: 9}, []string{}},
+		{"finished: exit 0, policy on-failure", Service{Name: "job", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "on-failure", AlertsEnabled: true, DownReports: 9}, []string{}},
+		{"exit 0, policy always", Service{Name: "web", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "always", AlertsEnabled: true, DownReports: 2}, []string{"service_down:critical"}},
+		{"exit 0, policy unless-stopped", Service{Name: "web", State: "exited", ExitCode: ptr(int64(0)), RestartPolicy: "unless-stopped", AlertsEnabled: true, DownReports: 2}, []string{"service_down:critical"}},
+		{"exit 1, policy no", Service{Name: "job", State: "exited", ExitCode: ptr(int64(1)), RestartPolicy: "no", AlertsEnabled: true, DownReports: 2}, []string{"service_down:critical"}},
+		{"down streak, but its state is unknown now", Service{Name: "web", State: "unknown", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}, []string{}},
 		{"restarting in one report", Service{Name: "web", State: "restarting", AlertsEnabled: true, RestartingReports: 1}, []string{}},
 		{"restarting in two reports", Service{Name: "web", State: "restarting", AlertsEnabled: true, RestartingReports: 2, RestartCount: 7},
 			[]string{"service_restarting:critical"}},
@@ -148,5 +154,68 @@ func TestServiceAlertListsItsService(t *testing.T) {
 	n, ok := ns[key{TypeServiceUnhealthy, "a", "web"}]
 	if !ok || n.Service == nil || *n.Service != "web" || n.Severity != SeverityWarning {
 		t.Errorf("open = %+v", ns)
+	}
+}
+
+func TestEvaluateDocker(t *testing.T) {
+	down := Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}
+	for _, c := range []struct {
+		name    string
+		docker  string
+		reports int
+		want    []string
+	}{
+		{"running", "running", 0, []string{"service_down:critical"}},
+		{"unreachable once", "unreachable", 1, []string{}},
+		{"unreachable twice", "unreachable", 2, []string{"docker_unreachable:critical"}},
+		{"before any report", "", 0, []string{"service_down:critical"}},
+	} {
+		m := up(0, down)
+		m.Docker, m.DockerUnreachableReports = c.docker, c.reports
+		if got := summary(evaluate(m, t0)); !slices.Equal(got, c.want) {
+			t.Errorf("%s: findings = %v, want %v", c.name, got, c.want)
+		}
+	}
+	m := silent()
+	m.Docker, m.DockerUnreachableReports = "unreachable", 5
+	if got := summary(evaluate(m, t0)); !slices.Equal(got, []string{"machine_silent:critical"}) {
+		t.Errorf("silent machine with Docker unreachable = %v", got)
+	}
+}
+
+func TestDockerUnreachableAlert(t *testing.T) {
+	r := newRig(t)
+	web := Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}
+	r.tick(0, up(0, web))
+	unreachable := func(after time.Duration, reports int) Machine {
+		m := up(after, Service{Name: "web", State: "unknown", AlertsEnabled: true, DownReports: 2})
+		m.Docker, m.DockerUnreachableReports = "unreachable", reports
+		return m
+	}
+	// One report: nothing yet. Two: one machine alert; web's alert stays open though its state is unknown.
+	r.tick(time.Minute, unreachable(time.Minute, 1))
+	r.tick(2*time.Minute, unreachable(2*time.Minute, 2))
+	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent"}; !slices.Equal(got, want) {
+		t.Errorf("rows = %q, want %q", got, want)
+	}
+	if want := []string{"a: web stopped", "a: Docker unreachable"}; !slices.Equal(r.sender.subjects, want) {
+		t.Errorf("emails = %q, want %q", r.sender.subjects, want)
+	}
+	if !strings.Contains(r.sender.texts[1], "Docker on a is not answering") {
+		t.Errorf("text:\n%s", r.sender.texts[1])
+	}
+
+	// The machine goes silent: both stay as they are.
+	m := unreachable(2*time.Minute, 2)
+	r.tick(20*time.Minute, m)
+	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent", "machine_silent - sent"}; !slices.Equal(got, want) {
+		t.Errorf("silent rows = %q, want %q", got, want)
+	}
+
+	// Docker answers again, web runs: both resolve.
+	web.State, web.DownReports = "running", 0
+	r.tick(21*time.Minute, up(21*time.Minute, web))
+	if got, want := r.serviceRows(), []string{"service_down web resolved", "docker_unreachable - resolved", "machine_silent - resolved"}; !slices.Equal(got, want) {
+		t.Errorf("rows after Docker is back = %q, want %q", got, want)
 	}
 }

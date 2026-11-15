@@ -63,11 +63,20 @@ func TestLoadMachines(t *testing.T) {
 		a.LastBackup == nil || a.LastBackup.Status != "failed" || a.LastBackup.Error != "boom" || !a.LastBackup.Time.Equal(at) {
 		t.Errorf("a = %+v, last backup %+v", a, a.LastBackup)
 	}
-	want := []notifications.Service{{Name: "web-1", State: "exited", ExitCode: &code, RestartCount: 2, AlertsEnabled: true, DownReports: 2}}
-	if !reflect.DeepEqual(a.Services, want) {
-		t.Errorf("a's services = %+v, want %+v", a.Services, want)
+	want := []notifications.Service{{Name: "web-1", State: "exited", ExitCode: &code, RestartCount: 2, RestartPolicy: "no", AlertsEnabled: true, DownReports: 2}}
+	if !reflect.DeepEqual(a.Services, want) || a.Docker != "running" || a.DockerUnreachableReports != 0 {
+		t.Errorf("a's services = %+v, docker %q; want %+v", a.Services, a.Docker, want)
 	}
-	if b.Name != "b" || b.Services != nil || b.LastSeen != nil || b.HasBackupSettings || b.LastBackup != nil || !b.LastCompletedBackup.IsZero() || b.CreatedAt.IsZero() {
+	for range 2 {
+		if err := ss.Unreachable(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := loadMachines(ms, bs, ss)(ctx); err != nil || got[0].Docker != "unreachable" || got[0].DockerUnreachableReports != 2 ||
+		got[0].Services[0].State != "unknown" {
+		t.Errorf("after two unreachable reports: %+v, %v", got[0], err)
+	}
+	if b.Name != "b" || b.Services != nil || b.Docker != "" || b.LastSeen != nil || b.HasBackupSettings || b.LastBackup != nil || !b.LastCompletedBackup.IsZero() || b.CreatedAt.IsZero() {
 		t.Errorf("b = %+v", b)
 	}
 }

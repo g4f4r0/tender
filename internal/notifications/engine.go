@@ -93,8 +93,10 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 		return err
 	}
 	holds := map[key]bool{}
-	silent := map[string]bool{} // machines whose service alerts stay as they are
+	silent := map[string]bool{}
+	byName := map[string]Machine{}
 	for _, m := range ms {
+		byName[m.Name] = m
 		for _, f := range evaluate(m, now) {
 			k := key{f.typ, m.Name, f.service}
 			holds[k] = true
@@ -120,7 +122,7 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 	}
 	for _, n := range sortedByID(rows) {
 		k := keyOf(n)
-		frozen := k.service != "" && silent[k.machine] // a silent machine's service alerts stay open
+		frozen := byName[k.machine].frozen(n, silent[k.machine])
 		switch {
 		case !holds[k] && !frozen:
 			err = e.resolve(ctx, now, n, to)

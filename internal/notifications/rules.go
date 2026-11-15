@@ -17,6 +17,7 @@ const (
 	TypeServiceDown       = "service_down"
 	TypeServiceRestarting = "service_restarting"
 	TypeServiceUnhealthy  = "service_unhealthy"
+	TypeDockerUnreachable = "docker_unreachable"
 )
 
 // The thresholds of the rules.
@@ -50,6 +51,32 @@ type Machine struct {
 	LastCompletedBackup     time.Time // when the newest completed backup started; zero before the first
 
 	Services []Service // the Docker services its daemon reports
+
+	// What the daemon's latest report said about the machine's Docker engine: running,
+	// unreachable, or empty before any report, and how many reports in a row said unreachable.
+	Docker                   string
+	DockerUnreachableReports int
+}
+
+// The Docker states a daemon reports.
+const (
+	dockerUnreachable = "unreachable"
+
+	exitedState = "exited"
+	deadState   = "dead"
+)
+
+// frozen reports whether an open alert about m stays as it is, neither resolving nor changing:
+// a silent machine's Docker and service alerts, and service alerts while its Docker is
+// unreachable, are about a state nobody can see.
+func (m Machine) frozen(n Notification, silent bool) bool {
+	switch {
+	case n.Service != nil:
+		return silent || m.Docker == dockerUnreachable
+	case n.Type == TypeDockerUnreachable:
+		return silent
+	}
+	return false
 }
 
 // Service is what the rules need to know about one Docker service. The hub's wiring fills it
@@ -59,6 +86,7 @@ type Service struct {
 	State           string // Docker's: created, running, paused, restarting, exited, removing or dead
 	ExitCode        *int64
 	RestartCount    int64
+	RestartPolicy   string // no, always, unless-stopped or on-failure
 	AlertsEnabled   bool
 	StoppedByTender bool // a Tender stop left it stopped
 
@@ -139,6 +167,13 @@ func evaluate(m Machine, now time.Time) []finding {
 	if len(out) > 0 && out[0].typ == TypeMachineSilent {
 		return out
 	}
+	if m.DockerUnreachableReports >= serviceReports {
+		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
+			fmt.Sprintf("Docker on %s is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.", m.Name), ""})
+	}
+	if m.Docker == dockerUnreachable { // its services' states are unknown
+		return out
+	}
 	for _, s := range m.Services {
 		if s.AlertsEnabled {
 			out = append(out, evaluateService(m.Name, s)...)
@@ -147,12 +182,19 @@ func evaluate(m Machine, now time.Time) []finding {
 	return out
 }
 
+// shouldRun reports whether a stopped service was meant to keep running: it failed, or Docker
+// would restart it. One that exited 0 with restart policy no or on-failure finished on purpose.
+func shouldRun(s Service) bool {
+	failed := s.ExitCode == nil || *s.ExitCode != 0
+	return failed || s.RestartPolicy == "always" || s.RestartPolicy == "unless-stopped"
+}
+
 // evaluateService returns the conditions that hold for one service of the machine called machine.
 func evaluateService(machine string, s Service) []finding {
 	var out []finding
-	if s.DownReports >= serviceReports && !s.StoppedByTender {
+	if s.DownReports >= serviceReports && !s.StoppedByTender && (s.State == exitedState || s.State == deadState) && shouldRun(s) {
 		content := fmt.Sprintf("The service %s on %s stopped.", s.Name, machine)
-		if s.State == "dead" {
+		if s.State == deadState {
 			content = fmt.Sprintf("The service %s on %s is dead: Docker could not stop or remove it cleanly.", s.Name, machine)
 		} else if s.ExitCode != nil {
 			content = fmt.Sprintf("The service %s on %s stopped with exit code %d.", s.Name, machine, *s.ExitCode)
