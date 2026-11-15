@@ -15,9 +15,9 @@ Web pages can't use the hub through your browser:
 
 ## How Tender stores secrets
 
-The hub keeps bucket keys and repository passwords in its SQLite database, encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY` from `/etc/tender/hub.env`. The hub refuses to start with a key that doesn't open them.
+The hub keeps destination keys and repository passwords in its SQLite database, encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY` from `/etc/tender/hub.env`. The hub refuses to start with a key that doesn't open them.
 
-The hub sends a destination's keys and password to one caller only: the daemon of a machine that backs up to that destination, signed in with its own token. No other route, MCP tool, CLI command or log line shows them.
+The hub sends a destination's keys and password only to a machine's daemon, signed in with its own token: the daemon of a machine that backs up to that destination, or of the machine you named in a [destination test](backups.md#test-a-destination), with that test. No other route, MCP tool, CLI command or log line shows them. The SFTP key and the rclone remotes stay on each machine and never reach the hub.
 
 Back up `/etc/tender/hub.env`. Without its key, nobody can read the secrets in the database, and the hub won't start while it stores any destination.
 
@@ -66,7 +66,7 @@ An AI client that reads logs sends them to its model provider. Ask for the narro
 
 ## Keys you give an AI client
 
-The MCP tools never return bucket keys or passwords. Keys you pass to `add_destination` go through the AI conversation, though. For real keys, `tender destinations add` is safer: it asks for them with typing hidden.
+The MCP tools and routes never return destination keys or passwords; a secret shows as `"***"`. Keys you pass to `add_destination` go through the AI conversation, though. For real keys, `tender destinations add` is safer: it asks for them with typing hidden.
 
 ## Next steps
 

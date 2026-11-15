@@ -7,7 +7,7 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
 ## Prerequisites
 
 1. Linux on x86_64 with systemd, and root on each machine through `sudo`.
-2. A bucket on any S3-compatible storage, such as Cloudflare R2, AWS S3, Backblaze B2, Wasabi or MinIO, with an access key that can read and write it.
+2. A place for the backups: a bucket on any S3-compatible storage, such as Cloudflare R2, AWS S3, Backblaze B2, Wasabi or MinIO, with an access key that can read and write it, or one of the other [destination types](backups.md#destination-types).
 3. [Tailscale](https://tailscale.com) on every machine is recommended. The installer uses it to publish the hub privately on your tailnet. Without it, put your own proxy and access control in front of the hub.
 
 ## Install the hub
@@ -33,7 +33,7 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
    sudo cat /etc/tender/hub.env
    ```
 
-   Its key decrypts the bucket keys and passwords the hub stores. The hub won't start without the same key.
+   Its key decrypts the destination keys and passwords the hub stores. The hub won't start without the same key.
 
 Leave out the `--smtp-` options to start without email. Run the command again with them later; it keeps the key and every setting you don't pass, and removes one you pass empty, as [`tender install hub`](cli.md#tender-install-hub) explains. To install a specific release, put `TENDER_VERSION=v0.3.0` before `sh`.
 
@@ -139,7 +139,7 @@ Update the hub first, then the daemons.
 ## Uninstall
 
 > [!WARNING]
-> These steps delete the hub's database, with every machine, setting and history it holds, and the daemon's saved settings. They don't delete the backups in your bucket.
+> These steps delete the hub's database, with every machine, setting and history it holds, and the daemon's saved settings. They don't delete the backups at your destinations.
 
 1. Remove the machine from the hub, from any machine that can reach it:
 

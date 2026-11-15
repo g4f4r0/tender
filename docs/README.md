@@ -24,7 +24,7 @@ Each guide does one task.
 
 ## Concepts
 
-1. [Backups](backups.md) explains what a backup covers, retention, the weekly check and encryption.
+1. [Backups](backups.md) explains the destination types, what a backup covers, retention, the weekly check and encryption.
 2. [Services](services.md) explains what the daemon reports about each container and how actions reach a machine.
 3. [Alerts](alerts.md) lists every alert and when it opens and resolves.
 4. [Security](security.md) explains who can reach the hub, how secrets are stored and what the daemon can do.

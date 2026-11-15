@@ -53,7 +53,7 @@ Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempoten
 
 ### Actions
 
-Starting, stopping and restarting a service and reading logs happen on the machine, so `POST /v1/machines/{machine}/actions` answers `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. [Services](services.md#how-actions-reach-a-machine) explains the steps, and when an action fails because the daemon didn't pick it up or didn't say how it ended.
+Starting, stopping and restarting a service, reading logs and testing a destination happen on the machine, so `POST /v1/machines/{machine}/actions` and `POST /v1/backups/destinations/{destination}/test` answer `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. [Services](services.md#how-actions-reach-a-machine) explains the steps, and when an action fails because the daemon didn't pick it up or didn't say how it ended.
 
 ## Machines
 
@@ -395,9 +395,16 @@ Content-Type: application/json
           "id": 1,
           "name": "r2",
           "type": "s3",
-          "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-          "bucket": "my-backups",
-          "path": "tender",
+          "config": {
+            "access_key_id": "***",
+            "access_key_id_set": true,
+            "bucket": "my-backups",
+            "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+            "path": "tender",
+            "secret_access_key": "***",
+            "secret_access_key_set": true
+          },
+          "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
           "created_at": "2026-11-15T11:27:26Z",
           "updated_at": "2026-11-15T11:27:26Z"
         },
@@ -481,9 +488,16 @@ Content-Type: application/json
       "id": 1,
       "name": "r2",
       "type": "s3",
-      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-      "bucket": "my-backups",
-      "path": "tender",
+      "config": {
+        "access_key_id": "***",
+        "access_key_id_set": true,
+        "bucket": "my-backups",
+        "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+        "path": "tender",
+        "secret_access_key": "***",
+        "secret_access_key_set": true
+      },
+      "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
     },
@@ -565,9 +579,16 @@ Content-Type: application/json
     "id": 1,
     "name": "r2",
     "type": "s3",
-    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-    "bucket": "my-backups",
-    "path": "tender",
+    "config": {
+      "access_key_id": "***",
+      "access_key_id_set": true,
+      "bucket": "my-backups",
+      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+      "path": "tender",
+      "secret_access_key": "***",
+      "secret_access_key_set": true
+    },
+    "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
     "created_at": "2026-11-15T11:27:26Z",
     "updated_at": "2026-11-15T11:27:26Z"
   },
@@ -625,9 +646,16 @@ Content-Type: application/json
     "id": 1,
     "name": "r2",
     "type": "s3",
-    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-    "bucket": "my-backups",
-    "path": "tender",
+    "config": {
+      "access_key_id": "***",
+      "access_key_id_set": true,
+      "bucket": "my-backups",
+      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+      "path": "tender",
+      "secret_access_key": "***",
+      "secret_access_key_set": true
+    },
+    "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
     "created_at": "2026-11-15T11:27:26Z",
     "updated_at": "2026-11-15T11:27:26Z"
   },
@@ -916,11 +944,21 @@ Content-Type: application/json
 
 ## Destinations
 
-A destination is an S3 bucket and a path in it, with the access keys and the repository password that every machine's backups there use.
+A destination is a place backups go: a `type` and a `config` with the type's fields, and the repository password that every machine's backups there use. [Backups](backups.md#destination-types) explains each type.
+
+A destination's JSON has `id`, `name`, `type`, `config`, `location`, `created_at` and `updated_at`. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set. `location` is the restic repository; each machine's repository is a folder named after the machine in it.
+
+| Type | `config` fields | Secrets |
+| --- | --- | --- |
+| `s3` | `endpoint`, `bucket`, `path` (optional) | `access_key_id`, `secret_access_key` |
+| `local` | `path`, absolute | None. |
+| `sftp` | `host`, `port` (default 22), `user`, `path` | None. The SSH key stays on each machine. |
+| `rest` | `url`, `username` (optional) | `password`, with `username` |
+| `rclone` | `remote`, such as `gdrive:backups` | None. The remote's login stays on each machine. |
 
 ### `GET /v1/backups/destinations`
 
-Lists every destination, by name. Keys and passwords are never part of the response.
+Lists every destination, by name. Secrets show as `"***"`, and the password is never part of the response.
 
 #### Parameters
 
@@ -944,9 +982,16 @@ Content-Type: application/json
       "id": 1,
       "name": "r2",
       "type": "s3",
-      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-      "bucket": "my-backups",
-      "path": "tender",
+      "config": {
+        "access_key_id": "***",
+        "access_key_id_set": true,
+        "bucket": "my-backups",
+        "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+        "path": "tender",
+        "secret_access_key": "***",
+        "secret_access_key_set": true
+      },
+      "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
       "created_at": "2026-11-15T11:27:26Z",
       "updated_at": "2026-11-15T11:27:26Z"
     }
@@ -970,19 +1015,15 @@ Content-Type: application/json
 
 Adds a destination. Without a password, the hub makes one and returns it this once.
 
-`password` appears in the response only when the hub made it. Save it in a password manager; [Backups](backups.md#encryption-and-the-repository-password) explains why. The CLI asks for the keys with typing hidden, which keeps them out of your shell history.
+`password` appears in the response only when the hub made it. Save it in a password manager; [Backups](backups.md#encryption-and-the-repository-password) explains why. The CLI asks for the keys with typing hidden, which keeps them out of your shell history. Try the destination from a machine with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest) before you back up to it.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | Yes | Body. Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
-| `type` | string | No | Body. `s3`, the only type and the default. |
-| `endpoint` | string | Yes | Body. The S3 endpoint URL, such as `https://<account-id>.r2.cloudflarestorage.com`. |
-| `bucket` | string | Yes | Body. The bucket's name. |
-| `path` | string | No | Body. A folder in the bucket. Each machine's repository goes in a folder named after it below this one. |
-| `access_key_id` | string | Yes | Body. The access key ID. The hub stores it encrypted. |
-| `secret_access_key` | string | Yes | Body. The secret access key. The hub stores it encrypted. |
+| `type` | string | No | Body. `s3`, the default, `local`, `sftp`, `rest` or `rclone`. |
+| `config` | object | Yes | Body. The type's fields, from the table above. The hub stores the secrets encrypted. |
 | `password` | string | No | Body. The repository password. Leave it out and the hub makes a strong one. |
 
 #### Example request
@@ -990,7 +1031,15 @@ Adds a destination. Without a password, the hub makes one and returns it this on
 ```sh
 curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
   -H 'Content-Type: application/json' \
-  -d '{"name": "r2", "endpoint": "https://<account-id>.r2.cloudflarestorage.com", "bucket": "my-backups", "path": "tender", "access_key_id": "<access key ID>", "secret_access_key": "<secret access key>"}'
+  -d '{"name": "r2", "config": {"endpoint": "https://<account-id>.r2.cloudflarestorage.com", "bucket": "my-backups", "path": "tender", "access_key_id": "<access key ID>", "secret_access_key": "<secret access key>"}}'
+```
+
+An SFTP destination:
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "nas", "type": "sftp", "config": {"host": "nas.example.com", "user": "tender", "path": "/srv/restic"}}'
 ```
 
 #### Example response
@@ -1004,9 +1053,16 @@ Location: /v1/backups/destinations/r2
   "id": 1,
   "name": "r2",
   "type": "s3",
-  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-  "bucket": "my-backups",
-  "path": "tender",
+  "config": {
+    "access_key_id": "***",
+    "access_key_id_set": true,
+    "bucket": "my-backups",
+    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+    "path": "tender",
+    "secret_access_key": "***",
+    "secret_access_key_set": true
+  },
+  "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
   "created_at": "2026-11-15T11:27:26Z",
   "updated_at": "2026-11-15T11:27:26Z",
   "password": "<password>"
@@ -1018,8 +1074,8 @@ Location: /v1/backups/destinations/r2
 | Status | When |
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
-| `409` | A destination with this name, or with this endpoint, bucket and path, already exists. |
-| `422` | The name isn't valid, the type isn't `s3`, the endpoint isn't an http or https URL, or the bucket or a key is missing. |
+| `409` | A destination with this name, or at this location, already exists. |
+| `422` | The name or the type isn't valid, `config` is missing, or a config field is missing, unknown for the type, or not valid, such as an endpoint that isn't an http or https URL, or a secret given as `"***"`. |
 
 #### Equivalents
 
@@ -1029,7 +1085,7 @@ Location: /v1/backups/destinations/r2
 
 ### `GET /v1/backups/destinations/{destination}`
 
-Returns one destination, without its keys or password.
+Returns one destination, with its secrets shown as `"***"` and without its password.
 
 #### Parameters
 
@@ -1053,9 +1109,16 @@ Content-Type: application/json
   "id": 1,
   "name": "r2",
   "type": "s3",
-  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-  "bucket": "my-backups",
-  "path": "tender",
+  "config": {
+    "access_key_id": "***",
+    "access_key_id_set": true,
+    "bucket": "my-backups",
+    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+    "path": "tender",
+    "secret_access_key": "***",
+    "secret_access_key_set": true
+  },
+  "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
   "created_at": "2026-11-15T11:27:26Z",
   "updated_at": "2026-11-15T11:27:26Z"
 }
@@ -1075,27 +1138,23 @@ Content-Type: application/json
 
 ### `PATCH /v1/backups/destinations/{destination}`
 
-Changes a destination's location or keys. The password can't change, because the repositories are encrypted with it.
+Changes fields of a destination's config, as a JSON merge patch: a field with a value replaces it, `null` removes an optional one, and a secret sent as `"***"` stays as it is, so you can send back what a read gave you. A PATCH can replace a secret but never read it. The type and the password can't change, because the repositories depend on them.
 
-Move the data yourself before you point a destination at another bucket or path. Daemons check for the new location and keys every 10 minutes.
+Move the data yourself before you point a destination at another place. Daemons check for the new config every 10 minutes.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `destination` | string | Yes | Path. The destination's name. |
-| `endpoint` | string | No | Body. The new endpoint URL. |
-| `bucket` | string | No | Body. The new bucket. |
-| `path` | string | No | Body. The new folder in the bucket. |
-| `access_key_id` | string | No | Body. The new access key ID. |
-| `secret_access_key` | string | No | Body. The new secret access key. |
+| `config` | object | No | Body. The fields to change. |
 
 #### Example request
 
 ```sh
 curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/backups/destinations/r2 \
   -H 'Content-Type: application/merge-patch+json' \
-  -d '{"access_key_id": "<new access key ID>", "secret_access_key": "<new secret access key>"}'
+  -d '{"config": {"access_key_id": "<new access key ID>", "secret_access_key": "<new secret access key>"}}'
 ```
 
 #### Example response
@@ -1108,9 +1167,16 @@ Content-Type: application/json
   "id": 1,
   "name": "r2",
   "type": "s3",
-  "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
-  "bucket": "my-backups",
-  "path": "tender",
+  "config": {
+    "access_key_id": "***",
+    "access_key_id_set": true,
+    "bucket": "my-backups",
+    "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+    "path": "tender",
+    "secret_access_key": "***",
+    "secret_access_key_set": true
+  },
+  "location": "s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender",
   "created_at": "2026-11-15T11:27:26Z",
   "updated_at": "2026-11-15T11:40:02Z"
 }
@@ -1122,21 +1188,83 @@ Content-Type: application/json
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
 | `404` | The destination doesn't exist. |
-| `409` | Another destination already uses the new endpoint, bucket and path. |
-| `422` | The body has `password`, or sets the endpoint, bucket or a key to an empty string, or the endpoint isn't an http or https URL. |
+| `409` | Another destination already uses the new location. |
+| `422` | The body has `password` or `type`, or the config that results isn't valid for the type, such as one without a bucket. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `update_destination` | None. |
+| `update_destination` | `tender destinations update r2 --access-key-id-file PATH --secret-access-key-file PATH` |
+
+### `POST /v1/backups/destinations/{destination}/test`
+
+Tries a destination from one machine. Answers `202` with an [action](#actions): the machine's daemon opens that machine's repository at the destination with `restic cat config`, which checks the address, the login and the password, or makes the repository with `restic init` when there is none yet, as the first backup would.
+
+The hub hands the destination's config, with its secrets, to that daemon with the action, and never stores them with the action. Read the result with [`GET /v1/machines/{machine}/actions/{id}`](#get-v1machinesmachineactionsid): `output` says which repository the daemon reached and whether it made it, or why it failed.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `destination` | string | Yes | Path. The destination's name. |
+| `machine` | string | Yes | Body. The machine whose daemon tries it. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations/nas/test \
+  -H 'Content-Type: application/json' \
+  -d '{"machine": "apps"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/12
+
+{
+  "id": 12,
+  "machine": "apps",
+  "type": "test",
+  "service": null,
+  "unit": null,
+  "priority": null,
+  "since": null,
+  "lines": null,
+  "destination": "nas",
+  "status": "pending",
+  "output_cleared": false,
+  "created_at": "2026-11-15T12:02:11Z",
+  "updated_at": "2026-11-15T12:02:11Z",
+  "output": null
+}
+```
+
+Once it finished, the action's `output` is a sentence such as `Reached sftp://tender@nas.example.com:22//srv/restic/apps from apps. It had no repository for apps yet, so the test made one with the destination's password.` A failed test has the status `failed` and restic's reason, such as `Could not reach the destination nas from apps: the sftp destination needs /etc/tender/ssh/id_ed25519 on this machine, and it isn't there.`
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The destination doesn't exist. |
+| `422` | `machine` is missing, or no machine has that name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `test_destination` | `tender destinations test nas apps` |
 
 ### `DELETE /v1/backups/destinations/{destination}`
 
 Removes a destination that no machine backs up to.
 
 > [!WARNING]
-> The hub forgets the destination's keys and password. The backups already in the bucket stay there, and you need the password from your password manager to restore them.
+> The hub forgets the destination's keys and password. The backups already at the destination stay there, and you need the password from your password manager to restore them.
 
 #### Parameters
 
@@ -1857,7 +1985,7 @@ Content-Type: application/json
 
 ## Actions
 
-An action is work for a machine's daemon: starting, stopping or restarting a service, or reading a service's logs or the machine's journal. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+An action is work for a machine's daemon: starting, stopping or restarting a service, reading a service's logs or the machine's journal, or trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)). The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `POST /v1/machines/{machine}/actions`
 
@@ -1904,6 +2032,7 @@ Location: /v1/machines/apps/actions/14
   "priority": null,
   "since": null,
   "lines": null,
+  "destination": null,
   "status": "pending",
   "output_cleared": false,
   "created_at": "2026-11-15T11:40:20Z",
@@ -1962,6 +2091,7 @@ Content-Type: application/json
       "priority": null,
       "since": "10m",
       "lines": 3,
+      "destination": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:14Z",
@@ -1976,6 +2106,7 @@ Content-Type: application/json
       "priority": "warning",
       "since": "1h",
       "lines": 2,
+      "destination": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:13Z",
@@ -1990,6 +2121,7 @@ Content-Type: application/json
       "priority": null,
       "since": null,
       "lines": null,
+      "destination": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:07Z",
@@ -2046,6 +2178,7 @@ Content-Type: application/json
   "priority": "warning",
   "since": null,
   "lines": 5,
+  "destination": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -2073,7 +2206,8 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | Route | What the daemon does with it |
 | --- | --- |
 | `POST /v1/machines/{machine}/usage` | Sends a reading of CPU load, memory, disk and uptime, once a minute. |
-| `GET /v1/machines/{machine}/backups/settings` | Gets the machine's settings with the destination's keys and password. People get the same route without them. |
+| `GET /v1/machines/{machine}/backups/settings` | Gets the machine's settings with `credentials`: the destination's whole `config` with its secrets, and the password. For an `s3` destination it also carries `endpoint`, `bucket` and `path` in `destination`, and `access_key_id` and `secret_access_key` in `credentials`, where daemons before v0.3 read them. People get the same route without any of them. |
+| `GET /v1/machines/{machine}/actions?wait=25` (a test) | A test action comes with `target`: the destination's name, type, whole config and password, for this daemon only. |
 | `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
 | `POST /v1/machines/{machine}/backups/history` | Records a run as it starts, or a finished run it couldn't send while the hub was down. |
 | `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |

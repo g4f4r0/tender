@@ -272,7 +272,7 @@ Give it to the daemon on that machine: sudo tender install daemon --token-file P
 
 ## `tender destinations`
 
-Manage the S3 buckets backups go to, with the keys and the repository password the hub keeps for them. To change a destination's endpoint, bucket, path or keys, use the API or the MCP tool `update_destination`.
+Manage the places backups go, with the keys and the repository password the hub keeps for them. [Backups](backups.md#destination-types) explains each type.
 
 ### `tender destinations list`
 
@@ -297,11 +297,12 @@ tender destinations list
 ```
 
 ```text
-NAME   TYPE   ENDPOINT                                        BUCKET       PATH
-r2     s3     https://<account-id>.r2.cloudflarestorage.com   my-backups   tender
+NAME   TYPE   LOCATION
+nas    sftp   sftp://tender@nas.example.com:22//srv/restic
+r2     s3     s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender
 ```
 
-With no destinations, it prints `No destinations yet. Add one with: tender destinations add NAME --endpoint URL --bucket BUCKET` and exits 0.
+`LOCATION` is the restic repository. Each machine's repository is a folder named after the machine in it. With no destinations, it prints `No destinations yet. Add one with: tender destinations add NAME --type TYPE ... (run tender destinations add --help for the types)` and exits 0.
 
 #### Errors
 
@@ -315,12 +316,12 @@ With no destinations, it prints `No destinations yet. Add one with: tender desti
 
 ### `tender destinations add`
 
-Adds a destination. It asks for the access key ID, the secret access key and the repository password with typing hidden, or reads each from a file.
+Adds a destination. It asks for the type's secrets and the repository password with typing hidden, or reads each from a file.
 
 #### Usage
 
 ```sh
-tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH] [--hub URL]
+tender destinations add NAME [--type TYPE] [OPTIONS] [--password-file PATH] [--hub URL]
 ```
 
 #### Options
@@ -328,16 +329,23 @@ tender destinations add NAME --endpoint URL --bucket BUCKET [--path PATH] [--hub
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `NAME` | string | Yes | The destination's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. |
-| `--endpoint` | URL | Yes | The S3 endpoint, such as `https://<account-id>.r2.cloudflarestorage.com`. |
-| `--bucket` | string | Yes | The bucket name. |
-| `--path` | string | No | A folder inside the bucket. The default is the bucket's root. Each machine gets its own folder under it. |
-| `--type` | string | No | The kind of destination. Only `s3`, the default. |
-| `--access-key-id-file` | path | No | A file with the access key ID, instead of asking. |
-| `--secret-access-key-file` | path | No | A file with the secret access key, instead of asking. |
+| `--type` | string | No | `s3`, the default, `local`, `sftp`, `rest` or `rclone`. |
+| `--endpoint` | URL | For `s3` | The S3 endpoint, such as `https://<account-id>.r2.cloudflarestorage.com`. |
+| `--bucket` | string | For `s3` | The bucket name. |
+| `--path` | string | For `local` and `sftp` | For `s3`, an optional folder inside the bucket, the bucket's root by default. For `local`, an absolute folder on each machine. For `sftp`, the folder on the server, absolute or relative to the user's home. |
+| `--host` | string | For `sftp` | The SSH server's host name or IP address. |
+| `--port` | number | No | For `sftp`, the SSH port. The default is 22. |
+| `--user` | string | For `sftp` | The SSH user. |
+| `--url` | URL | For `rest` | The rest-server's address, such as `https://backup.example.com:8000`. |
+| `--username` | string | No | For `rest`, the login, when the server has logins. It then asks for the password. |
+| `--remote` | string | For `rclone` | The rclone remote and a folder in it, such as `gdrive:backups`. |
+| `--access-key-id-file` | path | No | For `s3`, a file with the access key ID, instead of asking. |
+| `--secret-access-key-file` | path | No | For `s3`, a file with the secret access key, instead of asking. |
+| `--rest-password-file` | path | No | For `rest` with `--username`, a file with the login's password, instead of asking. |
 | `--password-file` | path | No | A file with the repository password, instead of asking. |
 | `--hub` | URL | No | The hub's address. |
 
-Leave the password empty when it asks, and the hub makes a strong one and shows it once. Without a terminal, the keys must come from files, and the hub makes the password unless `--password-file` gives one.
+Each machine gets its own folder under the place you give. Leave the password empty when it asks, and the hub makes a strong one and shows it once. Without a terminal, the secrets must come from files, and the hub makes the password unless `--password-file` gives one.
 
 #### Example
 
@@ -355,14 +363,15 @@ Save it in a password manager now. Every machine's backups at this destination a
 it, and without it they cannot be restored. Tender cannot show it again.
 ```
 
-Save the password in a password manager. It can't change later, and without it nobody can restore the backups at this destination.
+Save the password in a password manager. It can't change later, and without it nobody can restore the backups at this destination. An SFTP server takes `tender destinations add nas --type sftp --host nas.example.com --user tender --path /srv/restic`, once each machine has its SSH key, as [Backups](backups.md#sftp) shows.
 
 #### Errors
 
 1. `destinations add needs --endpoint and --bucket. Run "tender destinations add --help" for usage.`
-2. `there is no terminal to ask for the access key ID. Save it in a file and add --access-key-id-file PATH.`
-3. `A destination with this name or this endpoint, bucket and path already exists. Choose another name, or use the existing one.`
-4. `endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.`
+2. `--host is not for a s3 destination. Run "tender destinations add --help" for usage.`, for an option of another type.
+3. `there is no terminal to ask for the access key ID. Save it in a file and add --access-key-id-file PATH.`
+4. `A destination with this name or this location (...) already exists. Choose another name, or use the existing one.`
+5. The hub's sentence for a field that isn't valid, such as `config.endpoint must be a URL such as https://<account>.r2.cloudflarestorage.com.`
 
 #### Equivalents
 
@@ -370,12 +379,100 @@ Save the password in a password manager. It can't change later, and without it n
 | --- | --- |
 | `POST /v1/backups/destinations` | `add_destination` |
 
+### `tender destinations update`
+
+Changes where a destination is, or its keys. Only the options you give change.
+
+New secrets come from the files you name, never from a prompt. The type and the repository password can't change. Move the data yourself before you point a destination at another place. Daemons pick up the change within 10 minutes.
+
+#### Usage
+
+```sh
+tender destinations update NAME [OPTIONS] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The destination to change. |
+| `OPTIONS` | | Yes, one or more | The place and secret-file options of [`tender destinations add`](#tender-destinations-add) for the destination's type, except `--type` and `--password-file`. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender destinations update r2 --access-key-id-file ./key-id --secret-access-key-file ./secret-key
+```
+
+```text
+Updated destination r2: s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender.
+```
+
+#### Errors
+
+1. `destinations update needs an option to change. Run "tender destinations update --help" for usage.`
+2. `--remote is not for a s3 destination. Run "tender destinations update --help" for usage.`
+3. `Destination "r2" doesn't exist.`
+4. `Another destination already uses .... Use that one, or choose another location.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/backups/destinations/{destination}` | `update_destination` |
+
+### `tender destinations test`
+
+Tries a destination from a machine. The machine's daemon opens its repository at the destination, which checks the address, the login and the password, or makes the repository when there is none yet.
+
+It waits up to 60 seconds for the daemon. Run it after you add a destination and before you point a machine's backups at it.
+
+#### Usage
+
+```sh
+tender destinations test NAME MACHINE [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The destination to try. |
+| `MACHINE` | string | Yes | The machine whose daemon tries it. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender destinations test nas apps
+```
+
+```text
+Reached sftp://tender@nas.example.com:22//srv/restic/apps from apps. It had no repository for apps yet, so the test made one with the destination's password.
+```
+
+A second run prints `Reached ... Its repository opens with the destination's password.`
+
+#### Errors
+
+1. `destinations test needs a destination name and a machine name. Run "tender destinations test --help" for usage.`
+2. `Destination "nas" doesn't exist.`
+3. `Machine "apps" doesn't exist. Run tender machines list to see the names.`
+4. `Could not reach the destination nas from apps: ...`, with restic's reason or what the machine lacks, and the command exits 1.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/backups/destinations/{destination}/test` | `test_destination` |
+
 ### `tender destinations remove`
 
 Removes a destination that no machine backs up to.
 
 > [!WARNING]
-> The hub forgets the destination's keys and password. The backups already in the bucket stay there, so keep the password in your password manager to restore them.
+> The hub forgets the destination's keys and password. The backups already at the destination stay there, so keep the password in your password manager to restore them.
 
 #### Usage
 
@@ -397,7 +494,7 @@ tender destinations remove r2
 ```
 
 ```text
-Removed destination r2. The backups already in its bucket stay there.
+Removed destination r2. The backups already in it stay there.
 ```
 
 #### Errors

@@ -7,12 +7,12 @@ Tender has no restore command yet. You restore with restic directly, because Ten
 ## Prerequisites
 
 1. [restic](https://restic.net). Every machine with a Tender daemon has restic 0.19.1 at `/usr/local/bin/restic`.
-2. The destination's access key ID, secret access key and repository password, from your password manager.
-3. The destination's endpoint, bucket and path. `tender destinations list` shows them.
+2. The destination's repository password and its keys or login, from your password manager.
+3. The destination's location. `tender destinations list` shows it in `LOCATION`.
 
 ## Restore a folder
 
-1. Point restic at the machine's repository. Its folder is the destination's path followed by the machine's name:
+1. Point restic at the machine's repository. It is the destination's location followed by `/` and the machine's name. For an S3 destination:
 
    ```sh
    export AWS_ACCESS_KEY_ID=<access key ID>
@@ -20,6 +20,15 @@ Tender has no restore command yet. You restore with restic directly, because Ten
    export RESTIC_PASSWORD=<repository password>
    export RESTIC_REPOSITORY=s3:https://<account-id>.r2.cloudflarestorage.com/my-backups/tender/apps
    ```
+
+   For the other types, set `RESTIC_REPOSITORY` the same way and give the login as the type needs:
+
+   | Type | `RESTIC_REPOSITORY` | Login |
+   | --- | --- | --- |
+   | `local` | `local:/mnt/backup/tender/apps` | None. |
+   | `sftp` | `sftp://tender@nas.example.com:22//srv/restic/apps` | Add `-o sftp.args="-i /etc/tender/ssh/id_ed25519"` to each command, or use your own key. |
+   | `rest` | `rest:https://backup.example.com:8000/tender/apps` | `RESTIC_REST_USERNAME` and `RESTIC_REST_PASSWORD`. |
+   | `rclone` | `rclone:gdrive:backups/apps` | `RCLONE_CONFIG=/etc/tender/rclone.conf`, or your own rclone config with the same remote. |
 
    On a machine whose daemon still runs, root can use the daemon's copy of the password instead: `export RESTIC_PASSWORD_FILE=/var/lib/tender/daemon/repository-password`.
 

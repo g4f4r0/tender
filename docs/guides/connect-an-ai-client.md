@@ -78,7 +78,7 @@ Try questions like these:
 Each tool tells the client whether it only reads, changes something or removes something, so the client can ask you before a removal or a stop.
 
 > [!WARNING]
-> Logs and anything else a tool returns go to the client's model provider. Keys you give `add_destination` pass through the conversation too. For real bucket keys, use `tender destinations add`, which asks for them with typing hidden.
+> Logs and anything else a tool returns go to the client's model provider. Keys you give `add_destination` pass through the conversation too. For real destination keys, use `tender destinations add`, which asks for them with typing hidden.
 
 ## Next steps
 
