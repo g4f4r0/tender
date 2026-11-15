@@ -7,7 +7,7 @@ import (
 )
 
 // TypeLogShippingFailing is a machine whose daemon can't send its logs to a sink.
-const TypeLogShippingFailing = "log_shipping_failing"
+const TypeLogShippingFailing = "logs.shipping_failing"
 
 // logFailingAfter is how long sending to a sink must fail before it alerts.
 const logFailingAfter = 15 * time.Minute
@@ -31,7 +31,7 @@ func (s LogSink) failing(now time.Time) bool {
 	return s.LastDroppedAt != nil && (s.LastSentAt == nil || s.LastDroppedAt.After(*s.LastSentAt))
 }
 
-// evaluateLogs returns the log_shipping_failing finding for m, one for all its failing sinks.
+// evaluateLogs returns the logs.shipping_failing finding for m, one for all its failing sinks.
 // Its content names each sink and why, but never a log line.
 func evaluateLogs(m Machine, now time.Time) []finding {
 	var parts []string

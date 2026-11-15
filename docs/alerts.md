@@ -53,9 +53,9 @@ A removed service's alerts resolve, because its counts start again. See [Removed
 
 | Type | Opens when | Severity |
 | --- | --- | --- |
-| `log_shipping_failing` | Sending a machine's logs to an enabled sink has failed for 15 minutes, or the daemon dropped records since its last send that worked. | `warning` |
+| `logs.shipping_failing` | Sending a machine's logs to an enabled sink has failed for 15 minutes, or the daemon dropped records since its last send that worked. | `warning` |
 
-A machine has one `log_shipping_failing` alert for all its sinks. Its content names each failing sink and why, such as `Log shipping from apps to otel has failed since 2026-11-15 12:04 UTC (16 minutes): the sink answered 503 Service Unavailable. It resolves after a send to the sink works.` It never holds a log line. It resolves once every sink in it has taken a send again. While the machine is silent, the alert stays as it is, because the hub can't hear from the daemon. [Log shipping](log-shipping.md#when-a-sink-is-down) explains when a daemon drops records.
+A machine has one `logs.shipping_failing` alert for all its sinks. Its content names each failing sink and why, such as `Log shipping from apps to otel has failed since 2026-11-15 12:04 UTC (16 minutes): the sink answered 503 Service Unavailable. It resolves after a send to the sink works.` It never holds a log line. It resolves once every sink in it has taken a send again. While the machine is silent, the alert stays as it is, because the hub can't hear from the daemon. [Log shipping](log-shipping.md#when-a-sink-is-down) explains when a daemon drops records.
 
 ## Turn a service's alerts off
 

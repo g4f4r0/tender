@@ -125,7 +125,7 @@ A daemon that can't start sending to a sink at all, such as an older daemon that
 
 When a sink's 64 MiB is full, the daemon drops its oldest batches to make room for new ones, and counts their records in `records_dropped`. A sink that answers `400`, `413` or `422` refused the batch for good, so the daemon drops that batch, counts it and goes on with the next.
 
-The `log_shipping_failing` alert opens when sending to a sink has failed for 15 minutes, or when the daemon dropped records. It resolves after a send to the sink works. [Alerts](alerts.md#log-shipping-alerts) shows how it reads.
+The `logs.shipping_failing` alert opens when sending to a sink has failed for 15 minutes, or when the daemon dropped records. It resolves after a send to the sink works. [Alerts](alerts.md#log-shipping-alerts) shows how it reads.
 
 `last_error` says why the last send failed, such as `the sink answered 503 Service Unavailable` or `the sink didn't answer: dial tcp 10.0.0.5:4318: connect: connection refused`. It never holds the sink's answer or its URL, which can hold secrets.
 
@@ -254,7 +254,7 @@ The daemon keeps each sink's buffer and read positions in `/var/lib/tender/daemo
 
 ## Next steps
 
-1. [Alerts](alerts.md#log-shipping-alerts) explains the `log_shipping_failing` alert.
+1. [Alerts](alerts.md#log-shipping-alerts) explains the `logs.shipping_failing` alert.
 2. [CLI reference](cli.md#tender-sinks) lists every `tender sinks` option.
 3. [API reference](api.md#log-sinks) lists the log sink routes, and [MCP tools](mcp.md#log-sinks) the tools.
 4. [Security](security.md#log-sink-secrets) explains how the hub keeps the sinks' secrets.

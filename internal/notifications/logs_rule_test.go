@@ -24,9 +24,9 @@ func TestEvaluateLogShipping(t *testing.T) {
 		{"working", LogSink{Name: "otel", LastSentAt: &sent}, []string{}},
 		{"failing for 14 minutes", LogSink{Name: "otel", FailingSince: ptr(t0.Add(-14 * time.Minute)), LastSentAt: &sent}, []string{}},
 		{"failing for 15 minutes", LogSink{Name: "otel", FailingSince: ptr(t0.Add(-15 * time.Minute)), LastError: "the sink answered 503 Service Unavailable"},
-			[]string{"log_shipping_failing:warning"}},
-		{"dropped, not sent since", LogSink{Name: "otel", LastSentAt: &sent, LastDroppedAt: ptr(t0.Add(-30 * time.Second))}, []string{"log_shipping_failing:warning"}},
-		{"dropped, never sent", LogSink{Name: "otel", LastDroppedAt: ptr(t0)}, []string{"log_shipping_failing:warning"}},
+			[]string{"logs.shipping_failing:warning"}},
+		{"dropped, not sent since", LogSink{Name: "otel", LastSentAt: &sent, LastDroppedAt: ptr(t0.Add(-30 * time.Second))}, []string{"logs.shipping_failing:warning"}},
+		{"dropped, never sent", LogSink{Name: "otel", LastDroppedAt: ptr(t0)}, []string{"logs.shipping_failing:warning"}},
 		{"dropped, then sent", LogSink{Name: "otel", LastSentAt: &sent, LastDroppedAt: ptr(t0.Add(-2 * time.Minute))}, []string{}},
 	}
 	for _, c := range cases {
@@ -70,11 +70,11 @@ func TestEvaluateLogShipping(t *testing.T) {
 func TestLogShippingAlert(t *testing.T) {
 	r := newRig(t)
 	r.tick(0, shipping(LogSink{Name: "otel", LastDroppedAt: ptr(t0)}))
-	r.want([]string{"log_shipping_failing warning sent"}, "a: log shipping failing")
+	r.want([]string{"logs.shipping_failing warning sent"}, "a: log shipping failing")
 	r.tick(time.Minute, func() Machine {
 		m := shipping(LogSink{Name: "otel", LastDroppedAt: ptr(t0), LastSentAt: ptr(t0.Add(time.Minute))})
 		m.LastSeen = ptr(t0.Add(time.Minute))
 		return m
 	}())
-	r.want([]string{"log_shipping_failing warning resolved"}, "a: log shipping failing", "a: log shipping failing, resolved")
+	r.want([]string{"logs.shipping_failing warning resolved"}, "a: log shipping failing", "a: log shipping failing, resolved")
 }
