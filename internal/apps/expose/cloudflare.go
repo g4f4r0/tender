@@ -1,0 +1,413 @@
+package expose
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// CloudflareAPI is the Cloudflare API the hub calls. EnvTestCloudflare replaces it, for the
+// end-to-end test's fake.
+const (
+	CloudflareAPI     = "https://api.cloudflare.com/client/v4"
+	EnvTestCloudflare = "TENDER_TEST_CLOUDFLARE"
+)
+
+// CloudflareBase is the Cloudflare API's base URL: CloudflareAPI, or EnvTestCloudflare when set.
+func CloudflareBase(getenv func(string) string) string {
+	if b := strings.TrimRight(getenv(EnvTestCloudflare), "/"); b != "" {
+		return b
+	}
+	return CloudflareAPI
+}
+
+// DNSComment marks the DNS records Tender keeps. Tender deletes only records that carry it.
+const DNSComment = "managed by tender"
+
+// CloudflarePermissions are the API token's permissions Tender needs, as Cloudflare's dashboard
+// names them.
+const CloudflarePermissions = "Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read"
+
+var accountIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// CheckAccountID is an error unless id looks like a Cloudflare account ID: 32 lowercase hex digits.
+func CheckAccountID(id string) error {
+	if !accountIDPattern.MatchString(id) {
+		return errors.New("account_id must be a Cloudflare account ID, 32 lowercase hex digits, as the dashboard shows under Account home")
+	}
+	return nil
+}
+
+// Cloudflare is the hub's client of the Cloudflare API for one account. For each machine it keeps
+// one remotely managed tunnel, named tender-<machine>, whose ingress is the machine's cloudflare
+// routes, and a proxied CNAME per route's host, commented DNSComment. It never logs, and its
+// errors never hold the API token or a tunnel token.
+type Cloudflare struct {
+	Base      string // the API's base URL; CloudflareAPI when empty
+	AccountID string
+	Token     string        // the API token
+	Client    *http.Client  // http.Client with a 30 s timeout when nil
+	Retries   int           // tries again after a 5xx, 429 or network error; 2 when 0, none when negative
+	Backoff   time.Duration // the wait before the first try again, doubling; 1 s when 0
+}
+
+// CloudflareError is a call Cloudflare refused or couldn't answer.
+type CloudflareError struct {
+	Status    int  // the HTTP status, or 0 when Cloudflare couldn't be reached
+	Retryable bool // a 5xx, a 429 or a network error, which may pass later; a 4xx won't
+	msg       string
+}
+
+func (e *CloudflareError) Error() string { return e.msg }
+
+// Tunnel is a machine's tunnel. Token is what cloudflared on the machine runs it with; it is a
+// secret, and never in JSON.
+type Tunnel struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Token string `json:"-"`
+}
+
+// TunnelName is the name of machine's tunnel.
+func TunnelName(machine string) string { return "tender-" + machine }
+
+type envelope struct {
+	Success bool `json:"success"`
+	Errors  []struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"errors"`
+	Result     json.RawMessage `json:"result"`
+	ResultInfo *struct {
+		Page       int `json:"page"`
+		TotalPages int `json:"total_pages"`
+	} `json:"result_info"`
+}
+
+// maxResponse bounds what the client reads of one answer.
+const maxResponse = 8 << 20
+
+// redact takes the client's secrets out of s.
+func (c *Cloudflare) redact(s string, more ...string) string {
+	for _, v := range append([]string{c.Token}, more...) {
+		if len(v) >= 8 {
+			s = strings.ReplaceAll(s, v, "***")
+		}
+	}
+	return s
+}
+
+// call sends one request, tries again on what may pass, and decodes the result into out.
+func (c *Cloudflare) call(ctx context.Context, method, path string, query url.Values, body, out any) (*envelope, error) {
+	base := c.Base
+	if base == "" {
+		base = CloudflareAPI
+	}
+	u := base + path
+	if len(query) > 0 {
+		u += "?" + query.Encode()
+	}
+	var data []byte
+	if body != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
+			return nil, err
+		}
+	}
+	retries, wait := c.Retries, c.Backoff
+	if retries == 0 {
+		retries = 2
+	}
+	if wait == 0 {
+		wait = time.Second
+	}
+	for try := 0; ; try++ {
+		env, err := c.once(ctx, method, u, path, data)
+		var ce *CloudflareError
+		if err == nil || !errors.As(err, &ce) || !ce.Retryable || try >= retries {
+			if err == nil && out != nil {
+				if uerr := json.Unmarshal(env.Result, out); uerr != nil {
+					return nil, &CloudflareError{Retryable: true, msg: fmt.Sprintf("Cloudflare's answer to %s %s is not what Tender expects", method, path)}
+				}
+			}
+			return env, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		wait *= 2
+	}
+}
+
+func (c *Cloudflare) once(ctx context.Context, method, u, path string, data []byte) (*envelope, error) {
+	var body io.Reader
+	if data != nil {
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	if data != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := c.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err // the URL is known; keep the reason
+		}
+		return nil, &CloudflareError{Retryable: true, msg: c.redact(fmt.Sprintf("Tender could not reach the Cloudflare API for %s %s: %v. Try again later", method, path, err))}
+	}
+	defer func() { _ = res.Body.Close() }()
+	var env envelope
+	raw, rerr := io.ReadAll(io.LimitReader(res.Body, maxResponse))
+	decodeErr := json.Unmarshal(raw, &env)
+	status := strconv.Itoa(res.StatusCode) + " " + http.StatusText(res.StatusCode)
+	switch {
+	case res.StatusCode >= 500 || res.StatusCode == http.StatusTooManyRequests:
+		return nil, &CloudflareError{Status: res.StatusCode, Retryable: true,
+			msg: fmt.Sprintf("Cloudflare answered %s %s with %s. Try again later", method, path, status)}
+	case res.StatusCode >= 400:
+		msg := fmt.Sprintf("Cloudflare refused %s %s: %s", method, path, status)
+		if decodeErr == nil {
+			var parts []string
+			for _, e := range env.Errors {
+				parts = append(parts, fmt.Sprintf("%s (%d)", strings.TrimRight(e.Message, ". "), e.Code))
+			}
+			if len(parts) > 0 {
+				msg += ", " + strings.Join(parts, "; ")
+			}
+		}
+		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+			msg += ". Check the account ID, and that the API token has " + CloudflarePermissions
+		}
+		return nil, &CloudflareError{Status: res.StatusCode, msg: c.redact(msg)}
+	case rerr != nil || decodeErr != nil || !env.Success:
+		return nil, &CloudflareError{Status: res.StatusCode, Retryable: true,
+			msg: fmt.Sprintf("Cloudflare's answer to %s %s is not what Tender expects", method, path)}
+	}
+	return &env, nil
+}
+
+// maxPages bounds a listing, so a server that always says there is more can't keep the hub busy.
+const maxPages = 1000
+
+// list gets every page of a listing into out, one item at a time.
+func list[T any](ctx context.Context, c *Cloudflare, path string, query url.Values) ([]T, error) {
+	var all []T
+	for page := 1; page <= maxPages; page++ {
+		q := url.Values{}
+		for k, v := range query {
+			q[k] = v
+		}
+		q.Set("page", strconv.Itoa(page))
+		q.Set("per_page", "50")
+		var items []T
+		env, err := c.call(ctx, http.MethodGet, path, q, nil, &items)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if env.ResultInfo == nil || page >= env.ResultInfo.TotalPages || len(items) == 0 {
+			return all, nil
+		}
+	}
+	return nil, &CloudflareError{Retryable: true, msg: fmt.Sprintf("Cloudflare's listing of %s has more than %d pages", path, maxPages)}
+}
+
+func (c *Cloudflare) account() string { return "/accounts/" + url.PathEscape(c.AccountID) }
+
+// Verify checks the account ID and the API token: it lists the account's tunnels and zones, which
+// needs the tunnel and zone permissions. A token without DNS Edit passes, and fails on the first
+// DNS change.
+func (c *Cloudflare) Verify(ctx context.Context) error {
+	q := url.Values{"per_page": {"1"}}
+	if _, err := c.call(ctx, http.MethodGet, c.account()+"/cfd_tunnel", q, nil, nil); err != nil {
+		return err
+	}
+	q.Set("account.id", c.AccountID)
+	_, err := c.call(ctx, http.MethodGet, "/zones", q, nil, nil)
+	return err
+}
+
+// findTunnel returns the tunnel called name, or nil.
+func (c *Cloudflare) findTunnel(ctx context.Context, name string) (*Tunnel, error) {
+	list, err := list[Tunnel](ctx, c, c.account()+"/cfd_tunnel", url.Values{"name": {name}, "is_deleted": {"false"}})
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range list {
+		if t.Name == name {
+			return &t, nil
+		}
+	}
+	return nil, nil
+}
+
+type zone struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type dnsRecord struct {
+	ID      string  `json:"id,omitempty"`
+	Type    string  `json:"type"`
+	Name    string  `json:"name"`
+	Content string  `json:"content"`
+	Proxied bool    `json:"proxied"`
+	TTL     int     `json:"ttl"`
+	Comment *string `json:"comment"`
+}
+
+func (r dnsRecord) ours() bool { return r.Comment != nil && *r.Comment == DNSComment }
+
+// zoneOf returns the zone that is host's longest matching suffix, or nil.
+func zoneOf(zones []zone, host string) *zone {
+	var best *zone
+	for i, z := range zones {
+		name := strings.ToLower(strings.TrimSuffix(z.Name, "."))
+		if (host == name || strings.HasSuffix(host, "."+name)) && (best == nil || len(name) > len(best.Name)) {
+			best = &zones[i]
+		}
+	}
+	return best
+}
+
+type ingressRule struct {
+	Hostname string `json:"hostname,omitempty"`
+	Service  string `json:"service"`
+}
+
+// Apply makes machine's tunnel serve exactly routes, each at https://<host>, and returns the
+// tunnel with its token. It creates the tunnel on the first route, replaces its ingress with the
+// routes and a 404 for any other host, creates or updates a proxied CNAME for each host in the
+// zone that is the host's longest suffix, and deletes the records of its own, with DNSComment
+// and this tunnel as their target, whose host is no longer a route. It refuses a host that has a
+// record it didn't make. With no routes and no tunnel it changes nothing and returns no tunnel.
+func (c *Cloudflare) Apply(ctx context.Context, machine string, routes []Route) (Tunnel, error) {
+	routes, err := hostRoutes("cloudflare", routes)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	zones, err := list[zone](ctx, c, "/zones", url.Values{"account.id": {c.AccountID}})
+	if err != nil {
+		return Tunnel{}, err
+	}
+	zoneOfRoute := make([]*zone, len(routes))
+	for i, r := range routes {
+		if zoneOfRoute[i] = zoneOf(zones, r.Host); zoneOfRoute[i] == nil {
+			return Tunnel{}, fmt.Errorf("no zone of the Cloudflare account holds %s. Add its domain to the account, or pick a host in one of its zones", r.Host)
+		}
+	}
+	name := TunnelName(machine)
+	t, err := c.findTunnel(ctx, name)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	if t == nil && len(routes) == 0 {
+		return Tunnel{}, nil
+	}
+	if t == nil {
+		var made Tunnel
+		if _, err := c.call(ctx, http.MethodPost, c.account()+"/cfd_tunnel", nil,
+			map[string]string{"name": name, "config_src": "cloudflare"}, &made); err != nil {
+			return Tunnel{}, err
+		}
+		t = &made
+	}
+	ingress := make([]ingressRule, 0, len(routes)+1)
+	for _, r := range routes {
+		ingress = append(ingress, ingressRule{Hostname: r.Host, Service: "http://127.0.0.1:" + strconv.Itoa(r.LocalPort)})
+	}
+	ingress = append(ingress, ingressRule{Service: "http_status:404"})
+	tunnelPath := c.account() + "/cfd_tunnel/" + url.PathEscape(t.ID)
+	if _, err := c.call(ctx, http.MethodPut, tunnelPath+"/configurations", nil,
+		map[string]any{"config": map[string]any{"ingress": ingress}}, nil); err != nil {
+		return Tunnel{}, err
+	}
+
+	target := t.ID + ".cfargotunnel.com"
+	want := map[string]bool{}
+	for i, r := range routes {
+		want[r.Host] = true
+		if err := c.keepRecord(ctx, zoneOfRoute[i], r.Host, target); err != nil {
+			return Tunnel{}, err
+		}
+	}
+	for _, z := range zones {
+		recs, err := list[dnsRecord](ctx, c, "/zones/"+url.PathEscape(z.ID)+"/dns_records",
+			url.Values{"type": {"CNAME"}, "comment.exact": {DNSComment}})
+		if err != nil {
+			return Tunnel{}, err
+		}
+		for _, rec := range recs {
+			if rec.ours() && rec.Type == "CNAME" && strings.EqualFold(rec.Content, target) && !want[strings.ToLower(rec.Name)] {
+				if _, err := c.call(ctx, http.MethodDelete, "/zones/"+url.PathEscape(z.ID)+"/dns_records/"+url.PathEscape(rec.ID), nil, nil, nil); err != nil {
+					return Tunnel{}, err
+				}
+			}
+		}
+	}
+	if len(routes) == 0 {
+		return Tunnel{ID: t.ID, Name: t.Name}, nil
+	}
+	var token string
+	if _, err := c.call(ctx, http.MethodGet, tunnelPath+"/token", nil, nil, &token); err != nil {
+		return Tunnel{}, err
+	}
+	if token == "" {
+		return Tunnel{}, &CloudflareError{Retryable: true, msg: "Cloudflare gave an empty token for tunnel " + name}
+	}
+	return Tunnel{ID: t.ID, Name: t.Name, Token: token}, nil
+}
+
+// keepRecord makes host a proxied CNAME to target in z, commented DNSComment. A record of
+// Tender's for host, even one pointing at another machine's tunnel, is updated; any other record
+// for host is left alone, and the route fails.
+func (c *Cloudflare) keepRecord(ctx context.Context, z *zone, host, target string) error {
+	path := "/zones/" + url.PathEscape(z.ID) + "/dns_records"
+	recs, err := list[dnsRecord](ctx, c, path, url.Values{"name.exact": {host}})
+	if err != nil {
+		return err
+	}
+	comment := DNSComment
+	rec := dnsRecord{Type: "CNAME", Name: host, Content: target, Proxied: true, TTL: 1, Comment: &comment}
+	var mine *dnsRecord
+	for i, r := range recs {
+		if !strings.EqualFold(strings.TrimSuffix(r.Name, "."), host) {
+			continue
+		}
+		if !r.ours() || r.Type != "CNAME" || mine != nil {
+			return fmt.Errorf("%s already has a %s record in Cloudflare that Tender didn't make. Delete it in the Cloudflare dashboard, or pick another host", host, r.Type)
+		}
+		mine = &recs[i]
+	}
+	switch {
+	case mine == nil:
+		_, err = c.call(ctx, http.MethodPost, path, nil, rec, nil)
+	case !strings.EqualFold(mine.Content, target) || !mine.Proxied:
+		_, err = c.call(ctx, http.MethodPut, path+"/"+url.PathEscape(mine.ID), nil, rec, nil)
+	}
+	return err
+}

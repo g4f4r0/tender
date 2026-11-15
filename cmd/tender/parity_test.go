@@ -71,6 +71,9 @@ var mcpCoverage = map[string]string{
 	"GET /v1/tokens":                                    "list_tokens",
 	"POST /v1/tokens":                                   "none: an agent may not make itself more access; a person runs tender tokens add",
 	"DELETE /v1/tokens/{token}":                         "delete_token",
+	"GET /v1/exposures/cloudflare":                      "get_cloudflare_settings",
+	"PUT /v1/exposures/cloudflare":                      "set_cloudflare_settings",
+	"DELETE /v1/exposures/cloudflare":                   "remove_cloudflare_settings",
 	"POST /mcp":                                         "none: it is the MCP endpoint itself",
 	"GET /metrics":                                      "none: it is for Prometheus scrapers, and the typed tools already return the same data",
 }

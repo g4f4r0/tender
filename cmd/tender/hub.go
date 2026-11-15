@@ -114,6 +114,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	logs.NewStore(d, key).Routes(srv)
 	newSecurity(d, ms).Routes(srv)
 	newUpdates(d, ms, as).Routes(srv)
+	newCloudflareStore(d, key).Routes(srv)
 	srv.Handle("GET /metrics", srv.People(metricsRoute(metricSources(d), time.Now)))
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
@@ -139,6 +140,7 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	newSecurity(d, ms).RegisterTools(s, ms.Lookup)
 	newUpdates(d, ms, as).RegisterTools(s)
 	tokens.NewStore(d).RegisterTools(s)
+	newCloudflareStore(d, key).RegisterTools(s)
 	return s
 }
 
@@ -228,6 +230,10 @@ func checkKey(ctx context.Context, d *db.DB, key []byte, path string) error {
 	if err := logs.NewStore(d, key).CheckKey(ctx); err != nil {
 		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
 			"without it they can't be read, and each log sink needs its secrets saved again", config.EnvEncryptionKey, path, err)
+	}
+	if err := newCloudflareStore(d, key).CheckKey(ctx); err != nil {
+		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
+			"without it they can't be read, and the Cloudflare API token needs saving again", config.EnvEncryptionKey, path, err)
 	}
 	return nil
 }

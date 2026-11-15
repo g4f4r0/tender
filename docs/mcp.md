@@ -1,6 +1,6 @@
 # MCP tools
 
-The hub serves 42 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
+The hub serves 45 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
 
 ## Prerequisites
 
@@ -17,10 +17,10 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 1. Every result is JSON. It comes as `structuredContent` and as the same JSON in a text block, for clients that read only text. A list is `{"data": [...]}`, with `next_cursor` when there is another page.
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
 3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
-4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only four set it to `true`: `send_test_notification`, which sends to the channels, `test_destination`, which reaches a backup destination, `start_update`, which installs a release from GitHub, and `upgrade_machine`, which installs packages from the machine's package mirrors.
+4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only five set it to `true`: `send_test_notification`, which sends to the channels, `test_destination`, which reaches a backup destination, `start_update`, which installs a release from GitHub, `upgrade_machine`, which installs packages from the machine's package mirrors, and `set_cloudflare_settings`, which checks the token with Cloudflare.
 5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs`, `test_destination` and `upgrade_machine`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes, or 45 for an upgrade. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-7. No tool returns destination keys, repository passwords, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. No tool makes an API token. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
+7. No tool returns destination keys, repository passwords, log sink secrets, the Cloudflare API token or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. No tool makes an API token. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
@@ -83,6 +83,9 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `GET /v1/tokens` | `list_tokens` |
 | `POST /v1/tokens` | None. An AI client may not make itself more access; a person runs `tender tokens add`. |
 | `DELETE /v1/tokens/{token}` | `delete_token` |
+| `GET /v1/exposures/cloudflare` | `get_cloudflare_settings` |
+| `PUT /v1/exposures/cloudflare` | `set_cloudflare_settings` |
+| `DELETE /v1/exposures/cloudflare` | `remove_cloudflare_settings` |
 | `POST /mcp` | None. It is the MCP endpoint itself. |
 
 The routes only a machine's daemon calls with its token, such as usage reports and backup runs, have no tools. They are listed in the [API reference](api.md).
@@ -2959,6 +2962,147 @@ None.
 | REST route | CLI command |
 | --- | --- |
 | `DELETE /v1/tokens/{token}` | `tender tokens remove NAME --yes` |
+
+## Exposures
+
+### `get_cloudflare_settings`
+
+Gets the hub's Cloudflare settings, which services' `cloudflare` routes need. The hub keeps one tunnel per machine in that account, named `tender-<machine>`, and a proxied DNS record per route.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+The settings: `account_id`, `api_token` (always `"***"`), `api_token_set`, `created_at` and `updated_at`.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "get_cloudflare_settings", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{"account_id": "0123456789abcdef0123456789abcdef", "api_token": "***", "api_token_set": true, "created_at": "2026-11-15T10:00:00Z", "updated_at": "2026-11-15T10:00:00Z"}
+```
+
+#### Errors
+
+1. `Cloudflare isn't set up on this hub. Set it up with: tender exposures cloudflare set --account-id ID --api-token-file PATH`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/exposures/cloudflare` | `tender exposures cloudflare show` |
+
+### `set_cloudflare_settings`
+
+Sets the Cloudflare account and API token that services' `cloudflare` routes use. The hub first asks Cloudflare whether the token reaches the account's tunnels and zones, and stores nothing if it doesn't.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `true` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account_id` | string | Yes | The Cloudflare account ID, 32 lowercase hex digits. |
+| `api_token` | string | No | The API token, with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. Required the first time; leave it out to keep the stored one. |
+
+#### Returns
+
+The settings, as `get_cloudflare_settings` returns them.
+
+#### Limits
+
+A token passed here goes through the AI conversation. `tender exposures cloudflare set` asks for it with typing hidden instead.
+
+#### Example call
+
+```json
+{"name": "set_cloudflare_settings", "arguments": {"account_id": "0123456789abcdef0123456789abcdef"}}
+```
+
+#### Example result
+
+```json
+{"account_id": "0123456789abcdef0123456789abcdef", "api_token": "***", "api_token_set": true, "created_at": "2026-11-15T10:00:00Z", "updated_at": "2026-11-15T11:20:00Z"}
+```
+
+#### Errors
+
+1. `account_id must be a Cloudflare account ID, 32 lowercase hex digits, as the dashboard shows under Account home.`
+2. `api_token is required: the hub has no Cloudflare API token yet.`
+3. `Cloudflare refused GET /accounts/.../cfd_tunnel: 403 Forbidden, Authentication error (10000). Check the account ID, and that the API token has Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read.`
+4. `The hub could not check the settings with Cloudflare: ...`, when Cloudflare is down. Try again later.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PUT /v1/exposures/cloudflare` | `tender exposures cloudflare set --account-id ID --api-token-file PATH` |
+
+### `remove_cloudflare_settings`
+
+Removes the hub's Cloudflare account and API token. The tunnels and DNS records already in Cloudflare stay.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+`removed`, naming what was removed.
+
+#### Limits
+
+It refuses while a service has a `cloudflare` route.
+
+#### Example call
+
+```json
+{"name": "remove_cloudflare_settings", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{"removed": "the Cloudflare settings"}
+```
+
+#### Errors
+
+1. `Cloudflare isn't set up on this hub. There is nothing to remove.`
+2. `2 cloudflare routes need these settings. Take the routes off their services first, or redeploy them with another expose.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/exposures/cloudflare` | `tender exposures cloudflare remove` |
 
 ## Next steps
 

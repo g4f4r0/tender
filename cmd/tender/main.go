@@ -47,6 +47,7 @@ Work with the hub, from any machine that can reach it:
 	{"update MACHINE ...|--all", "Update Tender on machines, through the hub"},
 	{"updates COMMAND", "show, set"},
 	{"tokens COMMAND", "list, add, remove: the API tokens people and AI clients send"},
+	{"exposures cloudflare COMMAND", "show, set, remove"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
@@ -88,6 +89,7 @@ var hubCommands = map[string]func([]string, session) error{
 	"updates":       runUpdates,
 	"security":      runSecurity,
 	"tokens":        runTokens,
+	"exposures":     runExposures,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
