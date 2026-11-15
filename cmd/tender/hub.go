@@ -102,7 +102,10 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	backups.NewStore(d, key).Routes(srv)
 	notifications.NewStore(d).Routes(srv, sender, hubName())
 	services.NewStore(d).Routes(srv)
-	newActions(d).Routes(srv)
+	as := newActions(d)
+	as.Routes(srv)
+	newSecurity(d, ms).Routes(srv)
+	newUpdates(d, ms, as).Routes(srv)
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
 	tools := newTools(d, key, sender, log).Handler()
@@ -121,7 +124,10 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	backups.NewStore(d, key).RegisterTools(s, ms.Lookup)
 	notifications.NewStore(d).RegisterTools(s, ms.Lookup, sender, hubName())
 	services.NewStore(d).RegisterTools(s, ms.Lookup)
-	newActions(d).RegisterTools(s, ms.Lookup)
+	as := newActions(d)
+	as.RegisterTools(s, ms.Lookup)
+	newSecurity(d, ms).RegisterTools(s, ms.Lookup)
+	newUpdates(d, ms, as).RegisterTools(s)
 	return s
 }
 
@@ -207,9 +213,12 @@ func serveHub(args []string, log *slog.Logger) error {
 	ms := machines.NewStore(d)
 	go hub.PruneKeys(ctx)
 	go ms.PruneUsage(ctx, log)
-	go newActions(d).Sweep(ctx, log)
+	as := newActions(d)
+	go as.Sweep(ctx, log)
+	up := newUpdates(d, ms, as)
+	go up.Run(ctx, log)
 	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
-	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d)))
+	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d), newSecurity(d, ms), up))
 	// No write timeout: a daemon's long poll for actions holds its request up to 30 s.
 	srv := &http.Server{
 		Addr:              cfg.Listen,

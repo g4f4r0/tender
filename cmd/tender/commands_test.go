@@ -59,7 +59,7 @@ func TestMachines(t *testing.T) {
 	mustRun(t, h, a, "machines", "add", "--hub", h.url(), "db-1")
 
 	ls := mustRun(t, h, a, "machines", "list")
-	want := "NAME    LAST SEEN   MEMORY   DISK\nweb-1   never       -        -\ndb-1    never       -        -\n"
+	want := "NAME    LAST SEEN   MEMORY   DISK   VERSION\nweb-1   never       -        -      -\ndb-1    never       -        -      -\n"
 	if ls != want {
 		t.Errorf("list =\n%s\nwant\n%s", ls, want)
 	}

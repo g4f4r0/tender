@@ -7,7 +7,9 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/updates"
 )
 
 // hubName is the host name that emails say they were sent from.
@@ -20,8 +22,8 @@ func hubName() string {
 }
 
 // loadMachines returns what the notification rules need to know about every machine, from the
-// machines, backups and services stores. The notifications domain imports none of them.
-func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) func(context.Context) ([]notifications.Machine, error) {
+// machines, backups, services, security and updates stores. The notifications domain imports none of them.
+func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, sec *security.Store, up *updates.Store) func(context.Context) ([]notifications.Machine, error) {
 	return func(ctx context.Context) ([]notifications.Machine, error) {
 		overviews, err := ms.List(ctx)
 		if err != nil {
@@ -87,6 +89,6 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 			}
 			out[i] = m
 		}
-		return out, nil
+		return out, systemRules(ctx, overviews, sec, up, out)
 	}
 }

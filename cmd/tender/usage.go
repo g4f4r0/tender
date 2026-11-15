@@ -47,11 +47,15 @@ func newFlagSet(name, args, summary string) *flag.FlagSet {
 	return fs
 }
 
-// optionLines lists the flags as "  --name VALUE   help", aligned.
+// optionLines lists the flags as "  --name VALUE   help", aligned. A flag without help, which only
+// Tender itself passes, isn't listed.
 func optionLines(fs *flag.FlagSet) string {
 	var left, right []string
 	width := 0
 	fs.VisitAll(func(f *flag.Flag) {
+		if f.Usage == "" {
+			return
+		}
 		placeholder, text := splitPlaceholder(f)
 		l := "--" + f.Name
 		if placeholder != "" {

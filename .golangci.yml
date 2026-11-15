@@ -13,46 +13,62 @@ linters:
         machines:
           files: ["**/internal/machines/**"]
           deny:
-            - pkg: github.com/g4f4r0/tender/internal/actions
-              desc: domains must not import each other
-            - pkg: github.com/g4f4r0/tender/internal/services
-              desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/backups
               desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/services
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/security
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/updates
               desc: domains must not import each other
         backups:
           files: ["**/internal/backups/**"]
           deny:
-            - pkg: github.com/g4f4r0/tender/internal/actions
-              desc: domains must not import each other
-            - pkg: github.com/g4f4r0/tender/internal/services
-              desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/machines
               desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/services
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/security
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/updates
               desc: domains must not import each other
         notifications:
           files: ["**/internal/notifications/**"]
           deny:
-            - pkg: github.com/g4f4r0/tender/internal/actions
-              desc: domains must not import each other
-            - pkg: github.com/g4f4r0/tender/internal/services
-              desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/machines
               desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/backups
               desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/services
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/security
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/updates
+              desc: domains must not import each other
         services:
           files: ["**/internal/services/**"]
           deny:
-            - pkg: github.com/g4f4r0/tender/internal/actions
-              desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/machines
               desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/backups
               desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/security
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/updates
               desc: domains must not import each other
         actions:
           files: ["**/internal/actions/**"]
@@ -64,6 +80,40 @@ linters:
             - pkg: github.com/g4f4r0/tender/internal/notifications
               desc: domains must not import each other
             - pkg: github.com/g4f4r0/tender/internal/services
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/security
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/updates
+              desc: domains must not import each other
+        security:
+          files: ["**/internal/security/**"]
+          deny:
+            - pkg: github.com/g4f4r0/tender/internal/machines
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/backups
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/services
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/updates
+              desc: domains must not import each other
+        updates:
+          files: ["**/internal/updates/**"]
+          deny:
+            - pkg: github.com/g4f4r0/tender/internal/machines
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/backups
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/notifications
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/services
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: domains must not import each other
+            - pkg: github.com/g4f4r0/tender/internal/security
               desc: domains must not import each other
         shared:
           files:
@@ -84,4 +134,8 @@ linters:
             - pkg: github.com/g4f4r0/tender/internal/services
               desc: shared packages must not import a domain; only cmd/tender wires domains
             - pkg: github.com/g4f4r0/tender/internal/actions
+              desc: shared packages must not import a domain; only cmd/tender wires domains
+            - pkg: github.com/g4f4r0/tender/internal/security
+              desc: shared packages must not import a domain; only cmd/tender wires domains
+            - pkg: github.com/g4f4r0/tender/internal/updates
               desc: shared packages must not import a domain; only cmd/tender wires domains

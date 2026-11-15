@@ -21,7 +21,7 @@ var (
 )
 
 var actionsUsage = groupUsage("actions", "See what was asked of a machine's daemon: service starts, stops, restarts and logs, "+
-	"and reads of its journal. The hub keeps each machine's last 100.", []row{
+	"reads of its journal, package upgrades and updates of Tender. The hub keeps each machine's last 100.", []row{
 	{"list MACHINE", "List a machine's actions, newest first"},
 	{"show MACHINE ID", "Show one action, with its output"},
 })
@@ -41,11 +41,16 @@ func actionsPath(machine string, id int64) string {
 // queueAction queues an action and waits for the daemon to finish it. A failed action is an error
 // with the daemon's reason; one still waiting after actionWait is an error that says how to check.
 func queueAction(hub *hubAPI, machine string, in actions.Input) (actions.Action, error) {
+	return queueActionFor(hub, machine, in, actionWait)
+}
+
+// queueActionFor is queueAction waiting up to wait.
+func queueActionFor(hub *hubAPI, machine string, in actions.Input, wait time.Duration) (actions.Action, error) {
 	var a actions.Action
 	if err := hub.do(http.MethodPost, machinePath(machine, "/actions"), in, &a); err != nil {
 		return a, err
 	}
-	deadline := time.Now().Add(actionWait)
+	deadline := time.Now().Add(wait)
 	for !a.Finished() && time.Now().Before(deadline) {
 		time.Sleep(min(actionCheck, time.Until(deadline)))
 		if err := hub.do(http.MethodGet, actionsPath(machine, a.ID), nil, &a); err != nil {
@@ -64,8 +69,16 @@ func queueAction(hub *hubAPI, machine string, in actions.Input) (actions.Action,
 	if a.Status == actions.StatusInProgress {
 		state = "is in progress: the daemon started it. The hub fails it if the daemon doesn't say how it ended within 15 minutes."
 	}
-	return a, fmt.Errorf("the daemon on %s hasn't finished within %d seconds. Action %d %s Check it with: tender actions show %s %d",
-		machine, int(actionWait.Seconds()), a.ID, state, machine, a.ID)
+	return a, fmt.Errorf("the daemon on %s hasn't finished within %s. Action %d %s Check it with: tender actions show %s %d",
+		machine, waitText(wait), a.ID, state, machine, a.ID)
+}
+
+// waitText words a wait: "60 seconds" or "45 minutes".
+func waitText(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return strconv.Itoa(int(d.Minutes())) + " minutes"
+	}
+	return strconv.Itoa(int(d.Seconds())) + " seconds"
 }
 
 // printLogs prints a logs action's output, or says there is none.
@@ -160,10 +173,16 @@ func actionsList(args []string, s session) error {
 	return nil
 }
 
-// describe says what an action is about: its service, or the journal and its filters.
+// describe says what an action is about: its service, the journal and its filters, the packages
+// of an upgrade or the release of an update.
 func describe(a actions.Summary) string {
-	if a.Service != nil {
+	switch {
+	case a.Service != nil:
 		return *a.Service
+	case a.Type == actions.TypeUpgrade && a.Packages != nil:
+		return *a.Packages + " packages"
+	case a.Type == actions.TypeUpdate && a.Version != nil:
+		return "Tender " + *a.Version
 	}
 	parts := []string{"journal"}
 	if a.Unit != nil {

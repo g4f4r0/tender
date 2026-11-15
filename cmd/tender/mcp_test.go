@@ -162,8 +162,9 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_recipient", "get_service_logs", "list_actions",
-		"list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients", "list_services"}
+	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_recipient", "get_security", "get_service_logs",
+		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications",
+		"list_recipients", "list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
@@ -171,13 +172,15 @@ func TestToolsList(t *testing.T) {
 		"set_backup": {false, true}, "unset_backup": {true, true},
 		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
+		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
 	}
+	// Only these reach outside the hub: an email, GitHub for a release, and the package mirrors.
+	openWorld := []string{"send_test_email", "start_update", "upgrade_machine"}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
-		// Only send_test_email reaches outside the hub.
-		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "send_test_email") {
-			t.Errorf("%s annotations = %+v, want open world only for send_test_email", tool.Name, a)
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != slices.Contains(openWorld, tool.Name) {
+			t.Errorf("%s annotations = %+v, want open world only for %v", tool.Name, a, openWorld)
 			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {

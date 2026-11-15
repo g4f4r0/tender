@@ -72,7 +72,10 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 	case "refresh":
 		fs = newFlagSet("install refresh", "",
 			"Check the pinned restic, rewrite the service units and restart the installed services. "+
-				"The configs and the credentials stay. Run as root. \"tender update\" runs this for you.")
+				"The configs and the credentials stay. On a machine installed before v0.3.0 it also moves the daemon to root. "+
+				"Run as root. \"tender update\" runs this for you.")
+	case "check": // not in the usage: "tender update" runs it with the new binary before it swaps it in
+		fs = newFlagSet("install check", "", "Check that this binary reads the installed daemon config and hub settings. Run as root.")
 	default:
 		return fmt.Errorf("unknown install command %q. Run \"tender install --help\" for the commands.", args[0])
 	}
@@ -97,7 +100,7 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 		}
 		hub.Clear = clearedSettings(fs)
 	}
-	if os.Geteuid() != 0 {
+	if !isRoot() {
 		return fmt.Errorf("install %s needs root. Run it again with sudo.", args[0])
 	}
 
@@ -133,6 +136,8 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 	in.CheckHub = checkHub
 	ctx := context.Background()
 	switch args[0] {
+	case "check":
+		return in.Check()
 	case "daemon":
 		return in.Daemon(ctx, daemon)
 	case "hub":

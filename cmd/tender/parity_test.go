@@ -47,10 +47,18 @@ var mcpCoverage = map[string]string{
 	"GET /v1/machines/{machine}/services":               "list_services",
 	"GET /v1/machines/{machine}/services/{service}":     "list_services",
 	"PATCH /v1/machines/{machine}/services/{service}":   "set_service_alerts",
-	"POST /v1/machines/{machine}/actions":               "start_service, stop_service, restart_service, get_service_logs, get_machine_logs",
+	"POST /v1/machines/{machine}/actions":               "start_service, stop_service, restart_service, get_service_logs, get_machine_logs, upgrade_machine",
 	"GET /v1/machines/{machine}/actions":                "list_actions",
 	"GET /v1/machines/{machine}/actions/{id}":           "get_action",
-	"POST /mcp": "none: it is the MCP endpoint itself",
+	"PATCH /v1/machines/{machine}":                      "update_machine",
+	"GET /v1/machines/{machine}/security":               "get_security",
+	"GET /v1/updates":                                   "get_updates",
+	"GET /v1/updates/settings":                          "get_updates",
+	"PUT /v1/updates/settings":                          "set_update_settings",
+	"GET /v1/updates/rollouts":                          "get_updates",
+	"POST /v1/updates/rollouts":                         "start_update",
+	"GET /v1/updates/rollouts/{id}":                     "get_updates",
+	"POST /mcp":                                         "none: it is the MCP endpoint itself",
 }
 
 func toolNames(t *testing.T) []string {
