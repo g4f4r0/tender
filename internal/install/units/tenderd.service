@@ -33,7 +33,10 @@ Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
 # Read every file (CAP_DAC_READ_SEARCH), read the firewall's rules (CAP_NET_ADMIN) and name the process
 # behind each listening socket (CAP_SYS_PTRACE). Nothing else: no CAP_DAC_OVERRIDE, so it can't write
 # another user's files, and no CAP_SYS_ADMIN. Updating Tender and upgrading the system's packages run
-# outside this sandbox, as transient units (tenderupdate, tenderupgrade) through systemd-run.
+# outside this sandbox, as transient units (tenderupdate, tenderupgrade) through systemd-run. It runs
+# without --wait or --pipe, so as root systemd-run, and systemctl, reach systemd over its private
+# socket, /run/systemd/private, where systemd trusts uid 0: that needs no D-Bus, no polkit and no
+# CAP_SYS_ADMIN, which systemd before v256 may ask of a caller that comes through D-Bus.
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE
 AmbientCapabilities=
 NoNewPrivileges=yes
