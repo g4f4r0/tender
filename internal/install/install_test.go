@@ -698,7 +698,7 @@ func TestUnitsFollowTheDecisions(t *testing.T) {
 	for _, want := range []string{"User=root", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE",
 		"NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes",
 		"SystemCallFilter=@system-service", "SystemCallFilter=~@privileged @resources",
-		"StateDirectory=tender/daemon", "CacheDirectory=tender", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
+		"StateDirectory=tender/daemon tender/services", "CacheDirectory=tender", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
 		if !strings.Contains(string(daemon), want+"\n") {
 			t.Errorf("daemon unit lacks %s", want)
 		}

@@ -19,10 +19,10 @@ func TestMetrics(t *testing.T) {
 	d := seeded(t)
 	ctx := context.Background()
 	mem, limit, cpu := int64(200<<20), int64(1<<30), 12.5
-	web := services.ServiceInput{Name: "web", ContainerID: "c1", Image: "nginx", State: services.StateRunning, RestartCount: 2,
+	web := services.ContainerInput{Name: "web", ContainerID: "c1", Image: "nginx", State: services.StateRunning, RestartCount: 2,
 		MemoryBytes: &mem, MemoryLimitBytes: &limit, CPUPercent: &cpu}
-	old := services.ServiceInput{Name: "old", ContainerID: "c2", Image: "x", State: "exited"}
-	if err := services.NewStore(d).Apply(ctx, 1, services.RunningReport([]services.ServiceInput{web, old})); err != nil {
+	old := services.ContainerInput{Name: "old", ContainerID: "c2", Image: "x", State: "exited"}
+	if err := services.NewStore(d).Apply(ctx, 1, services.RunningReport([]services.ContainerInput{web, old})); err != nil {
 		t.Fatal(err)
 	}
 	if err := services.NewStore(d).Apply(ctx, 2, services.UnreachableReport("refused")); err != nil {
@@ -74,12 +74,14 @@ func TestMetrics(t *testing.T) {
 		`tender_machine_uptime_seconds{machine="g4f4r0-code"} 3600`,
 		`tender_docker_up{machine="g4f4r0-code"} 1`,
 		`tender_docker_up{machine="g4f4r0-apps"} 0`,
-		`tender_service_state{machine="g4f4r0-code",service="web",runtime="docker",state="running"} 1`,
-		`tender_service_state{machine="g4f4r0-code",service="old",runtime="docker",state="exited"} 1`,
-		`tender_service_memory_bytes{machine="g4f4r0-code",service="web"} 209715200`,
-		`tender_service_memory_limit_bytes{machine="g4f4r0-code",service="web"} 1073741824`,
-		`tender_service_cpu_percent{machine="g4f4r0-code",service="web"} 12.5`,
-		`tender_service_restart_count{machine="g4f4r0-code",service="web"} 2`,
+		`tender_service_state{machine="g4f4r0-code",service="web",managed="false",state="running"} 1`,
+		`tender_service_state{machine="g4f4r0-code",service="old",managed="false",state="stopped"} 1`,
+		`tender_container_state{machine="g4f4r0-code",service="web",container="web",runtime="docker",state="running"} 1`,
+		`tender_container_state{machine="g4f4r0-code",service="old",container="old",runtime="docker",state="exited"} 1`,
+		`tender_container_memory_bytes{machine="g4f4r0-code",service="web",container="web"} 209715200`,
+		`tender_container_memory_limit_bytes{machine="g4f4r0-code",service="web",container="web"} 1073741824`,
+		`tender_container_cpu_percent{machine="g4f4r0-code",service="web",container="web"} 12.5`,
+		`tender_container_restart_count{machine="g4f4r0-code",service="web",container="web"} 2`,
 		`tender_backup_last_timestamp_seconds{machine="g4f4r0-code"} 1794711600`,
 		`tender_backup_last_age_seconds{machine="g4f4r0-code"} 3600`,
 		`tender_backup_snapshots{machine="g4f4r0-code"} 2`,
@@ -99,7 +101,7 @@ func TestMetrics(t *testing.T) {
 	}
 	// No reading, no snapshot size, no run: no series, not a made-up zero.
 	for _, absent := range []string{`tender_machine_cpu_load{machine="g4f4r0-apps"}`, `tender_backup_last_size_bytes{`,
-		`tender_backup_last_run_failed{machine="g4f4r0-apps"}`, `tender_service_memory_bytes{machine="g4f4r0-code",service="old"}`, `sink="off"`, `tender_log_records_sent_total{machine="g4f4r0-apps"`} {
+		`tender_backup_last_run_failed{machine="g4f4r0-apps"}`, `tender_container_memory_bytes{machine="g4f4r0-code",service="old"`, `sink="off"`, `tender_log_records_sent_total{machine="g4f4r0-apps"`} {
 		if strings.Contains(page, absent) {
 			t.Errorf("has %s", absent)
 		}

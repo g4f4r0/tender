@@ -24,6 +24,9 @@ const (
 	// actionTimeout bounds one action, and upgradeTimeout an upgrade of the system's packages.
 	actionTimeout  = 5 * time.Minute
 	upgradeTimeout = 40 * time.Minute
+	// deployTimeout bounds a deploy or remove: compose pulls the images, then waits up to 5 minutes
+	// for the containers to be healthy. It stays under the hub's 45 minutes.
+	deployTimeout = 40 * time.Minute
 	// maxEncoded keeps the report of a logs action under the hub's 1 MiB body limit, however many
 	// characters JSON has to escape.
 	maxEncoded = 900 << 10
@@ -31,8 +34,9 @@ const (
 
 // Runner does the service actions on the daemon. The services domain implements it.
 type Runner interface {
-	// Service starts, stops or restarts the service, or returns its last lines of logs since then.
-	Service(ctx context.Context, typ, service string, lines int, since time.Duration) (string, error)
+	// Service starts, stops or restarts the service, or its one container when container isn't
+	// empty, or returns their last lines of logs since then.
+	Service(ctx context.Context, typ, service, container string, lines int, since time.Duration) (string, error)
 	// The lock makes a service action and its report to the hub take turns with the services
 	// report, so that report can't carry a state from before the action and land after it.
 	sync.Locker
@@ -45,6 +49,14 @@ type Backups interface {
 	// TestDestination opens this machine's repository at the destination target describes, or
 	// makes it, and says what it found.
 	TestDestination(ctx context.Context, target json.RawMessage) (string, error)
+}
+
+// Deployer deploys and removes managed services on the daemon. The services domain implements it.
+type Deployer interface {
+	// Deploy deploys the service the hub sent with the action, and returns the end of compose's output.
+	Deploy(ctx context.Context, deployment json.RawMessage) (string, error)
+	// Remove removes the service, deleting its folder and data with deleteData.
+	Remove(ctx context.Context, deployment json.RawMessage, deleteData bool) (string, error)
 }
 
 // System does the actions on the machine itself, outside the daemon's sandbox. cmd/tender wires it.
@@ -79,7 +91,8 @@ type Daemon struct {
 	// StateDir is the daemon's state folder, where reports wait in actions/ until the hub has them.
 	// Empty keeps them in memory only.
 	StateDir string
-	System   System // runs the update and upgrade actions; without it they fail
+	System   System   // runs the update and upgrade actions; without it they fail
+	Deployer Deployer // runs the deploy and remove actions; without it they fail
 	// Busy marks the daemon busy while it runs an action, so an update of Tender waits for it, and
 	// says when an update runs, so the action waits. Nil never waits.
 	Busy func() (release func(), err error)
@@ -173,7 +186,8 @@ func (d *Daemon) run(ctx context.Context, h Handout) {
 	if !d.claim(ctx, a) {
 		return
 	}
-	service := a.Service != nil
+	deploy := a.Type == TypeDeploy || a.Type == TypeRemove
+	service := a.Service != nil && !deploy // a deploy takes minutes, so it doesn't hold the services report
 	if service && d.Services != nil {
 		d.Services.Lock()
 	}
@@ -191,6 +205,9 @@ func (d *Daemon) run(ctx context.Context, h Handout) {
 		if a.Type != TypeLogs {
 			d.Services.Changed()
 		}
+	}
+	if deploy && d.Services != nil {
+		d.Services.Changed() // the service's containers changed: report them now
 	}
 }
 
@@ -262,8 +279,11 @@ func (d *Daemon) claim(ctx context.Context, a Action) bool {
 func (d *Daemon) do(ctx context.Context, h Handout) *Patch {
 	a := h.Action
 	timeout := actionTimeout
-	if a.Type == TypeUpgrade {
+	switch a.Type {
+	case TypeUpgrade:
 		timeout = upgradeTimeout
+	case TypeDeploy, TypeRemove:
+		timeout = deployTimeout
 	}
 	actx, cancel := context.WithTimeout(ctx, timeout)
 	output, err := d.execute(actx, h)
@@ -295,10 +315,16 @@ func (d *Daemon) execute(ctx context.Context, h Handout) (string, error) {
 		}
 	}
 	switch {
+	case (a.Type == TypeDeploy || a.Type == TypeRemove) && d.Deployer == nil:
+		return "", errors.New("this daemon can't deploy services")
+	case a.Type == TypeDeploy:
+		return d.Deployer.Deploy(ctx, h.Deployment)
+	case a.Type == TypeRemove:
+		return d.Deployer.Remove(ctx, h.Deployment, a.DeleteData != nil && *a.DeleteData)
 	case a.Service != nil && d.Services == nil:
 		return "", errors.New("this daemon can't run service actions")
 	case a.Service != nil && (a.Type == TypeStart || a.Type == TypeStop || a.Type == TypeRestart || a.Type == TypeLogs):
-		return d.Services.Service(ctx, a.Type, *a.Service, lines, since)
+		return d.Services.Service(ctx, a.Type, *a.Service, deref(a.Container), lines, since)
 	case a.Service == nil && a.Type == TypeLogs:
 		return ReadJournal(ctx, Query{Unit: deref(a.Unit), Priority: deref(a.Priority), Since: since, Lines: lines}, time.Now())
 	case a.Type == TypeTest && d.Backups == nil:
@@ -320,6 +346,14 @@ func deref(s *string) string {
 	return *s
 }
 
+// about names the service of an action, or its one container: web in notes.
+func about(a Action) string {
+	if a.Container != nil && *a.Container != *a.Service {
+		return *a.Container + " in " + *a.Service
+	}
+	return *a.Service
+}
+
 // failure says why an action failed, as one sentence.
 func failure(a Action, err error) string {
 	var msg string
@@ -328,14 +362,16 @@ func failure(a Action, err error) string {
 		msg = fmt.Sprintf("Could not reach the destination %s from %s: %v", deref(a.Destination), a.Machine, err)
 	case a.Type == TypeUpgrade:
 		msg = fmt.Sprintf("Could not upgrade %s: %v", PackagesText(deref(a.Packages)), err)
+	case a.Type == TypeDeploy || a.Type == TypeRemove:
+		msg = fmt.Sprintf("Could not %s %s: %v", a.Type, deref(a.Service), err)
 	case a.Service == nil:
 		msg = fmt.Sprintf("Could not read the machine's logs: %v", err)
 	case a.Type == TypeLogs:
-		msg = fmt.Sprintf("Could not read the logs of %s: %v", *a.Service, err)
+		msg = fmt.Sprintf("Could not read the logs of %s: %v", about(a), err)
 	default:
-		msg = fmt.Sprintf("Could not %s %s: %v", a.Type, *a.Service, err)
+		msg = fmt.Sprintf("Could not %s %s: %v", a.Type, about(a), err)
 	}
-	if !strings.HasSuffix(msg, ".") {
+	if !strings.HasSuffix(msg, ".") && !strings.Contains(msg, "\n") { // compose's output ends as it ends
 		msg += "."
 	}
 	return msg

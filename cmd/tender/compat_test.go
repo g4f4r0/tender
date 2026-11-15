@@ -65,6 +65,7 @@ func TestDaemonRoutesTakeUnknownFields(t *testing.T) {
 		"PATCH /v1/machines/{machine}/actions/{id}":         {"/v1/machines/apps/actions/99", with(map[string]any{"status": "in_progress"}), 404},
 		"PUT /v1/machines/{machine}/logs/status":            {"/v1/machines/apps/logs/status", with(map[string]any{"data": []any{}}), 204},
 		"PUT /v1/machines/{machine}/security":               {"/v1/machines/apps/security", with(asMap(report)), 204},
+		"PUT /v1/machines/{machine}/exposures/status":       {"/v1/machines/apps/exposures/status", with(map[string]any{"tailscale_dns_name": "apps.tail1234.ts.net"}), 204},
 	}
 	for _, r := range h.Routes() {
 		method, _, _ := strings.Cut(r.Pattern, " ")

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,7 +24,22 @@ func completeAction(a *actions.Action) {
 		a.Output = ptr("2026-11-14T11:59:00.000000000Z started\n2026-11-14T11:59:30.000000000Z listening on :8080\n")
 	case a.Type == actions.TypeLogs:
 		a.Output = ptr("2026-11-14T11:59:00.000000000Z tenderd.service daemon started\n")
+	case a.Type == actions.TypeRemove:
+		a.Output = ptr("Kept the folder in /var/lib/tender/services/.removed/" + *a.Service + "-20261114T120000Z.\n")
 	}
+}
+
+// lone is a service of one container, named as the service, in state.
+func lone(name, state string) services.Service {
+	sv := services.Service{Name: name, State: services.ServiceStopped, AlertsEnabled: true,
+		Containers: []services.Container{{Name: name, Image: "img", State: state, RestartPolicy: "no"}}}
+	switch state {
+	case services.StateRunning:
+		sv.State = services.ServiceRunning
+	case services.StateUnknown:
+		sv.State = services.ServiceUnknown
+	}
+	return sv
 }
 
 func (h *fakeHub) machineServices(name string) services.MachineServices {
@@ -66,19 +84,127 @@ func (h *fakeHub) service(w http.ResponseWriter, r *http.Request) *services.Serv
 	return nil
 }
 
+func (h *fakeHub) getService(w http.ResponseWriter, r *http.Request) {
+	if sv := h.service(w, r); sv != nil {
+		server.WriteJSON(w, http.StatusOK, sv)
+	}
+}
+
+// queue makes a pending action of typ for the service and answers 202 with both, as the hub does.
+func (h *fakeHub) queue(w http.ResponseWriter, machine string, sv *services.Service, typ string, container *string) {
+	a := &actions.Action{Summary: actions.Summary{ID: h.id(), Machine: machine, Type: typ, Service: &sv.Name, Container: container,
+		Status: actions.StatusPending, CreatedAt: h.now, UpdatedAt: h.now}}
+	h.actions[a.ID] = a
+	if typ == actions.TypeDeploy || typ == actions.TypeRemove {
+		sv.ActionID = &a.ID
+		sv.DeployStatus = ptr(map[string]string{actions.TypeDeploy: services.DeployDeploying, actions.TypeRemove: services.DeployRemoving}[typ])
+	}
+	w.Header().Set("Location", "/v1/machines/"+machine+"/actions/"+strconv.FormatInt(a.ID, 10))
+	server.WriteJSON(w, http.StatusAccepted, services.Queued{Service: *sv, Action: a})
+}
+
+// fakeRoutes is what the hub makes of a deploy's routes: a tailscale one on the tailnet name, the
+// others at their host.
+func fakeRoutes(in []services.RouteInput) []services.Route {
+	out := []services.Route{}
+	for i, r := range in {
+		url := "https://apps.tail1234.ts.net"
+		if r.Host != nil {
+			url = "https://" + *r.Host
+		}
+		out = append(out, services.Route{ID: int64(i + 1), Container: r.Container, Port: r.Port, Expose: r.Expose, Host: r.Host,
+			LocalPort: 20000 + i, URL: &url})
+	}
+	return out
+}
+
+func hidden(env map[string]string) map[string]string {
+	out := map[string]string{}
+	for k := range env {
+		out[k] = "***"
+	}
+	return out
+}
+
+func (h *fakeHub) createService(w http.ResponseWriter, r *http.Request) {
+	m := h.machine(w, r)
+	if m == nil {
+		return
+	}
+	var in services.Input
+	if !decode(w, r, &in) {
+		return
+	}
+	sv := services.Service{ID: h.id(), Machine: m.Name, Name: in.Name, Managed: true, State: services.ServiceStopped, Compose: &in.Compose,
+		Files: in.Files, Env: hidden(in.Env), Routes: fakeRoutes(in.Routes), AlertsEnabled: true, Containers: []services.Container{}}
+	h.services[m.Name] = append(h.services[m.Name], sv)
+	h.queue(w, m.Name, &h.services[m.Name][len(h.services[m.Name])-1], actions.TypeDeploy, nil)
+}
+
 func (h *fakeHub) patchService(w http.ResponseWriter, r *http.Request) {
 	sv := h.service(w, r)
 	if sv == nil {
 		return
 	}
-	var p services.ServicePatch
+	var p map[string]json.RawMessage
 	if !decode(w, r, &p) {
 		return
 	}
-	if p.AlertsEnabled != nil {
-		sv.AlertsEnabled = *p.AlertsEnabled
+	if v, ok := p["alerts_enabled"]; ok {
+		sv.AlertsEnabled = string(v) == "true"
+		delete(p, "alerts_enabled")
 	}
-	server.WriteJSON(w, http.StatusOK, sv)
+	if len(p) == 0 {
+		server.WriteJSON(w, http.StatusOK, sv)
+		return
+	}
+	if !sv.Managed {
+		problem(w, http.StatusConflict, "Tender didn't deploy service %q, so it can't change it.", sv.Name)
+		return
+	}
+	if raw, ok := p["env"]; ok {
+		var env map[string]*string
+		_ = json.Unmarshal(raw, &env)
+		for k, v := range env {
+			if v == nil {
+				delete(sv.Env, k)
+			} else {
+				sv.Env[k] = "***"
+			}
+		}
+	}
+	if raw, ok := p["routes"]; ok {
+		var routes []services.RouteInput
+		_ = json.Unmarshal(raw, &routes)
+		sv.Routes = fakeRoutes(routes)
+	}
+	h.queue(w, r.PathValue("machine"), sv, actions.TypeDeploy, nil)
+}
+
+func (h *fakeHub) removeService(w http.ResponseWriter, r *http.Request) {
+	if sv := h.service(w, r); sv != nil {
+		h.queue(w, r.PathValue("machine"), sv, actions.TypeRemove, nil)
+	}
+}
+
+// actService answers POST .../deploy, start, stop and restart.
+func (h *fakeHub) actService(w http.ResponseWriter, r *http.Request) {
+	sv := h.service(w, r)
+	if sv == nil {
+		return
+	}
+	typ := r.PathValue("typ")
+	var in struct {
+		Container *string `json:"container"`
+	}
+	if r.ContentLength > 0 && !decode(w, r, &in) {
+		return
+	}
+	if in.Container != nil && !slices.ContainsFunc(sv.Containers, func(c services.Container) bool { return c.Name == *in.Container }) {
+		problem(w, http.StatusNotFound, "Container %q isn't in service %s.", *in.Container, sv.Name)
+		return
+	}
+	h.queue(w, r.PathValue("machine"), sv, typ, in.Container)
 }
 
 func (h *fakeHub) createAction(w http.ResponseWriter, r *http.Request) {
@@ -97,8 +223,8 @@ func (h *fakeHub) createAction(w http.ResponseWriter, r *http.Request) {
 	if in.Type == actions.TypeLogs && in.Lines == nil {
 		in.Lines = ptr(actions.DefaultLines)
 	}
-	a := &actions.Action{Summary: actions.Summary{ID: h.id(), Machine: m.Name, Type: in.Type, Service: in.Service, Unit: in.Unit,
-		Priority: in.Priority, Since: in.Since, Lines: in.Lines, Status: actions.StatusPending, CreatedAt: h.now, UpdatedAt: h.now}}
+	a := &actions.Action{Summary: actions.Summary{ID: h.id(), Machine: m.Name, Type: in.Type, Service: in.Service, Container: in.Container,
+		Unit: in.Unit, Priority: in.Priority, Since: in.Since, Lines: in.Lines, Status: actions.StatusPending, CreatedAt: h.now, UpdatedAt: h.now}}
 	h.actions[a.ID] = a
 	server.WriteJSON(w, http.StatusAccepted, a)
 }
@@ -139,12 +265,36 @@ func (h *fakeHub) addServices(t *testing.T, machine string, list ...services.Ser
 	}
 	for i := range list {
 		list[i].ID, list[i].Machine = h.id(), machine
+		if list[i].Env == nil {
+			list[i].Env = map[string]string{}
+		}
+		if list[i].Files == nil {
+			list[i].Files = map[string]string{}
+		}
 	}
 	h.services[machine] = append(h.services[machine], list...)
 	h.docker[machine] = services.DockerRunning
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// notes is a managed service of two containers: web running, and worker stopped by Tender.
+func notes(now time.Time) services.Service {
+	started, deployed := now.Add(-3*time.Hour), now.Add(-2*time.Hour)
+	compose := "services: {}\n"
+	return services.Service{Name: "notes", Managed: true, State: services.ServiceDegraded, DeployStatus: ptr(services.DeployDeployed),
+		DeployedAt: &deployed, ActionID: ptr(int64(7)), Compose: &compose, AlertsEnabled: false,
+		Env:   map[string]string{"SECRET_KEY": "***", "DB_URL": "***"},
+		Files: map[string]string{"config/app.toml": "x = 1\n"},
+		Routes: []services.Route{{ID: 1, Container: "web", Port: 8080, Expose: "tailscale", HTTPSPort: ptr(8443), LocalPort: 20000,
+			URL: ptr("https://apps.tail1234.ts.net:8443")}},
+		Containers: []services.Container{
+			{Name: "web", Image: "ghcr.io/me/notes:1", State: services.StateRunning, Health: ptr("healthy"), StartedAt: &started,
+				MemoryBytes: ptr(int64(1536 << 20)), MemoryLimitBytes: ptr(int64(2 << 30)), CPUPercent: ptr(2.5), RestartPolicy: "unless-stopped"},
+			{Name: "worker", Image: "ghcr.io/me/notes:1", State: services.StateExited, ExitCode: ptr(int64(137)), RestartCount: 4,
+				StoppedByTender: true, RestartPolicy: "unless-stopped"},
+		}}
+}
 
 func TestServicesList(t *testing.T) {
 	h := newFakeHub(t)
@@ -157,27 +307,21 @@ func TestServicesList(t *testing.T) {
 	if out := mustRun(t, h, a, "services", "list", "code"); !strings.HasPrefix(out, "code has no services.") {
 		t.Errorf("empty machine = %q", out)
 	}
-	started := h.now.Add(-3 * time.Hour)
-	h.addServices(t, "apps",
-		services.Service{Name: "cli-proxy-api", State: "running", Health: ptr("healthy"), StartedAt: &started, AlertsEnabled: true,
-			MemoryBytes: ptr(int64(200 << 20)), MemoryLimitBytes: ptr(int64(1 << 30)), CPUPercent: ptr(12.5)},
-		services.Service{Name: "web", State: "running", MemoryBytes: ptr(int64(1536 << 20)), AlertsEnabled: true},
-		services.Service{Name: "worker", State: "exited", ExitCode: ptr(int64(137)), RestartCount: 4, StoppedByTender: true},
-	)
-	want := "MACHINE   SERVICE         STATE                     HEALTH    MEM               CPU     RESTARTS   STARTED       ALERTS\n" +
-		"apps      cli-proxy-api   running                   healthy   200 MiB / 1 GiB   12.5%   0          3 hours ago   on\n" +
-		"apps      web             running                   -         1.5 GiB           -       0          -             on\n" +
-		"apps      worker          exited (137), by Tender   -         -                 -       4          -             off\n"
+	proxy := lone("cli-proxy-api", services.StateRunning)
+	proxy.Containers[0].MemoryBytes, proxy.Containers[0].CPUPercent = ptr(int64(200<<20)), ptr(12.5)
+	h.addServices(t, "apps", proxy, notes(h.now))
+	want := "MACHINE   SERVICE         STATE      RUNNING   MEM       CPU     DEPLOY     ALERTS\n" +
+		"apps      cli-proxy-api   running    1/1       200 MiB   12.5%   -          on\n" +
+		"apps      notes           degraded   1/2       1.5 GiB   2.5%    deployed   off\n"
 	if got := mustRun(t, h, a, "services", "list"); got != want {
 		t.Errorf("list =\n%s\nwant\n%s", got, want)
 	}
-	if got := mustRun(t, h, a, "services", "list", "apps"); !strings.Contains(got, "worker") {
+	if got := mustRun(t, h, a, "services", "list", "apps"); !strings.Contains(got, "notes") {
 		t.Errorf("one machine's list =\n%s", got)
 	}
-	// A service whose container is gone shows as removed, with when.
-	removedAt := h.now.Add(-2 * time.Hour)
-	h.addServices(t, "code", services.Service{Name: "old-job", State: services.StateRemoved, RemovedAt: &removedAt, AlertsEnabled: true})
-	if got := mustRun(t, h, a, "services", "list", "code"); !strings.Contains(got, "code      old-job   removed 2 hours ago   -") {
+	// A service whose containers are all gone shows as removed.
+	h.addServices(t, "code", lone("old-job", services.StateRemoved))
+	if got := mustRun(t, h, a, "services", "list", "code"); !strings.Contains(got, "code      old-job   stopped   removed") {
 		t.Errorf("removed service =\n%s", got)
 	}
 	delete(h.services, "code")
@@ -186,10 +330,9 @@ func TestServicesList(t *testing.T) {
 	// Docker stops answering: the states are unknown, and the list says why.
 	h.docker["apps"] = services.DockerUnreachable
 	for i := range h.services["apps"] {
-		h.services["apps"][i].State = services.StateUnknown
+		h.services["apps"][i].State = services.ServiceUnknown
 	}
 	if got := mustRun(t, h, a, "services", "list"); !strings.Contains(got, "apps      cli-proxy-api   unknown") ||
-		!strings.Contains(got, "apps      worker          unknown   ") || strings.Contains(got, "unknown (") ||
 		!strings.HasSuffix(got, "\nDocker is unreachable on apps, so the states of its services are unknown.\n") {
 		t.Errorf("list while Docker is unreachable =\n%s", got)
 	}
@@ -199,11 +342,155 @@ func TestServicesList(t *testing.T) {
 	}
 }
 
+func TestServicesShow(t *testing.T) {
+	h := newFakeHub(t)
+	a := &answers{}
+	mustRun(t, h, a, "machines", "add", "apps")
+	sv := notes(h.now)
+	sv.LastError = ptr("Container notes-web-1 is unhealthy.\nweb exited")
+	h.addServices(t, "apps", sv, lone("proxy", services.StateRunning))
+	want := "Service notes on apps: degraded.\n" +
+		"Deploy: deployed, last succeeded 2 hours ago (action 7).\n" +
+		"Why the last one failed:\nContainer notes-web-1 is unhealthy.\nweb exited\n" +
+		"Its alerts are off.\n\n" +
+		"CONTAINER   PORT   EXPOSE      LOCAL             URL\n" +
+		"web         8080   tailscale   127.0.0.1:20000   https://apps.tail1234.ts.net:8443\n\n" +
+		"Env: DB_URL, SECRET_KEY.\n" +
+		"Files: config/app.toml.\n\n" +
+		"CONTAINER   IMAGE                STATE                     HEALTH    MEM               CPU    RESTARTS   STARTED\n" +
+		"web         ghcr.io/me/notes:1   running                   healthy   1.5 GiB / 2 GiB   2.5%   0          3 hours ago\n" +
+		"worker      ghcr.io/me/notes:1   exited (137), by Tender   -         -                 -      4          -\n"
+	if got := mustRun(t, h, a, "services", "show", "apps", "notes"); got != want {
+		t.Errorf("show =\n%s\nwant\n%s", got, want)
+	}
+	if got := mustRun(t, h, a, "services", "show", "apps", "proxy"); !strings.Contains(got, "Tender found it running and didn't deploy it") {
+		t.Errorf("unmanaged show =\n%s", got)
+	}
+	mustFail(t, h, a, `Service "nope" doesn't exist on this machine.`, "services", "show", "apps", "nope")
+}
+
+func TestServicesDeploy(t *testing.T) {
+	h := newFakeHub(t)
+	a := &answers{}
+	mustRun(t, h, a, "machines", "add", "apps")
+	actionCheck = time.Millisecond
+	t.Cleanup(func() { actionCheck = time.Second })
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	compose := write("compose.yaml", "services:\n  web:\n    image: nginx\n")
+	config := write("config/app.toml", "x = 1\n")
+	envFile := write(".env", "# the keys\nSECRET_KEY=\"s3cret\"\nexport DB_URL=postgres://db\n")
+	h.sent()
+
+	out := mustRun(t, h, a, "services", "deploy", "apps", "notes", "-f", compose, "--file", config, "--env-file", envFile,
+		"--env", "MODE=prod", "--route", "web:80:tailscale", "--route", "web:80:public:notes.example.com")
+	if out != "Deployed notes on apps.\nweb answers at https://apps.tail1234.ts.net\nweb answers at https://notes.example.com\n" {
+		t.Errorf("first deploy = %q", out)
+	}
+	req := h.sent()
+	if req[0].Method != "GET" || req[0].Path != "/v1/machines/apps/services/notes" || req[1].Method != "POST" || req[1].Path != "/v1/machines/apps/services" {
+		t.Fatalf("first deploy sent %+v", req)
+	}
+	var in services.Input
+	if err := json.Unmarshal([]byte(req[1].Body), &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Name != "notes" || in.Compose != "services:\n  web:\n    image: nginx\n" || in.Files["config/app.toml"] != "x = 1\n" ||
+		len(in.Env) != 3 || in.Env["SECRET_KEY"] != "s3cret" || in.Env["DB_URL"] != "postgres://db" || in.Env["MODE"] != "prod" ||
+		len(in.Routes) != 2 || in.Routes[1].Host == nil || *in.Routes[1].Host != "notes.example.com" {
+		t.Errorf("create body = %+v", in)
+	}
+
+	// Again with only the file: the compose file changes, and files, env and routes stay.
+	h.sent()
+	if out := mustRun(t, h, a, "services", "deploy", "apps", "notes", "-f", compose, "--no-wait"); !strings.HasPrefix(out, "Queued action ") {
+		t.Errorf("--no-wait = %q", out)
+	}
+	req = h.sent()
+	if req[1].Method != "PATCH" || strings.TrimSpace(req[1].Body) != `{"compose":"services:\n  web:\n    image: nginx\n"}` {
+		t.Errorf("second deploy sent %+v", req)
+	}
+	// --env replaces the whole env: the keys it lacks are removed.
+	h.sent()
+	mustRun(t, h, a, "services", "deploy", "apps", "notes", "-f", compose, "--env", "MODE=dev")
+	req = h.sent()
+	var patch map[string]map[string]*string
+	_ = json.Unmarshal([]byte(req[1].Body), &patch)
+	if env := patch["env"]; len(env) != 3 || env["SECRET_KEY"] != nil || env["DB_URL"] != nil || env["MODE"] == nil || *env["MODE"] != "dev" {
+		t.Errorf("env patch = %s", req[1].Body)
+	}
+
+	mustFail(t, h, a, `services deploy needs the compose file: -f compose.yaml. Run "tender services deploy --help" for usage.`, "services", "deploy", "apps", "notes")
+	mustFail(t, h, a, `--route "web:80" must be CONTAINER:PORT:EXPOSE or CONTAINER:PORT:EXPOSE:HOST, such as web:80:tailscale or web:80:public:app.example.com. Run "tender services deploy --help" for usage.`,
+		"services", "deploy", "apps", "notes", "-f", compose, "--route", "web:80")
+	outside := filepath.Join(t.TempDir(), "x.toml")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCommand(t, h, a, "services", "deploy", "apps", "notes", "-f", compose, "--file", outside); err == nil || !strings.Contains(err.Error(), "is outside the compose file's folder") {
+		t.Errorf("a file outside = %v", err)
+	}
+
+	// The daemon refuses the compose file: its reason is the error.
+	h.daemon = func(x *actions.Action) {
+		x.Status, x.Output = actions.StatusFailed, ptr(`service web in the compose file publishes ports; Tender publishes them for routes. Remove ports and add --route web:80:tailscale.`)
+	}
+	mustFail(t, h, a, `service web in the compose file publishes ports; Tender publishes them for routes. Remove ports and add --route web:80:tailscale.`,
+		"services", "redeploy", "apps", "notes")
+	h.daemon = completeAction
+	h.sent()
+	if out := mustRun(t, h, a, "services", "redeploy", "apps", "notes"); !strings.HasPrefix(out, "Deployed notes on apps again.\n") {
+		t.Errorf("redeploy = %q", out)
+	}
+	if req := h.sent(); req[0].Method != "POST" || req[0].Path != "/v1/machines/apps/services/notes/deploy" {
+		t.Errorf("redeploy sent %+v", req)
+	}
+
+	// An unmanaged service can't be deployed over.
+	h.addServices(t, "apps", lone("proxy", services.StateRunning))
+	mustFail(t, h, a, `Tender didn't deploy service "proxy", so it can't change it.`, "services", "deploy", "apps", "proxy", "-f", compose)
+}
+
+func TestServicesRemove(t *testing.T) {
+	h := newFakeHub(t)
+	a := &answers{}
+	mustRun(t, h, a, "machines", "add", "apps")
+	actionCheck = time.Millisecond
+	t.Cleanup(func() { actionCheck = time.Second })
+	h.addServices(t, "apps", notes(h.now))
+	h.sent()
+	mustFail(t, h, a, `this removes notes from apps, keeping its data on the machine. Run "tender services remove apps notes --yes" to confirm`,
+		"services", "remove", "apps", "notes")
+	mustFail(t, h, a, `this removes notes from apps, and deletes its data, with no undo. Run "tender services remove apps notes --delete-data --yes" to confirm`,
+		"services", "remove", "apps", "notes", "--delete-data")
+	out := mustRun(t, h, a, "services", "remove", "apps", "notes", "--yes")
+	if out != "Removed notes from apps.\nKept the folder in /var/lib/tender/services/.removed/notes-20261114T120000Z.\n" {
+		t.Errorf("remove = %q", out)
+	}
+	if req := h.sent(); req[0].Method != "DELETE" || req[0].Path != "/v1/machines/apps/services/notes" || req[0].Query != "" {
+		t.Errorf("remove sent %+v", req[0])
+	}
+	mustRun(t, h, a, "services", "remove", "apps", "notes", "--delete-data", "--yes")
+	if req := h.sent(); req[0].Query != "delete_data=true" {
+		t.Errorf("remove --delete-data sent %+v", req[0])
+	}
+}
+
 func TestServicesActions(t *testing.T) {
 	h := newFakeHub(t)
 	a := &answers{}
 	mustRun(t, h, a, "machines", "add", "apps")
-	h.addServices(t, "apps", services.Service{Name: "web-1", State: "running", AlertsEnabled: true})
+	h.addServices(t, "apps", lone("web-1", services.StateRunning), notes(h.now))
 	actionCheck = time.Millisecond
 	t.Cleanup(func() { actionCheck = time.Second })
 
@@ -213,11 +500,20 @@ func TestServicesActions(t *testing.T) {
 			t.Errorf("%s = %q, want %q", typ, out, want)
 		}
 		req := h.sent()
-		if len(req) < 2 || req[0].Method != "POST" || req[0].Path != "/v1/machines/apps/actions" ||
-			strings.TrimSpace(req[0].Body) != `{"type":"`+typ+`","service":"web-1"}` || req[1].Method != "GET" || !strings.HasPrefix(req[1].Path, "/v1/machines/apps/actions/") {
+		if len(req) < 2 || req[0].Method != "POST" || req[0].Path != "/v1/machines/apps/services/web-1/"+typ ||
+			req[0].Body != "" || req[1].Method != "GET" || !strings.HasPrefix(req[1].Path, "/v1/machines/apps/actions/") {
 			t.Errorf("%s sent %+v", typ, req)
 		}
 	}
+	h.sent()
+	if out := mustRun(t, h, a, "services", "restart", "apps", "notes", "--container", "worker"); out != "Restarted worker in notes on apps.\n" {
+		t.Errorf("restart of one container = %q", out)
+	}
+	if req := h.sent(); strings.TrimSpace(req[0].Body) != `{"container":"worker"}` {
+		t.Errorf("restart of one container sent %s", req[0].Body)
+	}
+	mustFail(t, h, a, `Container "nope" isn't in service notes.`, "services", "stop", "apps", "notes", "--container", "nope")
+	h.sent()
 
 	out := mustRun(t, h, a, "services", "logs", "apps", "web-1", "--lines", "50", "--since", "2h")
 	if out != "2026-11-14T11:59:00.000000000Z started\n2026-11-14T11:59:30.000000000Z listening on :8080\n" {
@@ -225,6 +521,10 @@ func TestServicesActions(t *testing.T) {
 	}
 	if req := h.sent(); strings.TrimSpace(req[0].Body) != `{"type":"logs","service":"web-1","since":"2h","lines":50}` {
 		t.Errorf("logs sent %s", req[0].Body)
+	}
+	mustRun(t, h, a, "services", "logs", "apps", "notes", "--container", "web")
+	if req := h.sent(); strings.TrimSpace(req[0].Body) != `{"type":"logs","service":"notes","container":"web","lines":200}` {
+		t.Errorf("logs of one container sent %s", req[0].Body)
 	}
 	mustFail(t, h, a, `--lines must be from 1 to 2000. Run "tender services logs --help" for usage.`, "services", "logs", "apps", "web-1", "--lines", "0")
 	mustFail(t, h, a, `--since must be a duration such as 30m, 1h or 7d, at most 7d. Run "tender services logs --help" for usage.`,
@@ -314,7 +614,7 @@ func TestServicesAlerts(t *testing.T) {
 	h := newFakeHub(t)
 	a := &answers{}
 	mustRun(t, h, a, "machines", "add", "apps")
-	h.addServices(t, "apps", services.Service{Name: "web-1", State: "running", AlertsEnabled: true})
+	h.addServices(t, "apps", lone("web-1", services.StateRunning))
 	if out := mustRun(t, h, a, "services", "alerts", "apps", "web-1", "off"); out != "Alerts for web-1 on apps are off. Its open problems resolve within a minute.\n" {
 		t.Errorf("off = %q", out)
 	}

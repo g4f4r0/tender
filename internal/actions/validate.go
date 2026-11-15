@@ -42,6 +42,9 @@ func (in *Input) validate() error {
 	if in.Packages != nil && in.Type != TypeUpgrade {
 		return server.Invalid("packages is only for an upgrade action.")
 	}
+	if in.Container != nil && *in.Container == "" {
+		return server.Invalid("container can't be empty. Leave it out for every container of the service.")
+	}
 	switch in.Type {
 	case TypeStart, TypeStop, TypeRestart:
 		switch {
@@ -55,13 +58,13 @@ func (in *Input) validate() error {
 		switch {
 		case in.Destination == nil || *in.Destination == "":
 			return server.Invalid("A test names its destination: POST /v1/backups/destinations/{destination}/test.")
-		case in.Service != nil, in.Unit != nil, in.Priority != nil, in.Since != nil, in.Lines != nil:
-			return server.Invalid("service, unit, priority, since and lines are not for a test action.")
+		case in.Service != nil, in.Container != nil, in.Unit != nil, in.Priority != nil, in.Since != nil, in.Lines != nil:
+			return server.Invalid("service, container, unit, priority, since and lines are not for a test action.")
 		}
 		return nil
 	case TypeUpgrade:
 		switch {
-		case in.Service != nil, in.Unit != nil, in.Priority != nil, in.Since != nil, in.Lines != nil:
+		case in.Service != nil, in.Container != nil, in.Unit != nil, in.Priority != nil, in.Since != nil, in.Lines != nil:
 			return server.Invalid("An upgrade takes only packages: security or all.")
 		case in.Packages == nil:
 			p := PackagesSecurity
@@ -70,11 +73,17 @@ func (in *Input) validate() error {
 			return server.Invalid("packages must be security (security updates only, the default) or all (every pending update).")
 		}
 		return nil
+	case TypeDeploy, TypeRemove:
+		return server.Invalid("A managed service is deployed and removed through its own routes: POST /v1/machines/{machine}/services, " +
+			"POST /v1/machines/{machine}/services/{service}/deploy, and DELETE /v1/machines/{machine}/services/{service}.")
 	case TypeUpdate:
 		return server.Invalid("An update of Tender goes through a rollout, which updates one machine at a time: POST /v1/updates/rollouts with {\"machines\": [\"NAME\"]}.")
 	case TypeLogs:
 	default:
 		return server.Invalid("type must be start, stop, restart, logs or upgrade.")
+	}
+	if in.Container != nil && in.Service == nil {
+		return server.Invalid("container is for a container of a service: give service too.")
 	}
 	if in.Service != nil {
 		if *in.Service == "" {

@@ -50,10 +50,10 @@ func TestLoadMachines(t *testing.T) {
 
 	ss := services.NewStore(d)
 	code := int64(1)
-	if _, err := ss.Replace(ctx, 1, []services.ServiceInput{{Name: "web-1", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code, RestartCount: 2}}); err != nil {
+	if err := ss.Replace(ctx, 1, []services.ContainerInput{{Name: "web-1", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code, RestartCount: 2}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ss.Replace(ctx, 1, []services.ServiceInput{{Name: "web-1", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code, RestartCount: 2}}); err != nil {
+	if err := ss.Replace(ctx, 1, []services.ContainerInput{{Name: "web-1", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code, RestartCount: 2}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +78,7 @@ func TestLoadMachines(t *testing.T) {
 		a.LastBackup == nil || a.LastBackup.Status != "failed" || a.LastBackup.Error != "boom" || !a.LastBackup.Time.Equal(at) {
 		t.Errorf("a = %+v, last backup %+v", a, a.LastBackup)
 	}
-	want := []notifications.Service{{Name: "web-1", State: "exited", ExitCode: &code, RestartCount: 2, RestartPolicy: "no", AlertsEnabled: true, DownReports: 2}}
+	want := []notifications.Service{{Name: "web-1", Container: "web-1", State: "exited", ExitCode: &code, RestartCount: 2, RestartPolicy: "no", AlertsEnabled: true, DownReports: 2}}
 	if !reflect.DeepEqual(a.Services, want) || a.Docker != "running" || a.DockerUnreachableReports != 0 ||
 		a.DockerReportedAt == nil || time.Since(*a.DockerReportedAt) > time.Minute {
 		t.Errorf("a's services = %+v, docker %q; want %+v", a.Services, a.Docker, want)
@@ -148,7 +148,7 @@ func TestDockerOffResolves(t *testing.T) {
 		return events
 	}
 	code := int64(1)
-	down := services.RunningReport([]services.ServiceInput{{Name: "web", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code}})
+	down := services.RunningReport([]services.ContainerInput{{Name: "web", ContainerID: "c1", Image: "nginx", State: "exited", ExitCode: &code}})
 	unreachable := services.UnreachableReport(services.ReasonRefused)
 	if got, want := tick(down, down), []string{"service.down"}; !slices.Equal(got, want) {
 		t.Fatalf("web down: %v, want %v", got, want)

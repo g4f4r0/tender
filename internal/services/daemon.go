@@ -3,11 +3,13 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,7 +37,8 @@ var (
 type Daemon struct {
 	Hub     *client.Client
 	Machine string
-	Runtime Runtime // what runs the services; Docker unless a test sets another
+	Runtime Runtime // what runs the containers; Docker unless a test sets another
+	Compose Compose // starts, stops and restarts the managed services; nil acts on each container
 	Log     *slog.Logger
 	Every   time.Duration // between reports, a minute
 	// StateDir is the daemon's state folder, where it remembers it saw Docker. Empty remembers
@@ -91,16 +94,114 @@ func (d *Daemon) Changed() {
 	}
 }
 
-// Service starts, stops or restarts a container, or returns its newest lines of logs since then,
-// at most MaxLines and MaxOutputBytes.
-func (d *Daemon) Service(ctx context.Context, typ, service string, lines int, since time.Duration) (string, error) {
+// Compose acts on the managed services, which the daemon starts, stops and restarts with docker
+// compose. package deploy's Runner is it.
+type Compose interface {
+	// Managed says Tender deployed the service called name on this machine.
+	Managed(name string) bool
+	// Act starts, stops or restarts every container of the managed service.
+	Act(ctx context.Context, typ, name string) error
+}
+
+// Service starts, stops or restarts a service, or returns its newest lines of logs since then, at
+// most MaxLines and MaxOutputBytes. container, when not empty, narrows it to one container. A
+// managed service as a whole goes through docker compose; otherwise each container through Docker.
+func (d *Daemon) Service(ctx context.Context, typ, service, container string, lines int, since time.Duration) (string, error) {
 	switch typ {
 	case actStart, actStop, actRestart:
-		return "", d.Runtime.Act(ctx, typ, service)
+		if container == "" && d.Compose != nil && d.Compose.Managed(service) {
+			return "", d.Compose.Act(ctx, typ, service)
+		}
 	case actLogs:
-		return d.Runtime.Logs(ctx, service, lines, since)
+	default:
+		return "", errors.New("this daemon doesn't know the action " + typ + "; update Tender on this machine")
 	}
-	return "", errors.New("this daemon doesn't know the action " + typ + "; update Tender on this machine")
+	targets, err := d.containers(ctx, service, container)
+	if err != nil {
+		return "", err
+	}
+	if typ == actLogs {
+		return d.logs(ctx, targets, lines, since)
+	}
+	var errs []error
+	for _, t := range targets {
+		if err := d.Runtime.Act(ctx, typ, t.docker); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", t.name, err))
+		}
+	}
+	return "", errors.Join(errs...)
+}
+
+// target is one container an action is for: its name in its service, and Docker's name for it.
+type target struct{ name, docker string }
+
+// containers finds the containers of service on this machine, or the one called container in it,
+// named as the hub names them.
+func (d *Daemon) containers(ctx context.Context, service, container string) ([]target, error) {
+	lctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	list, err := d.Runtime.Containers(lctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []target
+	for i, n := range Name(list) {
+		if n.Service == service && (container == "" || n.Container == container) {
+			out = append(out, target{name: n.Container, docker: list[i].Name})
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].name < out[b].name })
+	switch {
+	case len(out) > 0:
+		return out, nil
+	case container != "":
+		return nil, fmt.Errorf("Docker on this machine has no container %s in %s", container, service)
+	}
+	return nil, fmt.Errorf("Docker on this machine has no containers of %s", service)
+}
+
+// logs returns the newest lines of the containers' logs. Lines of several containers are merged
+// by their timestamps, each with its container's name after the timestamp.
+func (d *Daemon) logs(ctx context.Context, targets []target, lines int, since time.Duration) (string, error) {
+	if len(targets) == 1 {
+		return d.Runtime.Logs(ctx, targets[0].docker, lines, since)
+	}
+	type line struct {
+		at   time.Time
+		text string
+	}
+	var all []line
+	for _, t := range targets {
+		text, err := d.Runtime.Logs(ctx, t.docker, lines, since)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", t.name, err)
+		}
+		for _, l := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+			if l == "" {
+				continue
+			}
+			stamp, rest, _ := strings.Cut(l, " ")
+			at, err := time.Parse(time.RFC3339Nano, stamp)
+			if err != nil {
+				stamp, rest = "", l
+			}
+			all = append(all, line{at: at, text: strings.TrimPrefix(stamp+" ", " ") + t.name + " | " + rest})
+		}
+	}
+	sort.SliceStable(all, func(a, b int) bool { return all[a].at.Before(all[b].at) })
+	lines = max(1, min(lines, MaxLines))
+	if len(all) > lines {
+		all = all[len(all)-lines:]
+	}
+	var b strings.Builder
+	for _, l := range all {
+		b.WriteString(l.text + "\n")
+	}
+	out := b.String()
+	for len(out) > MaxOutputBytes {
+		_, out, _ = strings.Cut(out, "\n")
+	}
+	return out, nil
 }
 
 // reportNow sends the hub the full container list. It first pings Docker: when its socket is
@@ -151,7 +252,7 @@ func (d *Daemon) reportNow(ctx context.Context) {
 // usage reads the memory and CPU of each running container in list, statsAtOnce at a time. CPU is
 // measured against this daemon's previous reading of the same container, so it is null on a
 // container's first report and after it restarts or is made again.
-func (d *Daemon) usage(ctx context.Context, list []ServiceInput) {
+func (d *Daemon) usage(ctx context.Context, list []ContainerInput) {
 	bctx, cancel := context.WithTimeout(ctx, statsBudget)
 	defer cancel()
 	now := make([]*sample, len(list))
@@ -206,7 +307,7 @@ func (d *Daemon) usage(ctx context.Context, list []ServiceInput) {
 // sampleKey names one run of a container. A re-created container has a new id, and a restarted
 // one a new start time and a CPU counter that starts again, so neither is measured against the
 // reading before it.
-func sampleKey(sv ServiceInput) string {
+func sampleKey(sv ContainerInput) string {
 	if sv.StartedAt == nil {
 		return sv.ContainerID
 	}

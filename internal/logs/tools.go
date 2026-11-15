@@ -71,7 +71,7 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 			"sources, machines (empty for every machine), and status: per machine, records_sent, records_dropped, last_sent_at, "+
 			"last_error (null while sending works), failing_since (null while sending works), last_dropped_at, created_at (its first "+
 			"report) and updated_at (its latest, sent every minute); and created_at and updated_at. Times are RFC 3339 UTC. The logs themselves never reach the hub, so no "+
-			"tool returns them from a sink; get_machine_logs and get_service_logs read them from the machine.",
+			"tool returns them from a sink; get_machine_logs and service_logs read them from the machine.",
 		func(ctx context.Context, _ struct{}) (server.List[Sink], error) {
 			list, err := s.Sinks(ctx)
 			if list == nil {

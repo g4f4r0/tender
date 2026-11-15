@@ -41,7 +41,7 @@ func TestServiceTools(t *testing.T) {
 	d := seeded(t)
 	ss := services.NewStore(d)
 	ctx := context.Background()
-	if _, err := ss.Replace(ctx, 1, []services.ServiceInput{
+	if err := ss.Replace(ctx, 1, []services.ContainerInput{
 		{Name: "cli-proxy-api", ContainerID: "c1", Image: "cpa", State: "running", MemoryBytes: ptr(int64(200 << 20)), CPUPercent: ptr(3.5)},
 		{Name: "worker", ContainerID: "c2", Image: "w", State: "exited", ExitCode: ptr(int64(1))},
 	}); err != nil {
@@ -69,7 +69,7 @@ func TestServiceTools(t *testing.T) {
 	if want := restJSON(t, rest, "/v1/services"); len(list.Data) != 1 || len(list.Data[0].Data) != 2 || !reflect.DeepEqual(mustJSON(t, list), want) {
 		t.Errorf("list_services = %+v, REST %v", list, want)
 	}
-	if d := list.Data[0].Docker; d == nil || *d != "running" || list.Data[0].Data[0].RestartPolicy != "no" || *list.Data[0].Data[0].CPUPercent != 3.5 {
+	if d := list.Data[0].Docker; d == nil || *d != "running" || list.Data[0].Data[0].Containers[0].RestartPolicy != "no" || *list.Data[0].Data[0].Containers[0].CPUPercent != 3.5 {
 		t.Errorf("docker = %v, service = %+v", d, list.Data[0].Data[0])
 	}
 	structured(t, callTool(t, cs, "list_services", map[string]any{"machine": "g4f4r0-apps"}), &list)
@@ -89,16 +89,16 @@ func TestServiceTools(t *testing.T) {
 		if a.Status != actions.StatusCompleted || a.Type != strings.TrimSuffix(tool, "_service") {
 			t.Errorf("%s = %+v", tool, a)
 		}
-		if sv, _ := ss.Get(ctx, 1, "cli-proxy-api"); sv.StoppedByTender != (tool == "stop_service") {
-			t.Errorf("after %s, stopped_by_tender = %v", tool, sv.StoppedByTender)
+		if sv, _ := ss.Get(ctx, 1, "cli-proxy-api"); sv.Containers[0].StoppedByTender != (tool == "stop_service") {
+			t.Errorf("after %s, stopped_by_tender = %v", tool, sv.Containers[0].StoppedByTender)
 		}
 	}
 	var logs actions.Action
-	structured(t, callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 3, "since": "1h"}), &logs)
+	structured(t, callTool(t, cs, "service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 3, "since": "1h"}), &logs)
 	if logs.Output == nil || *logs.Output != "log line\nlog line\nlog line\n" || *logs.Since != "1h" {
 		t.Errorf("logs = %+v", logs)
 	}
-	structured(t, callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api"}), &logs)
+	structured(t, callTool(t, cs, "service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api"}), &logs)
 	if *logs.Lines != actions.DefaultLines {
 		t.Errorf("default lines = %d", *logs.Lines)
 	}
@@ -139,7 +139,7 @@ func TestServiceTools(t *testing.T) {
 	// lines below 1 is a mistake to name, as REST and the CLI do, not a quiet default.
 	for _, n := range []int{0, -5} {
 		for tool, args := range map[string]map[string]any{
-			"get_service_logs": {"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": n},
+			"service_logs":     {"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": n},
 			"get_machine_logs": {"machine": "g4f4r0-code", "lines": n},
 		} {
 			if res := callTool(t, cs, tool, args); !res.IsError || !strings.Contains(errorText(res), "lines must be a whole number from 1 to 2000") {
@@ -147,7 +147,7 @@ func TestServiceTools(t *testing.T) {
 			}
 		}
 	}
-	if res := callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 5000}); !res.IsError {
+	if res := callTool(t, cs, "service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 5000}); !res.IsError {
 		t.Error("5000 lines were accepted")
 	}
 
@@ -169,7 +169,7 @@ func TestServiceToolWaitsThenReturnsPending(t *testing.T) {
 	t.Cleanup(func() { actions.Wait = 60 * time.Second })
 	d := seeded(t)
 	ss := services.NewStore(d)
-	if _, err := ss.Replace(context.Background(), 1, []services.ServiceInput{{Name: "web", ContainerID: "c1", Image: "i", State: "running"}}); err != nil {
+	if err := ss.Replace(context.Background(), 1, []services.ContainerInput{{Name: "web", ContainerID: "c1", Image: "i", State: "running"}}); err != nil {
 		t.Fatal(err)
 	}
 	cs := connect(t, d)

@@ -125,7 +125,7 @@ func TestRoutes(t *testing.T) {
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "stop", "service": "db"}, 404, `Service \"db\" doesn't exist`},
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "restart", "service": "web"}, 202, `"status":"pending"`},
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 50}, 202,
-			`"service":null,"unit":"tenderd","priority":"warning","since":"1h","lines":50`},
+			`"service":null,"container":null,"unit":"tenderd","priority":"warning","since":"1h","lines":50`},
 		// A service may be called "actions": actions aren't under /services, so nothing is in its way.
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "logs", "service": "actions"}, 202, `"service":"actions"`},
 		{"POST", "/v1/machines/a/actions", "", map[string]any{"type": "upgrade"}, 202, `"version":null,"packages":"security"`},
@@ -215,11 +215,14 @@ func (f *fakeRunner) Changed() {
 	f.mu.Unlock()
 }
 
-func (f *fakeRunner) Service(_ context.Context, typ, service string, lines int, since time.Duration) (string, error) {
+func (f *fakeRunner) Service(_ context.Context, typ, service, container string, lines int, since time.Duration) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.held {
 		f.events = append(f.events, "ran without the turn")
+	}
+	if container != "" {
+		service += "/" + container
 	}
 	f.events = append(f.events, typ+" "+service)
 	switch {
