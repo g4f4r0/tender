@@ -2235,7 +2235,7 @@ Stores a new managed service and queues its deploy. The daemon checks the compos
 | `name` | string | Yes | Body. The compose project name: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
 | `compose` | string | Yes | Body. The text of the docker compose file, at most 256 KiB. |
 | `files` | object | No | Body. Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. At most 64 files and 1 MiB in all. |
-| `env` | object | No | Body. Values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores; a value can't hold a single quote or a line break. |
+| `env` | object | No | Body. Values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores, not starting with `COMPOSE_` or `DOCKER_`; a value can't hold a single quote or a line break. |
 | `routes` | array | No | Body. Each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` for `cloudflare` and `public` or an optional `https_port` for `tailscale`. See [Routes](exposure.md#routes). |
 
 #### Example request

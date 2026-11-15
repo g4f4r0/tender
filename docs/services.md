@@ -68,7 +68,7 @@ tender services deploy apps notes -f compose.yaml --env-file .env --route web:80
 A service's name is its compose project name: lowercase letters and digits, starting with a letter, at most 32, with no dashes. With the compose file come:
 
 1. `files`, the config files the compose file mounts, by their path relative to it, such as `config/app.toml`. A service has at most 64 files and 1 MiB in all.
-2. `env`, the values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores. The hub stores the values encrypted and shows each as `"***"`. A value can't hold a single quote or a line break.
+2. `env`, the values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores, and can't start with `COMPOSE_` or `DOCKER_`, which compose reads from `.env` as its own settings. The hub stores the values encrypted and shows each as `"***"`. A value can't hold a single quote or a line break.
 3. `routes`, which make a container's port reachable. See [Exposure](exposure.md).
 
 ### What the daemon does
@@ -82,8 +82,9 @@ On the machine each managed service has a folder, `/var/lib/tender/services/<nam
    2. puts the label `dev.tender.service=<name>` on every container;
    3. sets `restart: unless-stopped` where the compose file sets no restart policy;
    4. binds every named volume to `volumes/<volume>` in the folder, with `driver: local` and `driver_opts: {type: none, o: bind, device: ...}`, so its data is backed up and it works as a named volume does.
-4. It pulls the images with the logins of their registries, from a temporary `DOCKER_CONFIG` that it deletes afterwards, then runs `docker compose -p <name> -f compose.yaml -f compose.tender.yaml up -d --remove-orphans --wait --wait-timeout 300`.
-5. It applies the machine's exposures, as [Exposure](exposure.md) describes.
+4. It writes the config it checked to `compose.checked.json` in a temporary `DOCKER_CONFIG` folder of the deploy's own, outside the service's folder, and deletes the folder afterwards. Pull and up run on that file and the override, never on `compose.yaml` again: `docker compose -p <name> --project-directory <folder> -f <checked> -f compose.tender.yaml`. It pulls the images with the logins of their registries, from that folder.
+5. Right before up, it walks each path in the folder that compose binds or reads, a part at a time, and fails the deploy at a symbolic link or anything that isn't a plain folder or file. Then it runs `up -d --remove-orphans --wait --wait-timeout 300`.
+6. It applies the machine's exposures, as [Exposure](exposure.md) describes.
 
 The action's output keeps the last 64 KiB of compose's output. The daemon gives a deploy 40 minutes, and the CLI waits for it; MCP waits 60 seconds and returns the action as it is.
 
@@ -93,18 +94,20 @@ A failed deploy sets `deploy_status` to `failed`, with `last_error` holding why,
 
 ### The rules
 
-The daemon checks the rendered config of your compose file, not Tender's override:
+The daemon checks the rendered config of your compose file, not Tender's override. Every key in it must be one Tender allows, at the top, on a service, on a volume, network, secret or config, and in a mount, `deploy` or a service's network; keys starting `x-` are always allowed. A key that isn't allowed fails the deploy with a sentence that names it. On top of that:
 
 1. Images only: `build` is refused. Build the image elsewhere and push it to a registry.
 2. No `ports`: routes publish them.
-3. No `network_mode`, `pid`, `ipc`, `uts` or `userns_mode` of `host`.
-4. No `privileged`, no `devices`, no `security_opt` with `unconfined`, and no `cap_add` of `ALL`, `SYS_ADMIN`, `SYS_MODULE`, `SYS_PTRACE`, `SYS_RAWIO`, `DAC_READ_SEARCH` or `NET_ADMIN`.
-5. A bind mount's source must be inside the service's folder, a relative path in the file, and no mount may name the Docker socket. `env_file`, `secrets` and `configs` files must be inside it too.
-6. Named volumes may not be `external` or set their own `driver` or `driver_opts`, and networks may not be `external`.
+3. `network_mode` may be `none`, `bridge`, `default` or `service:<name>` of a service in the same file. `ipc` may be `none`, `private`, `shareable` or `service:<name>`, and `pid` only `service:<name>`. `container:<name>` is refused: it joins any container's namespaces, such as one on the machine's own network.
+4. No `privileged`, no `devices`, in `deploy.resources.reservations` too, no `security_opt` with `unconfined` or `label=disable`, and no `cap_add` of `ALL`, `SYS_ADMIN`, `SYS_MODULE`, `SYS_PTRACE`, `SYS_RAWIO`, `DAC_READ_SEARCH`, `NET_ADMIN`, `BPF`, `PERFMON`, `MAC_ADMIN`, `MAC_OVERRIDE`, `SYS_BOOT` or `SYS_TIME`. Only `net.*` sysctls, and only the `json-file`, `local`, `journald` and `none` log drivers.
+5. A bind mount's source must be inside the service's folder, a relative path in the file, and no mount may name the Docker socket. It can't be the folder itself or what Tender keeps there: `compose.yaml`, `compose.tender.yaml`, `.env`, `.tender-files.json` and `volumes/`. A mount is `bind`, `volume` or `tmpfs`, without propagation other than `private`. `env_file`, `secrets` and `configs` files must be inside the folder too.
+6. Named volumes may not be `external` or set their own `driver` or `driver_opts`; their names are letters, digits, dots, dashes and underscores. Networks may not be `external`, and are bridge networks. Neither may set a `name` other than compose's own, `<name>_<key>`, which could be another service's.
 7. No `container_name`.
-8. Every compose service has a memory limit, `mem_limit` or `deploy.resources.limits.memory`, so the memory-high alert works.
+8. Every compose service has a memory limit above zero, `mem_limit` or `deploy.resources.limits.memory`, so the memory-high alert works. `0` and `-1` mean no limit, and are refused.
 
-Anything else compose supports works: several services, health checks, `depends_on`, profiles, anchors, `env_file`, `command`, internal networks and the rest. For example:
+The check for symbolic links runs right before up, so a running container that can write in a bound folder could still make one in the moment between the check and up. The main guard is the folder rule, with binds kept off what Tender keeps in the folder, and pull and up running on the config Tender checked.
+
+The common keys work: several services, health checks, `depends_on`, profiles, anchors, `env_file`, `command`, `environment`, `labels`, `user`, limits and reservations, `ulimits`, `tmpfs`, internal networks and the rest. For example:
 
 ```text
 service web in the compose file publishes ports, which Tender's routes do instead: remove ports from web and add a route to its port, such as --route web:80:tailscale
