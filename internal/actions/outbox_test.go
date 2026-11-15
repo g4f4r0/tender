@@ -118,7 +118,7 @@ func TestClaimAnswerLost(t *testing.T) {
 		}
 		rec := httptest.NewRecorder()
 		httputil.NewSingleHostReverseProxy(mustURL(h.URL)).ServeHTTP(rec, r) // the hub claims it
-		conn, _, _ := w.(http.Hijacker).Hijack()                           // and the answer is lost
+		conn, _, _ := w.(http.Hijacker).Hijack()                             // and the answer is lost
 		_ = conn.Close()
 		return true
 	})
