@@ -143,19 +143,18 @@ The first backup starts within a minute, and the next ones follow the schedule.
 
 ## 6. List the services
 
-1. List the machine's Docker containers:
+1. List the machine's services, its compose projects and lone containers:
 
    ```sh
    tender services list apps
    ```
 
    ```text
-   MACHINE   SERVICE   STATE        HEALTH    MEM               CPU     RESTARTS   STARTED      ALERTS
-   apps      migrate   exited (0)   -         -                 -       0          -            on
-   apps      web       running      healthy   200 MiB / 1 GiB   12.5%   0          1 hour ago   on
+   MACHINE   SERVICE   STATE     RUNNING   MEM       CPU     DEPLOY   ALERTS
+   apps      notes     running   1/1       200 MiB   12.5%   -        on
    ```
 
-   A machine without Docker has no services. CPU shows `-` until the second report, a minute after the first.
+   A machine without Docker has no services. CPU shows `-` until the second report, a minute after the first. `tender services show apps notes` lists its containers. To deploy a service from a compose file, see [Services](services.md#deploy-a-service).
 
 ## Next steps
 

@@ -1,6 +1,6 @@
 # MCP tools
 
-The hub serves 40 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
+The hub serves 48 MCP tools at `/mcp`, so an AI client can do everything a person can do with the `tender` command or the REST API.
 
 ## Prerequisites
 
@@ -16,10 +16,10 @@ The hub serves MCP over streamable HTTP at `https://apps.your-tailnet.ts.net/mcp
 1. Every result is JSON. It comes as `structuredContent` and as the same JSON in a text block, for clients that read only text. A list is `{"data": [...]}`, with `next_cursor` when there is another page.
 2. A failed call comes back as a tool result with `isError` set and one sentence that says what went wrong and what to do, such as `Machine "nope" doesn't exist. Call list_machines to see the names.` A failure inside the hub says only `The hub failed to read its data.` and the hub logs the cause.
 3. Each tool's input schema lists its required inputs and allows no others. A call that leaves out a required input, gives one the wrong type or adds an unknown one fails before the tool runs, with the MCP SDK's `validating "arguments": ...` message. The `... is required` errors below are for an input passed as an empty string.
-4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only four set it to `true`: `send_test_notification`, which sends to the channels, `test_destination`, which reaches a backup destination, `start_update`, which installs a release from GitHub, and `upgrade_machine`, which installs packages from the machine's package mirrors.
-5. The action tools, `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs`, `test_destination` and `upgrade_machine`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes, or 45 for an upgrade. Check it later with `get_action`.
+4. Each tool carries MCP annotations, listed in its entry. `readOnlyHint` is `true` for the tools that only read. Every other tool sets `destructiveHint`, which is `true` for the ones that remove data, cut a daemon off or take a service offline, so the client can ask you first. `idempotentHint` is `true` for the ones you can call again with the same input without changing anything more. Every tool sets `openWorldHint`, and only six set it to `true`: `send_test_notification`, which sends to the channels, `test_destination`, which reaches a backup destination, `start_update`, which installs a release from GitHub, `upgrade_machine`, which installs packages from the machine's package mirrors, and `deploy_service` and `redeploy_service`, which pull images from their registries.
+5. The action tools, `deploy_service`, `redeploy_service`, `remove_service`, `start_service`, `stop_service`, `restart_service`, `service_logs`, `get_machine_logs`, `test_destination` and `upgrade_machine`, queue the action for the machine's daemon and wait up to 60 seconds for it. If the daemon hasn't finished by then, the result is the action with the status `pending` or `in_progress`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one is running, and fails if the daemon doesn't say how it ended within 15 minutes, or 45 for an upgrade, a deploy or a remove. Check it later with `get_action`.
 6. Paged tools take `limit`, from 1 to 500 with a default of 50, and `cursor`. Pass a result's `next_cursor` as `cursor` to get the next, older page.
-7. No tool returns destination keys, repository passwords, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
+7. No tool returns destination keys, repository passwords, registry passwords, a service's env values, log sink secrets or a channel's secret, such as a Slack webhook URL; a secret in a config shows as `"***"`. The only secrets a tool returns are the ones made for you, shown once: a new machine token, a destination password the hub generated, a webhook sink secret the hub generated, and a webhook channel's signing secret.
 8. Times are RFC 3339 in UTC, such as `2026-11-15T11:28:10Z`.
 
 ## Coverage
@@ -60,9 +60,19 @@ Every route a person may call has a tool that does the same. A route that reads 
 | `POST /v1/notifications/test` | `send_test_notification` |
 | `GET /v1/services` | `list_services` |
 | `GET /v1/machines/{machine}/services` | `list_services` |
-| `GET /v1/machines/{machine}/services/{service}` | `list_services` |
-| `PATCH /v1/machines/{machine}/services/{service}` | `set_service_alerts` |
-| `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs`, `upgrade_machine` |
+| `POST /v1/machines/{machine}/services` | `deploy_service` |
+| `GET /v1/machines/{machine}/services/{service}` | `get_service` |
+| `PATCH /v1/machines/{machine}/services/{service}` | `set_service_alerts`, `deploy_service` |
+| `DELETE /v1/machines/{machine}/services/{service}` | `remove_service` |
+| `POST /v1/machines/{machine}/services/{service}/deploy` | `redeploy_service` |
+| `POST /v1/machines/{machine}/services/{service}/start` | `start_service` |
+| `POST /v1/machines/{machine}/services/{service}/stop` | `stop_service` |
+| `POST /v1/machines/{machine}/services/{service}/restart` | `restart_service` |
+| `GET /v1/registries` | `list_registries` |
+| `POST /v1/registries` | `add_registry` |
+| `PATCH /v1/registries/{registry}` | `update_registry` |
+| `DELETE /v1/registries/{registry}` | `remove_registry` |
+| `POST /v1/machines/{machine}/actions` | `start_service`, `stop_service`, `restart_service`, `service_logs`, `get_machine_logs`, `upgrade_machine` |
 | `GET /v1/machines/{machine}/actions` | `list_actions` |
 | `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
 | `GET /v1/logs/sinks` | `list_log_sinks` |
@@ -1136,11 +1146,15 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "machine": "apps",
   "type": "test",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": null,
   "since": null,
   "lines": null,
   "destination": "nas",
+  "version": null,
+  "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T12:02:11Z",
@@ -1257,11 +1271,12 @@ At most 500 notifications a page.
     {
       "id": 3,
       "machine": "apps",
-      "service": "web",
+      "service": "notes",
+      "container": "web",
       "channel": null,
       "event": "service.memory_high",
       "severity": "warning",
-      "message": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "message": "web in notes on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
       "status": "sent",
       "sent_at": "2026-11-15T11:35:36Z",
       "created_at": "2026-11-15T11:35:35Z",
@@ -1608,9 +1623,13 @@ A channel that fails is not an error: its delivery says `failed`, with the reaso
 
 ## Services
 
+A service is a compose project on a machine, or a container without one. Each tool that returns a service returns these fields: `id`, `machine`, `name`, `managed` (`true` when Tender deployed it), `state` (`running`, `degraded`, `stopped` or `unknown`), `deploy_status` (`deploying`, `deployed`, `failed` or `removing`, or `null` when unmanaged), `last_error` (why the last deploy or remove failed), `deployed_at`, `action_id`, `compose`, `files`, `env` (every key, each value `"***"`), `routes`, `alerts_enabled`, `containers` and the timestamps. Each route has `container`, `port`, `expose`, `host`, `https_port`, `local_port` and `url`. Each container has `name` (its compose service, such as `web`), `runtime`, `container_id`, `image`, `state`, `health`, `exit_code`, `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes`, `cpu_percent`, `stopped_by_tender`, `removed_at` and the timestamps. [Services](services.md#what-a-service-is) explains each field, and [Exposure](exposure.md#routes) the routes.
+
+The deploy tools, `deploy_service`, `redeploy_service` and `remove_service`, queue an action for the machine's daemon and wait up to 60 seconds for it. A deploy that takes longer, such as one that pulls large images or waits for health checks, comes back with the action `pending` or `in_progress`; the hub gives it 45 minutes. Check it with `get_action`, and the service with `get_service`.
+
 ### `list_services`
 
-Lists the Docker containers each machine's daemon reports once a minute, for every machine or one.
+Lists the services on every machine or one, with whether each machine's Docker answers.
 
 #### Annotations
 
@@ -1626,7 +1645,7 @@ Lists the Docker containers each machine's daemon reports once a minute, for eve
 
 #### Returns
 
-`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its daemon can't reach Docker, or `null` before any report and once Docker is turned off on the machine), `docker_reason` (while unreachable, `socket_missing`, `permission_denied`, `refused`, `timeout` or `error`, else `null`) and `data`, its services. Each service is one container, by its container name, with `runtime` (`docker`), `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender`, `removed_at` (when its container was gone, else `null`) and the timestamps. Usage is from the latest report. A `removed` service can't be started, stopped, restarted or read, and goes 7 days after `removed_at`, as [Removed services](services.md#removed-services) explains. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
+`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its daemon can't reach Docker, or `null` before any report and once Docker is turned off on the machine), `docker_reason` (while unreachable, `socket_missing`, `permission_denied`, `refused`, `timeout` or `error`, else `null`) and `data`, its services by name. Usage is from the latest report. A `removed` container can't be started, stopped, restarted or read, and goes 7 days after `removed_at`, as [Removed containers](services.md#removed-containers) explains.
 
 #### Limits
 
@@ -1649,50 +1668,79 @@ None. A machine without Docker has no services.
       "docker_reason": null,
       "data": [
         {
-          "id": 4,
+          "id": 1,
           "machine": "apps",
-          "name": "migrate",
-          "runtime": "docker",
-          "project": null,
-          "container_id": "c0ffee03",
-          "image": "migrate:1",
-          "state": "exited",
-          "health": null,
-          "exit_code": 0,
-          "restart_count": 0,
-          "restart_policy": "no",
-          "started_at": null,
-          "memory_bytes": null,
-          "memory_limit_bytes": null,
-          "cpu_percent": null,
-          "alerts_enabled": true,
-          "stopped_by_tender": false,
-          "removed_at": null,
-          "created_at": "2026-11-15T11:27:27Z",
-          "updated_at": "2026-11-15T11:28:10Z"
-        },
-        {
-          "id": 3,
-          "machine": "apps",
-          "name": "web",
-          "runtime": "docker",
-          "project": "apps",
-          "container_id": "c0ffee04",
-          "image": "ghcr.io/example/web:2.4",
+          "name": "notes",
+          "managed": true,
           "state": "running",
-          "health": "healthy",
-          "exit_code": null,
-          "restart_count": 0,
-          "restart_policy": "unless-stopped",
-          "started_at": "2026-11-15T10:27:26Z",
-          "memory_bytes": 209715200,
-          "memory_limit_bytes": 1073741824,
-          "cpu_percent": 12.5,
+          "deploy_status": "deployed",
+          "last_error": null,
+          "deployed_at": "2026-11-15T10:32:40Z",
+          "action_id": 12,
+          "compose": "services:\n  web:\n    image: ghcr.io/me/notes:1.4\n    mem_limit: 512m\n  migrate:\n    image: ghcr.io/me/notes:1.4\n    command: migrate\n    restart: \"no\"\n    mem_limit: 256m\n",
+          "files": {},
+          "env": {
+            "SECRET_KEY": "***"
+          },
+          "routes": [
+            {
+              "id": 1,
+              "container": "web",
+              "port": 8080,
+              "expose": "tailscale",
+              "host": null,
+              "https_port": 443,
+              "local_port": 20000,
+              "url": "https://apps.tail1234.ts.net",
+              "created_at": "2026-11-15T10:31:49Z",
+              "updated_at": "2026-11-15T10:31:49Z"
+            }
+          ],
           "alerts_enabled": true,
-          "stopped_by_tender": false,
-          "removed_at": null,
-          "created_at": "2026-11-15T11:27:27Z",
-          "updated_at": "2026-11-15T11:28:10Z"
+          "containers": [
+            {
+              "id": 3,
+              "name": "migrate",
+              "runtime": "docker",
+              "container_id": "c0ffee03",
+              "image": "ghcr.io/me/notes:1.4",
+              "state": "exited",
+              "health": null,
+              "exit_code": 0,
+              "restart_count": 0,
+              "restart_policy": "no",
+              "started_at": null,
+              "memory_bytes": null,
+              "memory_limit_bytes": null,
+              "cpu_percent": null,
+              "stopped_by_tender": false,
+              "removed_at": null,
+              "created_at": "2026-11-15T10:33:00Z",
+              "updated_at": "2026-11-15T11:36:35Z"
+            },
+            {
+              "id": 1,
+              "name": "web",
+              "runtime": "docker",
+              "container_id": "c0ffee04",
+              "image": "ghcr.io/me/notes:1.4",
+              "state": "running",
+              "health": "healthy",
+              "exit_code": null,
+              "restart_count": 0,
+              "restart_policy": "unless-stopped",
+              "started_at": "2026-11-15T10:32:35Z",
+              "memory_bytes": 209715200,
+              "memory_limit_bytes": 536870912,
+              "cpu_percent": 12.5,
+              "stopped_by_tender": false,
+              "removed_at": null,
+              "created_at": "2026-11-15T10:33:00Z",
+              "updated_at": "2026-11-15T11:36:35Z"
+            }
+          ],
+          "created_at": "2026-11-15T10:31:49Z",
+          "updated_at": "2026-11-15T10:32:40Z"
         }
       ]
     }
@@ -1708,29 +1756,28 @@ None. A machine without Docker has no services.
 
 | REST route | CLI command |
 | --- | --- |
-| `GET /v1/services`, `GET /v1/machines/{machine}/services` and `GET /v1/machines/{machine}/services/{service}` | `tender services list [MACHINE]` |
+| `GET /v1/services` and `GET /v1/machines/{machine}/services` | `tender services list [MACHINE]` |
 
-### `set_service_alerts`
+### `get_service`
 
-Turns alerts on or off for one service. Alerts are on for every new service.
+Gets one service on a machine, with its routes and containers.
 
 #### Annotations
 
 | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 | --- | --- | --- | --- |
-| `false` | `false` | `true` | `false` |
+| `true` | not set | `true` | `false` |
 
 #### Inputs
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
-| `service` | string | Yes | The service's name, its container name, as `list_services` shows it. |
-| `enabled` | boolean | Yes | `true` to get alerts for this service, `false` to stop them and resolve its open problems. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
 
 #### Returns
 
-The service, as `list_services` shows it. With alerts off, its open problems resolve within a minute. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
+The service.
 
 #### Limits
 
@@ -1739,34 +1786,51 @@ None.
 #### Example call
 
 ```json
-{"name": "set_service_alerts", "arguments": {"machine": "apps", "service": "web", "enabled": false}}
+{"name": "get_service", "arguments": {"machine": "apps", "service": "redis"}}
 ```
 
 #### Example result
 
 ```json
 {
-  "id": 3,
+  "id": 2,
   "machine": "apps",
-  "name": "web",
-  "runtime": "docker",
-  "project": "apps",
-  "container_id": "c0ffee04",
-  "image": "ghcr.io/example/web:2.4",
+  "name": "redis",
+  "managed": false,
   "state": "running",
-  "health": "healthy",
-  "exit_code": null,
-  "restart_count": 0,
-  "restart_policy": "unless-stopped",
-  "started_at": "2026-11-15T10:27:26Z",
-  "memory_bytes": 209715200,
-  "memory_limit_bytes": 1073741824,
-  "cpu_percent": 12.5,
-  "alerts_enabled": false,
-  "stopped_by_tender": false,
-  "removed_at": null,
-  "created_at": "2026-11-15T11:27:27Z",
-  "updated_at": "2026-11-15T11:29:02Z"
+  "deploy_status": null,
+  "last_error": null,
+  "deployed_at": null,
+  "action_id": null,
+  "compose": null,
+  "files": {},
+  "env": {},
+  "routes": [],
+  "alerts_enabled": true,
+  "containers": [
+    {
+      "id": 2,
+      "name": "redis",
+      "runtime": "docker",
+      "container_id": "c0ffee05",
+      "image": "redis:7",
+      "state": "running",
+      "health": null,
+      "exit_code": null,
+      "restart_count": 0,
+      "restart_policy": "always",
+      "started_at": "2026-11-15T10:32:35Z",
+      "memory_bytes": 8388608,
+      "memory_limit_bytes": null,
+      "cpu_percent": 0.4,
+      "stopped_by_tender": false,
+      "removed_at": null,
+      "created_at": "2026-11-15T10:33:00Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    }
+  ],
+  "created_at": "2026-11-15T10:33:00Z",
+  "updated_at": "2026-11-15T10:33:00Z"
 }
 ```
 
@@ -1774,21 +1838,276 @@ None.
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
-3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
+3. `Service "redis" doesn't exist on apps. Call list_services to see the names.`
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `PATCH /v1/machines/{machine}/services/{service}` | `tender services alerts MACHINE SERVICE on\|off` |
+| `GET /v1/machines/{machine}/services/{service}` | `tender services show MACHINE SERVICE` |
 
-## Actions
+### `deploy_service`
 
-The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart`, `logs`, `test`, `upgrade`, or `update` from a rollout), `service` (`null` for the machine's logs, a test, an upgrade or an update), `unit`, `priority`, `since` and `lines` (logs only), `destination` (tests only, from [`test_destination`](#test_destination)), `packages` (upgrade only), `version` (update only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+Creates or changes a managed service and deploys it with docker compose, through the machine's daemon. A new service needs `compose`. For one that exists, the inputs given change it and the others stay. The daemon checks the compose file against [the rules](services.md#the-rules) first.
 
-### `start_service`
+> [!WARNING]
+> A deploy recreates the containers that changed, so what they serve is offline while they start.
 
-Starts a stopped service through the daemon on its machine. Starting a running service changes nothing.
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `false` | `true` |
+
+It pulls images from their registries, which is why `openWorldHint` is `true`.
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+| `name` | string | Yes | The service's name, its compose project: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `compose` | string | For a new service | The text of the docker compose file. Leave it out to keep the stored one. |
+| `files` | object | No | Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. They merge into the stored ones, and `null` removes one. |
+| `env` | object | No | Values for the compose file's `${KEY}` interpolation. They merge into the stored ones, and `null` removes one. |
+| `routes` | array | No | Every route of the service, each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` or `https_port`. They replace the stored ones; leave it out to keep them. |
+
+#### Returns
+
+`service`, the service as it is after the deploy, and `action`, the deploy. Each route's `url` says where it answers.
+
+#### Limits
+
+A service has at most 64 files and 1 MiB of them, 256 env keys, and 64 routes. The compose file is at most 256 KiB. The tool waits up to 60 seconds.
+
+#### Example call
+
+```json
+{"name": "deploy_service", "arguments": {"machine": "apps", "name": "blog", "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n", "env": {"SECRET_KEY": "s3cret"}, "routes": [{"container": "web", "port": 8080, "expose": "tailscale"}]}}
+```
+
+#### Example result
+
+```json
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deployed",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 13,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:41:05Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:41:02Z"
+  },
+  "action": {
+    "id": 13,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "completed",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:41:02Z",
+    "output": " Container blog-web-1  Started\n Container blog-web-1  Healthy\n"
+  }
+}
+```
+
+#### Errors
+
+1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
+2. `compose is required for a new service: the text of its docker compose file.`
+3. `name must be lowercase letters and digits, starting with a letter, at most 32, with no dashes: it is the compose project name. Got "my-blog".`
+4. `Tender didn't deploy service "redis", so it can't change it: ...` for a service Tender found running.
+5. `Host notes.example.com already routes to service notes on apps. A host can route to one service only.`
+6. `Could not deploy blog: ...` when the deploy failed, with the rule the compose file broke, such as `service web in the compose file publishes ports, which Tender's routes do instead: remove ports from web and add a route to its port, such as --route web:80:tailscale`, or compose's reason and the end of its output.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/services`, or `PATCH /v1/machines/{machine}/services/{service}` for a service that exists, then `GET /v1/machines/{machine}/actions/{id}` | `tender services deploy MACHINE NAME -f FILE [options]` |
+
+### `redeploy_service`
+
+Deploys a managed service again as it is stored, through the machine's daemon. Compose pulls the images again, so a new image under the same tag runs, and recreates the containers that changed.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `false` | `true` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+
+#### Returns
+
+`service` and `action`, as `deploy_service` returns them.
+
+#### Limits
+
+The tool waits up to 60 seconds.
+
+#### Example call
+
+```json
+{"name": "redeploy_service", "arguments": {"machine": "apps", "service": "blog"}}
+```
+
+#### Example result
+
+The same shape as [`deploy_service`](#deploy_service)'s.
+
+#### Errors
+
+1. `Service "blog" doesn't exist on apps. Call list_services to see the names.`
+2. `Tender didn't deploy service "redis", so it can't deploy it: ...`
+3. `Service "blog" is being removed, so it can't change now. Wait for its remove, action 15, to finish.`
+4. `Could not deploy blog: ...` with compose's reason, when the deploy failed.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/machines/{machine}/services/{service}/deploy`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services redeploy MACHINE SERVICE` |
+
+### `remove_service`
+
+Removes a managed service from a machine, through its daemon. `docker compose down` stops and removes its containers, its routes stop answering, and the hub forgets the service once that succeeded. Its folder, with its named volumes' data, is kept in `/var/lib/tender/services/.removed/` on the machine, unless `delete_data` is `true`.
+
+> [!WARNING]
+> `delete_data: true` deletes the service's data, and can't be undone.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `false` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+| `delete_data` | boolean | No | `true` deletes the service's folder and its data. The default, `false`, keeps it aside. |
+
+#### Returns
+
+`service`, as it was before the remove, and `action`, the remove, whose `output` says where the folder was kept.
+
+#### Limits
+
+The tool waits up to 60 seconds.
+
+#### Example call
+
+```json
+{"name": "remove_service", "arguments": {"machine": "apps", "service": "blog"}}
+```
+
+#### Example result
+
+The same shape as [`deploy_service`](#deploy_service)'s, with an `action` such as:
+
+```json
+{
+  "id": 15,
+  "machine": "apps",
+  "type": "remove",
+  "service": "blog",
+  "container": null,
+  "unit": null,
+  "priority": null,
+  "since": null,
+  "lines": null,
+  "destination": null,
+  "version": null,
+  "packages": null,
+  "delete_data": null,
+  "status": "completed",
+  "output_cleared": false,
+  "created_at": "2026-11-15T11:50:00Z",
+  "updated_at": "2026-11-15T11:50:04Z",
+  "output": "Kept the folder in /var/lib/tender/services/.removed/blog-1794657004.\n"
+}
+```
+
+#### Errors
+
+1. `Service "blog" doesn't exist on apps. Call list_services to see the names.`
+2. `Tender didn't deploy service "redis", so it can't remove it: ...`
+3. `Could not remove blog: ...` with compose's reason, when the remove failed. The hub keeps the service, so you can remove it again.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/machines/{machine}/services/{service}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services remove MACHINE SERVICE [--delete-data] --yes` |
+
+### `set_service_alerts`
+
+Turns alerts on or off for one service, all its containers together. Alerts are on for every new service.
 
 #### Annotations
 
@@ -1801,11 +2120,282 @@ Starts a stopped service through the daemon on its machine. Starting a running s
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
-| `service` | string | Yes | The service's name, its container name, as `list_services` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+| `enabled` | boolean | Yes | `true` to get alerts for this service's containers, `false` to stop them and resolve its open problems. |
 
 #### Returns
 
-The action, with the status `completed`, or `pending` or `in_progress` if the daemon hasn't finished within 60 seconds. `output` is `null`. A start clears the service's `stopped_by_tender`.
+The service. With alerts off, its open problems resolve within a minute. The switch stays when its containers are made again.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "set_service_alerts", "arguments": {"machine": "apps", "service": "redis", "enabled": false}}
+```
+
+#### Example result
+
+The service, as [`get_service`](#get_service) returns it, with `"alerts_enabled": false`.
+
+#### Errors
+
+1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
+2. `service is required. Call list_services to see the names.`
+3. `Service "redis" doesn't exist on apps. Call list_services to see the names.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/machines/{machine}/services/{service}` | `tender services alerts MACHINE SERVICE on\|off` |
+
+## Registries
+
+A registry is the login of a container registry that managed services pull private images from. A deploy uses the login of the registry whose host an image is on. A registry has `id`, `name`, `host`, `username`, `password` (always `"***"`), `password_set` and the timestamps.
+
+### `list_registries`
+
+Lists the registries, by name.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `true` | not set | `true` | `false` |
+
+#### Inputs
+
+None.
+
+#### Returns
+
+`data`, the registries.
+
+#### Limits
+
+None. The list isn't paged.
+
+#### Example call
+
+```json
+{"name": "list_registries", "arguments": {}}
+```
+
+#### Example result
+
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "ghcr",
+      "host": "ghcr.io",
+      "username": "me",
+      "password": "***",
+      "password_set": true,
+      "created_at": "2026-11-15T09:00:00Z",
+      "updated_at": "2026-11-15T09:00:00Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+None besides the hub's own.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `GET /v1/registries` | `tender registries list` |
+
+### `add_registry`
+
+Adds the login of a container registry, such as `ghcr.io`. The hub stores the password encrypted and gives it only to a daemon that deploys a service.
+
+> [!WARNING]
+> The password goes through the conversation, to the client's model provider. For a real one, type it into `tender registries add` instead.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `false` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Lowercase letters, digits and dashes, at most 63. |
+| `host` | string | Yes | The registry's host, as image names start with it, such as `ghcr.io`; `docker.io` for Docker Hub. |
+| `username` | string | Yes | The login name. |
+| `password` | string | Yes | The password or access token. |
+
+#### Returns
+
+The registry, with `password` as `"***"`.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "add_registry", "arguments": {"name": "ghcr", "host": "ghcr.io", "username": "me", "password": "ghp_example"}}
+```
+
+#### Example result
+
+```json
+{
+  "id": 1,
+  "name": "ghcr",
+  "host": "ghcr.io",
+  "username": "me",
+  "password": "***",
+  "password_set": true,
+  "created_at": "2026-11-15T09:00:00Z",
+  "updated_at": "2026-11-15T09:00:00Z"
+}
+```
+
+#### Errors
+
+1. `Registry "ghcr" already exists. Change it with tender registries update.`
+2. `Registry "ghcr" already has the host ghcr.io; a host has one login.`
+3. `password is "***", which is how the hub hides a secret. Give the password itself.`
+4. `This process has no TENDER_ENCRYPTION_KEY, ...` when the hub can't store the password.
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `POST /v1/registries` | `tender registries add NAME --host HOST --username USER` |
+
+### `update_registry`
+
+Changes a registry's host, username or password. The inputs left out stay.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The registry's name, as `list_registries` shows it. |
+| `host` | string | No | A new host. |
+| `username` | string | No | A new login name. |
+| `password` | string | No | A new password or access token. |
+
+#### Returns
+
+The registry.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "update_registry", "arguments": {"name": "ghcr", "username": "ci"}}
+```
+
+#### Example result
+
+The registry, as `add_registry` returns it, with the new values.
+
+#### Errors
+
+1. `Registry "ghcr" doesn't exist. Run tender registries list to see the names.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `PATCH /v1/registries/{registry}` | `tender registries update NAME [--host HOST] [--username USER] [--password]` |
+
+### `remove_registry`
+
+Removes a registry's login. Services whose images are on it can no longer pull them, unless they are public.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `true` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The registry's name, as `list_registries` shows it. |
+
+#### Returns
+
+What was removed.
+
+#### Limits
+
+None.
+
+#### Example call
+
+```json
+{"name": "remove_registry", "arguments": {"name": "ghcr"}}
+```
+
+#### Example result
+
+```json
+{"removed": "registry ghcr"}
+```
+
+#### Errors
+
+1. `Registry "ghcr" doesn't exist. Run tender registries list to see the names.`
+
+#### Covers
+
+| REST route | CLI command |
+| --- | --- |
+| `DELETE /v1/registries/{registry}` | `tender registries remove NAME` |
+
+## Actions
+
+The tools in this section queue an action for a machine's daemon and wait up to 60 seconds for it, or read actions back. [Services](services.md#how-actions-reach-a-machine) explains how an action reaches the machine. Each returns the action: `id`, `machine`, `type` (`start`, `stop`, `restart`, `logs`, `test`, `upgrade`, `update` from a rollout, or `deploy` and `remove` from the [deploy tools](#services)), `service` (`null` for the machine's logs, a test, an upgrade or an update), `container` (the one container of the service it is for, or `null` for all), `unit`, `priority`, `since` and `lines` (logs only), `destination` (tests only, from [`test_destination`](#test_destination)), `packages` (upgrade only), `version` (update only), `delete_data` (remove only), `status` (`pending`, `in_progress`, `completed` or `failed`), `output`, `output_cleared` and the timestamps. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+
+### `start_service`
+
+Starts a stopped service, or one of its containers, through the daemon on its machine: a service Tender deployed with `docker compose start`, any other container by container. Starting a running container changes nothing.
+
+#### Annotations
+
+| `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- |
+| `false` | `false` | `true` | `false` |
+
+#### Inputs
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+| `container` | string | No | Only this container of the service, such as `web`. Leave it out for every container. |
+
+#### Returns
+
+The action, with the status `completed`, or `pending` or `in_progress` if the daemon hasn't finished within 60 seconds. `output` is `null`. A start clears its containers' `stopped_by_tender`.
 
 #### Limits
 
@@ -1814,7 +2404,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 #### Example call
 
 ```json
-{"name": "start_service", "arguments": {"machine": "apps", "service": "web"}}
+{"name": "start_service", "arguments": {"machine": "apps", "service": "notes", "container": "web"}}
 ```
 
 #### Example result
@@ -1824,7 +2414,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "id": 3,
   "machine": "apps",
   "type": "start",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "unit": null,
   "priority": null,
   "since": null,
@@ -1832,6 +2423,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:09Z",
@@ -1844,22 +2436,23 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
-3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-4. `Service "web" was removed: Docker on this machine no longer has its container.`
-5. `Could not start web: ...`, with Docker's reason, when the daemon tried and failed.
+3. `Service "notes" doesn't exist on apps. Call list_services to see the names.`
+4. `Container "nope" isn't in service notes. Its containers are: web, worker.`
+5. `Container web in notes was removed: Docker on this machine no longer has it.`
+6. `Could not start web in notes: ...`, with Docker's or compose's reason, when the daemon tried and failed.
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` with `{"type": "start", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services start MACHINE SERVICE` |
+| `POST /v1/machines/{machine}/services/{service}/start`, or `POST /v1/machines/{machine}/actions` with `{"type": "start", "service": "notes"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services start MACHINE SERVICE [--container C]` |
 
 ### `stop_service`
 
-Stops a running service through the daemon on its machine, with the container's own stop timeout.
+Stops a running service, or one of its containers, through the daemon on its machine, with each container's own stop timeout.
 
 > [!WARNING]
-> Whatever the service serves goes offline until it is started again. A service Tender stopped doesn't alert as down, so nobody gets an email about it.
+> Whatever the service serves goes offline until it is started again. A container Tender stopped doesn't alert as down, so nobody gets an email about it.
 
 #### Annotations
 
@@ -1872,11 +2465,12 @@ Stops a running service through the daemon on its machine, with the container's 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
-| `service` | string | Yes | The service's name, its container name, as `list_services` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+| `container` | string | No | Only this container of the service, such as `web`. Leave it out for every container. |
 
 #### Returns
 
-The action, with the status `completed`, or `pending` or `in_progress` if the daemon hasn't finished within 60 seconds. `output` is `null`. The service shows `stopped_by_tender: true` until something starts it.
+The action, with the status `completed`, or `pending` or `in_progress` if the daemon hasn't finished within 60 seconds. `output` is `null`. Each container it stopped shows `stopped_by_tender: true` until something starts it.
 
 #### Limits
 
@@ -1885,7 +2479,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 #### Example call
 
 ```json
-{"name": "stop_service", "arguments": {"machine": "apps", "service": "web"}}
+{"name": "stop_service", "arguments": {"machine": "apps", "service": "notes", "container": "web"}}
 ```
 
 #### Example result
@@ -1895,7 +2489,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "id": 2,
   "machine": "apps",
   "type": "stop",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "unit": null,
   "priority": null,
   "since": null,
@@ -1903,6 +2498,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:08Z",
@@ -1915,19 +2511,20 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
-3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-4. `Service "web" was removed: Docker on this machine no longer has its container.`
-5. `Could not stop web: ...`, with Docker's reason, when the daemon tried and failed.
+3. `Service "notes" doesn't exist on apps. Call list_services to see the names.`
+4. `Container "nope" isn't in service notes. Its containers are: web, worker.`
+5. `Container web in notes was removed: Docker on this machine no longer has it.`
+6. `Could not stop web in notes: ...`, with Docker's or compose's reason, when the daemon tried and failed.
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` with `{"type": "stop", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services stop MACHINE SERVICE` |
+| `POST /v1/machines/{machine}/services/{service}/stop`, or `POST /v1/machines/{machine}/actions` with `{"type": "stop", "service": "notes"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services stop MACHINE SERVICE [--container C]` |
 
 ### `restart_service`
 
-Restarts a service through the daemon on its machine.
+Restarts a service, or one of its containers, through the daemon on its machine.
 
 > [!WARNING]
 > Whatever the service serves is offline while it restarts.
@@ -1938,14 +2535,15 @@ Restarts a service through the daemon on its machine.
 | --- | --- | --- | --- |
 | `false` | `true` | `false` | `false` |
 
-Each call restarts the service again.
+Each call restarts the containers again.
 
 #### Inputs
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
-| `service` | string | Yes | The service's name, its container name, as `list_services` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+| `container` | string | No | Only this container of the service, such as `web`. Leave it out for every container. |
 
 #### Returns
 
@@ -1958,7 +2556,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 #### Example call
 
 ```json
-{"name": "restart_service", "arguments": {"machine": "apps", "service": "web"}}
+{"name": "restart_service", "arguments": {"machine": "apps", "service": "notes", "container": "web"}}
 ```
 
 #### Example result
@@ -1968,7 +2566,8 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "id": 1,
   "machine": "apps",
   "type": "restart",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "unit": null,
   "priority": null,
   "since": null,
@@ -1976,6 +2575,7 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:07Z",
@@ -1988,19 +2588,20 @@ The tool waits up to 60 seconds. An action the daemon doesn't pick up within 15 
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `service is required. Call list_services to see the names.`
-3. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-4. `Service "web" was removed: Docker on this machine no longer has its container.`
-5. `Could not restart web: ...`, with Docker's reason, when the daemon tried and failed.
+3. `Service "notes" doesn't exist on apps. Call list_services to see the names.`
+4. `Container "nope" isn't in service notes. Its containers are: web, worker.`
+5. `Container web in notes was removed: Docker on this machine no longer has it.`
+6. `Could not restart web in notes: ...`, with Docker's or compose's reason, when the daemon tried and failed.
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` with `{"type": "restart", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services restart MACHINE SERVICE` |
+| `POST /v1/machines/{machine}/services/{service}/restart`, or `POST /v1/machines/{machine}/actions` with `{"type": "restart", "service": "notes"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services restart MACHINE SERVICE [--container C]` |
 
-### `get_service_logs`
+### `service_logs`
 
-Gets a service's newest lines of output, stdout and stderr together, each line starting with Docker's timestamp.
+Gets the newest lines of output of a service's containers, or of one of them, stdout and stderr together, each line starting with Docker's timestamp. With several containers, their lines are merged by time, each with its container's name and `|` after the timestamp.
 
 > [!WARNING]
 > Logs can hold secrets, and the result goes to the client's model provider. Ask for the fewest lines you need. The hub clears the output 1 hour after the action finished, and logs never go into alerts or emails.
@@ -2018,7 +2619,8 @@ It changes nothing on the machine, but the hub records the read as an action, wh
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
-| `service` | string | Yes | The service's name, its container name, as `list_services` shows it. |
+| `service` | string | Yes | The service's name, as `list_services` shows it. |
+| `container` | string | No | Only this container of the service, such as `web`. Leave it out for every container. |
 | `lines` | integer | No | How many of the newest lines, from 1 to 2000. The default is 200. |
 | `since` | string | No | Only lines from this far back, such as `30m`, `1h` or `7d`, at most `7d`. Leave it out for no limit. |
 
@@ -2033,7 +2635,7 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
 #### Example call
 
 ```json
-{"name": "get_service_logs", "arguments": {"machine": "apps", "service": "web", "lines": 2}}
+{"name": "service_logs", "arguments": {"machine": "apps", "service": "notes", "lines": 2}}
 ```
 
 #### Example result
@@ -2043,7 +2645,8 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
   "id": 5,
   "machine": "apps",
   "type": "logs",
-  "service": "web",
+  "service": "notes",
+  "container": null,
   "unit": null,
   "priority": null,
   "since": null,
@@ -2051,28 +2654,29 @@ At most 2000 lines and 256 KiB. Past 256 KiB, the oldest lines are dropped. The 
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:12Z",
   "updated_at": "2026-11-15T11:28:12Z",
-  "output": "2026-11-15T11:28:12.339011345Z web listening on :3000\n2026-11-15T11:28:12.339015823Z started by request\n"
+  "output": "2026-11-15T11:28:12.339011345Z web | listening on :8080\n2026-11-15T11:28:12.339015823Z worker | job 41 done\n"
 }
 ```
 
 #### Errors
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
-2. `Service "web" doesn't exist on apps. Call list_services to see the names.`
-3. `Service "web" was removed: Docker on this machine no longer has its container.`
+2. `Service "notes" doesn't exist on apps. Call list_services to see the names.`
+3. `Container web in notes was removed: Docker on this machine no longer has it.`
 4. `lines must be a whole number from 1 to 2000.`
 5. `since must be a duration such as 30m, 1h or 7d, at most 7d.`
-6. `Could not read the logs of web: ...`, with Docker's reason, when the daemon tried and failed.
+6. `Could not read the logs of notes: ...`, with Docker's reason, when the daemon tried and failed.
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` with `{"type": "logs", "service": "web"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services logs MACHINE SERVICE [--lines N] [--since D]` |
+| `POST /v1/machines/{machine}/actions` with `{"type": "logs", "service": "notes"}`, then `GET /v1/machines/{machine}/actions/{id}` | `tender services logs MACHINE SERVICE [--container C] [--lines N] [--since D]` |
 
 ### `get_machine_logs`
 
@@ -2121,6 +2725,7 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
   "machine": "apps",
   "type": "logs",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": "warning",
   "since": null,
@@ -2128,6 +2733,7 @@ At most 2000 entries and 256 KiB. Past 256 KiB, the oldest entries are dropped. 
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -2193,12 +2799,14 @@ The tool waits up to 60 seconds. The hub fails an upgrade the daemon doesn't fin
   "machine": "apps",
   "type": "upgrade",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": null,
   "since": null,
   "lines": null,
   "version": null,
   "packages": "security",
+  "delete_data": null,
   "status": "in_progress",
   "output_cleared": false,
   "created_at": "2026-11-15T11:50:00Z",
@@ -2258,6 +2866,7 @@ None.
   "machine": "apps",
   "type": "logs",
   "service": null,
+  "container": null,
   "unit": "tenderd",
   "priority": "warning",
   "since": "1h",
@@ -2265,6 +2874,7 @@ None.
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": true,
   "created_at": "2026-11-15T11:28:13Z",
@@ -2326,6 +2936,7 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "machine": "apps",
       "type": "logs",
       "service": null,
+      "container": null,
       "unit": null,
       "priority": "warning",
       "since": null,
@@ -2333,6 +2944,7 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:15Z",
@@ -2343,6 +2955,7 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "machine": "apps",
       "type": "logs",
       "service": "web",
+      "container": null,
       "unit": null,
       "priority": null,
       "since": "10m",
@@ -2350,6 +2963,7 @@ The hub keeps each machine's newest 100 finished actions, and every `pending` or
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:14Z",

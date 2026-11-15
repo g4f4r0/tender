@@ -1351,11 +1351,15 @@ Location: /v1/machines/apps/actions/12
   "machine": "apps",
   "type": "test",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": null,
   "since": null,
   "lines": null,
   "destination": "nas",
+  "version": null,
+  "packages": null,
+  "delete_data": null,
   "status": "pending",
   "output_cleared": false,
   "created_at": "2026-11-15T12:02:11Z",
@@ -1455,11 +1459,12 @@ Content-Type: application/json
     {
       "id": 4,
       "machine": "apps",
-      "service": "web",
+      "service": "notes",
+      "container": "web",
       "channel": null,
       "event": "service.memory_high.resolved",
       "severity": "warning",
-      "message": "Resolved: The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "message": "Resolved: web in notes on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
       "status": "sent",
       "sent_at": "2026-11-15T11:36:36Z",
       "created_at": "2026-11-15T11:36:35Z",
@@ -1528,6 +1533,7 @@ Content-Type: application/json
       "id": 2,
       "machine": "apps",
       "service": null,
+      "container": null,
       "channel": null,
       "event": "docker.unreachable",
       "severity": "critical",
@@ -1604,11 +1610,12 @@ Content-Type: application/json
 {
   "id": 3,
   "machine": "apps",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "channel": null,
   "event": "service.memory_high",
   "severity": "warning",
-  "message": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+  "message": "web in notes on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
   "status": "sent",
   "sent_at": "2026-11-15T11:35:36Z",
   "created_at": "2026-11-15T11:35:35Z",
@@ -1991,13 +1998,31 @@ Content-Type: application/json
 
 ## Services
 
-A service is a Docker container on a machine, as the machine's daemon reported it in its latest report. See [Services](services.md).
+A service is a compose project on a machine, made of containers, or a container without a compose project. A managed service is one Tender deployed from a compose file; an unmanaged one is one Tender found running. See [Services](services.md), and [Exposure](exposure.md) for routes.
+
+A service has these fields:
+
+| Field | What it holds |
+| --- | --- |
+| `name` | The compose project name, or the lone container's name. |
+| `managed` | `true` when Tender deployed it. |
+| `state` | `running`, `degraded`, `stopped` or `unknown`, from its containers. See [What a service is](services.md#what-a-service-is). |
+| `deploy_status` | `deploying`, `deployed`, `failed` or `removing`, or `null` when unmanaged. |
+| `last_error` | Why the last deploy or remove failed: its first line, then the end of compose's output. |
+| `deployed_at` | When a deploy last succeeded. |
+| `action_id` | The service's latest deploy or remove, in the machine's actions. |
+| `compose`, `files` and `env` | The compose file, its files by path, and every env key with its value as `"***"`. `compose` is `null` and the others `{}` when unmanaged. |
+| `routes` | Each route with its `url`. See [Routes](exposure.md#routes). |
+| `alerts_enabled` | One switch for every container of the service. |
+| `containers` | Each container by name, with the fields in [What the daemon reports](services.md#what-the-daemon-reports). |
+
+The routes that queue work for the machine answer `202 Accepted` with `{"service": ..., "action": ...}` and the action's `Location`. Follow the action with [`GET /v1/machines/{machine}/actions/{id}`](#get-v1machinesmachineactionsid).
 
 ### `GET /v1/services`
 
 Lists every machine's services, by machine, with whether its Docker answers.
 
-`docker` is `running` or `unreachable`, from the latest report, or `null` before the first and once Docker is turned off on the machine. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each service, and [When Docker is turned off](services.md#when-docker-is-turned-off) explains `null` after a report of `off`.
+`docker` is `running` or `unreachable`, from the latest report, or `null` before the first and once Docker is turned off on the machine. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each container, and [When Docker is turned off](services.md#when-docker-is-turned-off) explains `null` after a report of `off`.
 
 #### Parameters
 
@@ -2023,27 +2048,44 @@ Content-Type: application/json
       "docker_reason": null,
       "data": [
         {
-          "id": 3,
+          "id": 2,
           "machine": "apps",
-          "name": "web",
-          "runtime": "docker",
-          "project": "apps",
-          "container_id": "c0ffee04",
-          "image": "ghcr.io/example/web:2.4",
+          "name": "redis",
+          "managed": false,
           "state": "running",
-          "health": "healthy",
-          "exit_code": null,
-          "restart_count": 0,
-          "restart_policy": "unless-stopped",
-          "started_at": "2026-11-15T10:32:35Z",
-          "memory_bytes": 209715200,
-          "memory_limit_bytes": 1073741824,
-          "cpu_percent": 12.5,
+          "deploy_status": null,
+          "last_error": null,
+          "deployed_at": null,
+          "action_id": null,
+          "compose": null,
+          "files": {},
+          "env": {},
+          "routes": [],
           "alerts_enabled": true,
-          "stopped_by_tender": false,
-          "removed_at": null,
-          "created_at": "2026-11-15T11:27:27Z",
-          "updated_at": "2026-11-15T11:36:35Z"
+          "containers": [
+            {
+              "id": 2,
+              "name": "redis",
+              "runtime": "docker",
+              "container_id": "c0ffee05",
+              "image": "redis:7",
+              "state": "running",
+              "health": null,
+              "exit_code": null,
+              "restart_count": 0,
+              "restart_policy": "always",
+              "started_at": "2026-11-15T10:32:35Z",
+              "memory_bytes": 8388608,
+              "memory_limit_bytes": null,
+              "cpu_percent": 0.4,
+              "stopped_by_tender": false,
+              "removed_at": null,
+              "created_at": "2026-11-15T10:33:00Z",
+              "updated_at": "2026-11-15T11:36:35Z"
+            }
+          ],
+          "created_at": "2026-11-15T10:33:00Z",
+          "updated_at": "2026-11-15T10:33:00Z"
         }
       ]
     }
@@ -2066,8 +2108,6 @@ Content-Type: application/json
 ### `GET /v1/machines/{machine}/services`
 
 Lists one machine's services, by name.
-
-`cpu_percent` is where 100 is one whole CPU. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
 
 #### Parameters
 
@@ -2093,50 +2133,79 @@ Content-Type: application/json
   "docker_reason": null,
   "data": [
     {
-      "id": 4,
+      "id": 1,
       "machine": "apps",
-      "name": "migrate",
-      "runtime": "docker",
-      "project": null,
-      "container_id": "c0ffee03",
-      "image": "migrate:1",
-      "state": "exited",
-      "health": null,
-      "exit_code": 0,
-      "restart_count": 0,
-      "restart_policy": "no",
-      "started_at": null,
-      "memory_bytes": null,
-      "memory_limit_bytes": null,
-      "cpu_percent": null,
-      "alerts_enabled": true,
-      "stopped_by_tender": false,
-      "removed_at": null,
-      "created_at": "2026-11-15T11:27:27Z",
-      "updated_at": "2026-11-15T11:36:35Z"
-    },
-    {
-      "id": 3,
-      "machine": "apps",
-      "name": "web",
-      "runtime": "docker",
-      "project": "apps",
-      "container_id": "c0ffee04",
-      "image": "ghcr.io/example/web:2.4",
+      "name": "notes",
+      "managed": true,
       "state": "running",
-      "health": "healthy",
-      "exit_code": null,
-      "restart_count": 0,
-      "restart_policy": "unless-stopped",
-      "started_at": "2026-11-15T10:32:35Z",
-      "memory_bytes": 209715200,
-      "memory_limit_bytes": 1073741824,
-      "cpu_percent": 12.5,
+      "deploy_status": "deployed",
+      "last_error": null,
+      "deployed_at": "2026-11-15T10:32:40Z",
+      "action_id": 12,
+      "compose": "services:\n  web:\n    image: ghcr.io/me/notes:1.4\n    mem_limit: 512m\n  migrate:\n    image: ghcr.io/me/notes:1.4\n    command: migrate\n    restart: \"no\"\n    mem_limit: 256m\n",
+      "files": {},
+      "env": {
+        "SECRET_KEY": "***"
+      },
+      "routes": [
+        {
+          "id": 1,
+          "container": "web",
+          "port": 8080,
+          "expose": "tailscale",
+          "host": null,
+          "https_port": 443,
+          "local_port": 20000,
+          "url": "https://apps.tail1234.ts.net",
+          "created_at": "2026-11-15T10:31:49Z",
+          "updated_at": "2026-11-15T10:31:49Z"
+        }
+      ],
       "alerts_enabled": true,
-      "stopped_by_tender": false,
-      "removed_at": null,
-      "created_at": "2026-11-15T11:27:27Z",
-      "updated_at": "2026-11-15T11:36:35Z"
+      "containers": [
+        {
+          "id": 3,
+          "name": "migrate",
+          "runtime": "docker",
+          "container_id": "c0ffee03",
+          "image": "ghcr.io/me/notes:1.4",
+          "state": "exited",
+          "health": null,
+          "exit_code": 0,
+          "restart_count": 0,
+          "restart_policy": "no",
+          "started_at": null,
+          "memory_bytes": null,
+          "memory_limit_bytes": null,
+          "cpu_percent": null,
+          "stopped_by_tender": false,
+          "removed_at": null,
+          "created_at": "2026-11-15T10:33:00Z",
+          "updated_at": "2026-11-15T11:36:35Z"
+        },
+        {
+          "id": 1,
+          "name": "web",
+          "runtime": "docker",
+          "container_id": "c0ffee04",
+          "image": "ghcr.io/me/notes:1.4",
+          "state": "running",
+          "health": "healthy",
+          "exit_code": null,
+          "restart_count": 0,
+          "restart_policy": "unless-stopped",
+          "started_at": "2026-11-15T10:32:35Z",
+          "memory_bytes": 209715200,
+          "memory_limit_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "stopped_by_tender": false,
+          "removed_at": null,
+          "created_at": "2026-11-15T10:33:00Z",
+          "updated_at": "2026-11-15T11:36:35Z"
+        }
+      ],
+      "created_at": "2026-11-15T10:31:49Z",
+      "updated_at": "2026-11-15T10:32:40Z"
     }
   ]
 }
@@ -2154,116 +2223,92 @@ Content-Type: application/json
 | --- | --- |
 | `list_services` | `tender services list apps` |
 
-### `GET /v1/machines/{machine}/services/{service}`
+### `POST /v1/machines/{machine}/services`
 
-Returns one service.
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `machine` | string | Yes | Path. The machine's name. |
-| `service` | string | Yes | Path. The container's name. |
-
-#### Example request
-
-```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services/web
-```
-
-#### Example response
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "id": 3,
-  "machine": "apps",
-  "name": "web",
-  "runtime": "docker",
-  "project": "apps",
-  "container_id": "c0ffee04",
-  "image": "ghcr.io/example/web:2.4",
-  "state": "running",
-  "health": "healthy",
-  "exit_code": null,
-  "restart_count": 0,
-  "restart_policy": "unless-stopped",
-  "started_at": "2026-11-15T10:32:35Z",
-  "memory_bytes": 209715200,
-  "memory_limit_bytes": 1073741824,
-  "cpu_percent": 12.5,
-  "alerts_enabled": true,
-  "stopped_by_tender": false,
-  "removed_at": null,
-  "created_at": "2026-11-15T11:27:27Z",
-  "updated_at": "2026-11-15T11:36:35Z"
-}
-```
-
-#### Errors
-
-| Status | When |
-| --- | --- |
-| `404` | The machine doesn't exist, or it has no service with this name. |
-
-#### Equivalents
-
-| MCP tool | CLI command |
-| --- | --- |
-| `list_services` | `tender services list apps` |
-
-### `PATCH /v1/machines/{machine}/services/{service}`
-
-Turns a service's alerts off or on. Turning them off resolves its open problems.
-
-The setting follows the service's name, as [Services](services.md#what-a-service-is) explains.
+Stores a new managed service and queues its deploy. The daemon checks the compose file against [the rules](services.md#the-rules), and the deploy fails with the rule's sentence when one fails. The body may be up to 4 MiB.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
-| `service` | string | Yes | Path. The container's name. |
-| `alerts_enabled` | boolean | No | Body. `false` to stop the service's alerts, `true` to start them again. |
+| `name` | string | Yes | Body. The compose project name: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `compose` | string | Yes | Body. The text of the docker compose file, at most 256 KiB. |
+| `files` | object | No | Body. Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. At most 64 files and 1 MiB in all. |
+| `env` | object | No | Body. Values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores; a value can't hold a single quote or a line break. |
+| `routes` | array | No | Body. Each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` for `cloudflare` and `public` or an optional `https_port` for `tailscale`. See [Routes](exposure.md#routes). |
 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps/services/web \
-  -H 'Content-Type: application/merge-patch+json' \
-  -d '{"alerts_enabled": false}'
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/services \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "blog", "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+       "env": {"SECRET_KEY": "s3cret"}, "routes": [{"container": "web", "port": 8080, "expose": "tailscale"}]}'
 ```
 
 #### Example response
 
 ```http
-HTTP/1.1 200 OK
+HTTP/1.1 202 Accepted
 Content-Type: application/json
+Location: /v1/machines/apps/actions/13
 
 {
-  "id": 3,
-  "machine": "apps",
-  "name": "web",
-  "runtime": "docker",
-  "project": "apps",
-  "container_id": "c0ffee04",
-  "image": "ghcr.io/example/web:2.4",
-  "state": "running",
-  "health": "healthy",
-  "exit_code": null,
-  "restart_count": 0,
-  "restart_policy": "unless-stopped",
-  "started_at": "2026-11-15T10:32:35Z",
-  "memory_bytes": 209715200,
-  "memory_limit_bytes": 1073741824,
-  "cpu_percent": 12.5,
-  "alerts_enabled": false,
-  "stopped_by_tender": false,
-  "removed_at": null,
-  "created_at": "2026-11-15T11:27:27Z",
-  "updated_at": "2026-11-15T11:36:35Z"
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "stopped",
+    "deploy_status": "deploying",
+    "last_error": null,
+    "deployed_at": null,
+    "action_id": 13,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:40:20Z"
+  },
+  "action": {
+    "id": 13,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:40:20Z",
+    "output": null
+  }
 }
 ```
 
@@ -2272,22 +2317,796 @@ Content-Type: application/json
 | Status | When |
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
-| `404` | The machine doesn't exist, or it has no service with this name. |
-| `422` | `alerts_enabled` isn't a boolean. |
+| `404` | The machine doesn't exist. |
+| `409` | The machine has a service with this name: a managed one, which `PATCH` changes, or one Tender didn't deploy, whose containers you take down first with `docker compose -p NAME down`. Or a route's host or `https_port` is taken. |
+| `413` | The body is larger than 4 MiB. |
+| `422` | A field isn't valid, such as a name with a dash, a file outside the folder, an env value of `"***"`, or a `public` route without a host. A `cloudflare` route on a hub without the Cloudflare settings. |
+| `503` | The hub has no `TENDER_ENCRYPTION_KEY` to store the env with. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `set_service_alerts` | `tender services alerts apps web off` |
+| `deploy_service` | `tender services deploy apps blog -f compose.yaml --env-file .env --route web:8080:tailscale` |
+
+### `GET /v1/machines/{machine}/services/{service}`
+
+Returns one service, with its routes and containers.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services/redis
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 2,
+  "machine": "apps",
+  "name": "redis",
+  "managed": false,
+  "state": "running",
+  "deploy_status": null,
+  "last_error": null,
+  "deployed_at": null,
+  "action_id": null,
+  "compose": null,
+  "files": {},
+  "env": {},
+  "routes": [],
+  "alerts_enabled": true,
+  "containers": [
+    {
+      "id": 2,
+      "name": "redis",
+      "runtime": "docker",
+      "container_id": "c0ffee05",
+      "image": "redis:7",
+      "state": "running",
+      "health": null,
+      "exit_code": null,
+      "restart_count": 0,
+      "restart_policy": "always",
+      "started_at": "2026-11-15T10:32:35Z",
+      "memory_bytes": 8388608,
+      "memory_limit_bytes": null,
+      "cpu_percent": 0.4,
+      "stopped_by_tender": false,
+      "removed_at": null,
+      "created_at": "2026-11-15T10:33:00Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    }
+  ],
+  "created_at": "2026-11-15T10:33:00Z",
+  "updated_at": "2026-11-15T10:33:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_service` | `tender services show apps redis` |
+
+### `PATCH /v1/machines/{machine}/services/{service}`
+
+Changes a service, as a JSON merge patch. `alerts_enabled` turns its alerts off or on, for any service, and answers `200` with the service; turning them off resolves its open problems. A change of `compose`, `files`, `env` or `routes`, for a managed service only, is stored and queues a deploy, and answers `202`.
+
+`files` and `env` merge into the stored ones: a key with `null` removes it, and `null` for the whole object removes every key. An env value of `"***"` keeps the stored one. `routes` replaces every route; a route the service keeps keeps its ports.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+| `alerts_enabled` | boolean | No | Body. `false` to stop the service's alerts, `true` to start them again. |
+| `compose` | string | No | Body. A new compose file. It can't be `null`. |
+| `files` | object | No | Body. Files to add, change or, with `null`, remove. |
+| `env` | object | No | Body. Env values to add, change or, with `null`, remove. |
+| `routes` | array | No | Body. Every route of the service, replacing the stored ones. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"env": {"MODE": "prod"}}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/14
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deploying",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 14,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:45:10Z"
+  },
+  "action": {
+    "id": 14,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:45:10Z",
+    "updated_at": "2026-11-15T11:45:10Z",
+    "output": null
+  }
+}
+```
+
+With only `alerts_enabled`, the answer is `200 OK` with the service, as `GET` returns it.
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | A change of a service Tender didn't deploy, which only `alerts_enabled` can change. Or the service is being removed, or a route's host or `https_port` is taken. |
+| `413` | The body is larger than 4 MiB. |
+| `422` | A field isn't valid, as for `POST`, or `compose` is `null`. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_service_alerts`, or `deploy_service` for a change | `tender services alerts apps blog off`, or `tender services deploy apps blog -f compose.yaml --env MODE=prod` |
+
+### `DELETE /v1/machines/{machine}/services/{service}`
+
+Queues the remove of a managed service. The daemon runs `docker compose down`, takes the service's routes out of the exposures, and keeps its folder in `/var/lib/tender/services/.removed/` on the machine, or deletes it with `delete_data=true`. The hub forgets the service once the remove succeeded. See [Change, redeploy and remove](services.md#change-redeploy-and-remove).
+
+> [!WARNING]
+> `delete_data=true` deletes the data of the service's named volumes, and can't be undone.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+| `delete_data` | boolean | No | Query. `true` deletes the service's folder and its data. The default, `false`, keeps it aside. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE 'https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog?delete_data=true'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/15
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "removing",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 15,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:50:00Z"
+  },
+  "action": {
+    "id": 15,
+    "machine": "apps",
+    "type": "remove",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": true,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:50:00Z",
+    "updated_at": "2026-11-15T11:50:00Z",
+    "output": null
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `delete_data` isn't `true` or `false`. |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | The service isn't managed, or it is being removed already. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_service` | `tender services remove apps blog --delete-data --yes` |
+
+### `POST /v1/machines/{machine}/services/{service}/deploy`
+
+Queues a deploy of a managed service as it is stored. Compose pulls the images again, so a new image under the same tag runs, and recreates the containers that changed.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog/deploy
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/16
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deploying",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 16,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:48:00Z"
+  },
+  "action": {
+    "id": 16,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:48:00Z",
+    "updated_at": "2026-11-15T11:48:00Z",
+    "output": null
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | The service isn't managed, or it is being removed. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `redeploy_service` | `tender services redeploy apps blog` |
+
+### `POST /v1/machines/{machine}/services/{service}/start`
+
+Queues a start of every container of the service, or of one. A managed service as a whole starts with `docker compose start` in its folder; one container, or an unmanaged service, through Docker's API. Starting a running container changes nothing.
+
+`POST /v1/machines/{machine}/services/{service}/stop` and `POST /v1/machines/{machine}/services/{service}/restart` work the same, and so does `POST /v1/machines/{machine}/actions` with the type and the service. A container Tender stopped is marked `stopped_by_tender` and doesn't alert as down until it runs again.
+
+> [!WARNING]
+> A `stop` takes the service offline until something starts it again.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+| `container` | string | No | Body. Only this container of the service, such as `web`. Leave the body out for every container. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog/restart \
+  -H 'Content-Type: application/json' \
+  -d '{"container": "web"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/17
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deployed",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 16,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:49:10Z"
+  },
+  "action": {
+    "id": 17,
+    "machine": "apps",
+    "type": "restart",
+    "service": "blog",
+    "container": "web",
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:55:00Z",
+    "updated_at": "2026-11-15T11:55:00Z",
+    "output": null
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist, it has no service with this name, or the service has no container with this name. |
+| `409` | The container was removed, or the service has no containers left: Docker on the machine no longer has them. |
+| `422` | `container` is empty. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `start_service`, `stop_service` or `restart_service` | `tender services restart apps blog --container web` |
+
+## Registries
+
+A registry is the login of a container registry, such as `ghcr.io`, that managed services pull private images from. A deploy uses the login of the registry whose host an image is on. The hub stores the password encrypted and shows it as `"***"` with `password_set`.
+
+### `GET /v1/registries`
+
+Lists the registries, by name.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s https://apps.your-tailnet.ts.net/v1/registries
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "ghcr",
+      "host": "ghcr.io",
+      "username": "me",
+      "password": "***",
+      "password_set": true,
+      "created_at": "2026-11-15T09:00:00Z",
+      "updated_at": "2026-11-15T09:00:00Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_registries` | `tender registries list` |
+
+### `POST /v1/registries`
+
+Adds a registry's login. It answers `201 Created` with the registry and its `Location`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and dashes, starting with a letter or digit, at most 63. |
+| `host` | string | Yes | Body. The registry's host, as image names start with it, such as `ghcr.io` or `registry.example.com:5000`; `docker.io` for Docker Hub. |
+| `username` | string | Yes | Body. The login name. |
+| `password` | string | Yes | Body. The password or access token. |
+
+#### Example request
+
+```sh
+curl -s -X POST https://apps.your-tailnet.ts.net/v1/registries \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "ghcr", "host": "ghcr.io", "username": "me", "password": "ghp_example"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/registries/ghcr
+
+{
+  "id": 1,
+  "name": "ghcr",
+  "host": "ghcr.io",
+  "username": "me",
+  "password": "***",
+  "password_set": true,
+  "created_at": "2026-11-15T09:00:00Z",
+  "updated_at": "2026-11-15T09:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `409` | A registry has this name, or this host already has a login. |
+| `422` | A field isn't valid, or the password is `"***"`. |
+| `503` | The hub has no `TENDER_ENCRYPTION_KEY` to store the password with. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `add_registry` | `tender registries add ghcr --host ghcr.io --username me` |
+
+### `PATCH /v1/registries/{registry}`
+
+Changes a registry's host, username or password. The fields left out stay.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `registry` | string | Yes | Path. The registry's name. |
+| `host` | string | No | Body. A new host. |
+| `username` | string | No | Body. A new login name. |
+| `password` | string | No | Body. A new password or access token. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/registries/ghcr \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"password": "ghp_new"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "ghcr",
+  "host": "ghcr.io",
+  "username": "me",
+  "password": "***",
+  "password_set": true,
+  "created_at": "2026-11-15T09:00:00Z",
+  "updated_at": "2026-11-15T12:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | No registry has this name. |
+| `409` | Another registry has the new host. |
+| `422` | A field isn't valid. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `update_registry` | `tender registries update ghcr --password` |
+
+### `DELETE /v1/registries/{registry}`
+
+Removes a registry's login. Services whose images are on it can no longer pull them, unless they are public. It answers `204 No Content`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `registry` | string | Yes | Path. The registry's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/registries/ghcr
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | No registry has this name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_registry` | `tender registries remove ghcr` |
 
 ## Actions
 
-An action is work for a machine's daemon: starting, stopping or restarting a service, reading a service's logs or the machine's journal, trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)), upgrading the machine's packages, or updating Tender, which only a rollout queues. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+An action is work for a machine's daemon: deploying or removing a managed service, which only [its routes](#services) queue, starting, stopping or restarting a service or one of its containers, reading a service's logs or the machine's journal, trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)), upgrading the machine's packages, or updating Tender, which only a rollout queues. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `POST /v1/machines/{machine}/actions`
 
 Queues an action for the machine's daemon and answers at once with the action as `pending`.
+
+To restart one container of a service, send `{"type": "restart", "service": "notes", "container": "web"}`; leave `container` out for every container. A service's logs are its containers' lines merged in time order, each with its container's name, or one container's lines with `container`.
 
 To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 200}`. Logs output is at most 256 KiB, dropping the oldest lines past it.
 
@@ -2302,7 +3121,8 @@ To upgrade a Debian or Ubuntu machine's packages, send `{"type": "upgrade", "pac
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
 | `type` | string | Yes | Body. `start`, `stop`, `restart`, `logs` or `upgrade`. An `update` comes only from `POST /v1/updates/rollouts`. |
-| `service` | string | For `start`, `stop` and `restart` | Body. The container's name. With `logs`, read this service's logs; leave it out to read the machine's journal. |
+| `service` | string | For `start`, `stop` and `restart` | Body. The service's name. With `logs`, read this service's logs; leave it out to read the machine's journal. |
+| `container` | string | No | Body. With `service`, only this container of the service, such as `web`. |
 | `unit` | string | No | Body. Machine logs only. Only this systemd unit, such as `tenderd` or `nginx.service`. |
 | `priority` | string | No | Body. Machine logs only. Only this priority and the more severe ones: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. |
 | `since` | string | No | Body. Logs only. Only entries from this far back, such as `30m`, `1h` or `7d`, at most `7d`. |
@@ -2314,7 +3134,7 @@ To upgrade a Debian or Ubuntu machine's packages, send `{"type": "upgrade", "pac
 ```sh
 curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/actions \
   -H 'Content-Type: application/json' \
-  -d '{"type": "restart", "service": "web"}'
+  -d '{"type": "restart", "service": "notes", "container": "web"}'
 ```
 
 #### Example response
@@ -2328,7 +3148,8 @@ Location: /v1/machines/apps/actions/14
   "id": 14,
   "machine": "apps",
   "type": "restart",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "unit": null,
   "priority": null,
   "since": null,
@@ -2336,6 +3157,7 @@ Location: /v1/machines/apps/actions/14
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "pending",
   "output_cleared": false,
   "created_at": "2026-11-15T11:40:20Z",
@@ -2349,15 +3171,15 @@ Location: /v1/machines/apps/actions/14
 | Status | When |
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
-| `404` | The machine doesn't exist, or it has no service with this name. |
-| `409` | The service was removed: Docker on the machine no longer has its container. |
-| `422` | The type isn't one of the five, a service action has no service or has a logs field, a service's logs action has `unit` or `priority`, a logs field isn't valid, `packages` isn't `security` or `all` or comes without `upgrade`, or the type is `update`. |
+| `404` | The machine doesn't exist, it has no service with this name, or the service has no container with this name. |
+| `409` | The service or the container was removed: Docker on the machine no longer has it. |
+| `422` | The type isn't one of the five, a service action has no service or has a logs field, `container` comes without `service` or is empty, a service's logs action has `unit` or `priority`, a logs field isn't valid, `packages` isn't `security` or `all` or comes without `upgrade`, or the type is `update`, `deploy` or `remove`, which go through their own routes. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` or `upgrade_machine` | `tender services start\|stop\|restart\|logs apps web`, `tender logs apps`, or `tender machines upgrade apps` |
+| `start_service`, `stop_service`, `restart_service`, `service_logs`, `get_machine_logs` or `upgrade_machine` | `tender services start\|stop\|restart\|logs apps notes --container web`, `tender logs apps`, or `tender machines upgrade apps` |
 
 ### `GET /v1/machines/{machine}/actions`
 
@@ -2389,7 +3211,8 @@ Content-Type: application/json
       "id": 7,
       "machine": "apps",
       "type": "logs",
-      "service": "web",
+      "service": "notes",
+      "container": null,
       "unit": null,
       "priority": null,
       "since": "10m",
@@ -2397,6 +3220,7 @@ Content-Type: application/json
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:14Z",
@@ -2407,6 +3231,7 @@ Content-Type: application/json
       "machine": "apps",
       "type": "logs",
       "service": null,
+      "container": null,
       "unit": "tenderd",
       "priority": "warning",
       "since": "1h",
@@ -2414,6 +3239,7 @@ Content-Type: application/json
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:13Z",
@@ -2423,7 +3249,8 @@ Content-Type: application/json
       "id": 1,
       "machine": "apps",
       "type": "restart",
-      "service": "web",
+      "service": "notes",
+      "container": null,
       "unit": null,
       "priority": null,
       "since": null,
@@ -2431,6 +3258,7 @@ Content-Type: application/json
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:07Z",
@@ -2457,7 +3285,7 @@ Content-Type: application/json
 
 Returns one action with its output: the logs, or why it failed.
 
-`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a completed logs action's output. A failed action keeps why it failed. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message.
+`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a completed logs action's output. A failed action keeps why it failed. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message, with the container's name and `|` between them when the logs are of more than one container. A deploy's output is the end of what compose printed, and a remove's says where the service's folder was kept.
 
 #### Parameters
 
@@ -2483,6 +3311,7 @@ Content-Type: application/json
   "machine": "apps",
   "type": "logs",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": "warning",
   "since": null,
@@ -2490,6 +3319,7 @@ Content-Type: application/json
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -3174,9 +4004,12 @@ tender_build_info{version="v0.3.0"} 1
 # HELP tender_machine_cpu_load The machine's 1-minute load average, from its latest reading.
 # TYPE tender_machine_cpu_load gauge
 tender_machine_cpu_load{machine="apps"} 0.09
-# HELP tender_service_state 1 for the service's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.
+# HELP tender_service_state 1 for the service's current state: running, degraded, stopped or unknown. managed is true for a service Tender deployed.
 # TYPE tender_service_state gauge
-tender_service_state{machine="apps",service="web",runtime="docker",state="running"} 1
+tender_service_state{machine="apps",service="notes",managed="true",state="running"} 1
+# HELP tender_container_state 1 for the container's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.
+# TYPE tender_container_state gauge
+tender_container_state{machine="apps",service="notes",container="web",runtime="docker",state="running"} 1
 # HELP tender_backup_last_age_seconds How old the machine's newest snapshot is.
 # TYPE tender_backup_last_age_seconds gauge
 tender_backup_last_age_seconds{machine="apps"} 31560
@@ -3211,8 +4044,11 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
 | `POST /v1/machines/{machine}/backups/history` | Records a run as it starts, or a finished run it couldn't send while the hub was down. |
 | `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |
-| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "services": [...]}` with every container, `[]` for none, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, or `{"docker": "off"}` when Docker is turned off, once a minute and after each start, stop or restart. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. |
+| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "containers": [...]}` with every container, `[]` for none, each with its compose `project`, `compose_service` and `container_number`, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, or `{"docker": "off"}` when Docker is turned off, once a minute and after each start, stop, restart, deploy or remove. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. A daemon before v0.4 sends the list as `services`, which the hub still takes. |
 | `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the oldest pending action, and gets it without changing its status. |
+| `GET /v1/machines/{machine}/actions?wait=25` (a deploy or remove) | A deploy or remove action comes with `deployment`: the service's `name`, `compose`, `files`, `env` in the clear, its `routes` with their local ports, the `registries` logins, and the machine's `exposures`, for this daemon only. |
+| `GET /v1/machines/{machine}/exposures` | Gets `{"routes": [...], "cloudflare_tunnel_token": ...}`, the machine's whole set of routes, each with `service`, `container`, `expose`, `local_port`, `host` and `https_port`, when the daemon starts. The tunnel token, `null` while the machine has no Cloudflare tunnel, reaches only this daemon. See [Exposure](exposure.md#how-the-daemon-applies-them). |
+| `PUT /v1/machines/{machine}/exposures/status` | Sends `{"tailscale_dns_name": "apps.tail1234.ts.net"}`, or `null` without Tailscale, after it applies the exposures. Answers `204`. |
 | `GET /v1/machines/{machine}/logs/sinks` | Gets the enabled sinks for the machine, every 30 seconds, each with its whole `config`, secrets included, its `sources` and `updated_at`. |
 | `PUT /v1/machines/{machine}/logs/status` | Sends `{"data": [...]}`, one entry per sink with `sink_id` and the `status` fields, every minute and within seconds when sending starts or stops failing. An entry for a sink that is gone is ignored. |
 | `PUT /v1/machines/{machine}/security` | Sends the security checks, when the daemon starts and every 15 minutes, and after an upgrade. Answers `204`. |

@@ -2,7 +2,7 @@
 
 Tender backs up your Linux servers to your own storage, such as an S3 bucket or an SFTP server, watches their disks and Docker services, and tells you by email, Slack, a webhook or your own program when something breaks. An AI client can run all of it over MCP.
 
-You install a small daemon on each machine and one hub on any of them. Each daemon backs up its whole machine with [restic](https://restic.net) on the schedule you set, keeps snapshots for as many days as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects usage and container state from every machine once a minute, and notifies your channels when a backup fails, a machine goes quiet, a disk fills up or a service stops. Each daemon can also send its journal and container logs straight to an OpenTelemetry collector or your own webhook.
+You install a small daemon on each machine and one hub on any of them. Each daemon backs up its whole machine with [restic](https://restic.net) on the schedule you set, keeps snapshots for as many days as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects usage and container state from every machine once a minute, and notifies your channels when a backup fails, a machine goes quiet, a disk fills up or a service stops. Each daemon can also send its journal and container logs straight to an OpenTelemetry collector or your own webhook, and deploy services from docker compose files, exposed on your tailnet, through Cloudflare or at a public host. See [Services](docs/services.md).
 
 Tender is one static Go binary. Your backups are plain, encrypted restic repositories, so you can restore them without Tender.
 

@@ -50,9 +50,10 @@ A webhook and an exec adapter get the same JSON, version 1, for each notificatio
     "event": "service.down",
     "severity": "critical",
     "machine": "apps",
-    "service": "web",
+    "service": "notes",
+    "container": "web",
     "channel": null,
-    "message": "The service web on apps stopped with exit code 137.",
+    "message": "web in notes on apps stopped with exit code 137.",
     "created_at": "2026-11-15T09:12:00Z"
   },
   "hub": "https://apps.your-tailnet.ts.net"
@@ -67,7 +68,8 @@ A webhook and an exec adapter get the same JSON, version 1, for each notificatio
 | `notification.event` | The same as `event`. |
 | `notification.severity` | `info`, `warning` or `critical`. |
 | `notification.machine` | The machine it is about, or `null`, such as for `channel.failing` or a test. |
-| `notification.service` | The Docker service it is about, or `null`. |
+| `notification.service` | The service it is about, such as `notes`, or `null`. |
+| `notification.container` | The container in that service it is about, such as `web`, or `null` for one about the whole service or something else. Added in v0.4. |
 | `notification.channel` | The channel a `channel.failing` notification is about, or `null`. |
 | `notification.message` | One sentence that says what happened. It never holds log text. |
 | `notification.created_at` | When the hub added the notification, in RFC 3339 UTC. |
@@ -296,7 +298,7 @@ This adapter posts each notification to an [ntfy](https://ntfy.sh) topic, with i
 To try an adapter without the hub, pipe it an event:
 
 ```sh
-echo '{"version":1,"event":"notification.test","notification":{"id":1,"event":"notification.test","severity":"info","machine":null,"service":null,"channel":null,"message":"Hello.","created_at":"2026-11-15T09:12:00Z"},"hub":"https://apps.your-tailnet.ts.net"}' | sudo -u tender /etc/tender/adapters/ntfy; echo "exit $?"
+echo '{"version":1,"event":"notification.test","notification":{"id":1,"event":"notification.test","severity":"info","machine":null,"service":null,"container":null,"channel":null,"message":"Hello.","created_at":"2026-11-15T09:12:00Z"},"hub":"https://apps.your-tailnet.ts.net"}' | sudo -u tender /etc/tender/adapters/ntfy; echo "exit $?"
 ```
 
 ## Log sinks
