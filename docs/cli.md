@@ -574,7 +574,7 @@ The columns are:
 1. `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped. While Docker is unreachable it is `unknown` alone. A service whose container is gone shows `removed` and when, until the hub deletes it 7 days later, as [Removed services](services.md#removed-services) explains.
 2. `MEM` is the memory it uses, with its limit when it has one.
 3. `CPU` is its use since the previous report, where 100% is one whole CPU. It shows `-` while there is no previous reading, as [Services](services.md#what-a-service-is) explains.
-4. `ALERTS` says whether the service sends alert emails.
+4. `ALERTS` says whether the service alerts.
 
 While Docker is unreachable, the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
 
@@ -767,7 +767,7 @@ With no lines, it prints `web on apps has no logs.` and exits 0.
 
 ### `tender services alerts`
 
-Turns a service's alert emails on or off. They are on for every new service. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
+Turns a service's alerts on or off. They are on for every new service. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
 
 #### Usage
 
@@ -781,7 +781,7 @@ tender services alerts MACHINE SERVICE on|off [--hub URL]
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine the service runs on. |
 | `SERVICE` | string | Yes | The service's container name. |
-| `on` or `off` | string | Yes | Whether the service sends alert emails. |
+| `on` or `off` | string | Yes | Whether the service alerts. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
@@ -791,7 +791,7 @@ tender services alerts apps web off
 ```
 
 ```text
-Alerts for web on apps are off. Its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried.
+Alerts for web on apps are off. Its open alerts resolve within a minute.
 ```
 
 #### Errors
@@ -956,18 +956,18 @@ A failed action shows why it failed instead, such as `The daemon restarted befor
 | --- | --- |
 | `GET /v1/machines/{machine}/actions/{id}` | `get_action` |
 
-## `tender recipients`
+## `tender channels`
 
-Choose who gets the alert emails. Every recipient gets every alert.
+Choose where alerts go: email addresses, Slack, webhooks that get signed JSON, and exec adapters on the hub. Each channel gets every alert at least as severe as its `min_severity`. [Adapters](adapters.md) explains each type and the event they get.
 
-### `tender recipients list`
+### `tender channels list`
 
-Lists who gets the alert emails.
+Lists the channels. Their secrets are never shown.
 
 #### Usage
 
 ```sh
-tender recipients list [--hub URL]
+tender channels list [--hub URL]
 ```
 
 #### Options
@@ -979,15 +979,17 @@ tender recipients list [--hub URL]
 #### Example
 
 ```sh
-tender recipients list
+tender channels list
 ```
 
 ```text
-EMAIL             ADDED
-ops@example.com   just now
+NAME       TYPE      SENDS TO                            MIN SEVERITY   ALERTS
+ops        email     ops@example.com                     warning        on
+chat       slack     Slack webhook (secret)              critical       on
+receiver   webhook   https://alerts.example.com/tender   warning        on
 ```
 
-With no recipients, it prints `No recipients yet, so no alert is emailed. Add one with: tender recipients add EMAIL` and exits 0.
+With no channels, it prints `No channels yet, so alerts are only recorded. Add one with: tender channels add ops --type email --to ops@example.com` and exits 0.
 
 #### Errors
 
@@ -997,123 +999,229 @@ With no recipients, it prints `No recipients yet, so no alert is emailed. Add on
 
 | REST route | MCP tool |
 | --- | --- |
-| `GET /v1/notifications/recipients` | `list_recipients` |
+| `GET /v1/notifications/channels` | `list_channels` |
 
-### `tender recipients add`
+### `tender channels add`
 
-Adds an address that gets every alert email.
+Adds a channel. An email channel needs `--to` and the hub's SMTP settings. A Slack channel asks for its incoming webhook URL with typing hidden, or reads it from `--webhook-url-file`, because the URL is its key. A webhook channel needs `--url`, and the hub makes its signing secret and shows it once. An exec channel needs `--command`, a program root installed in `/etc/tender/adapters` on the hub.
 
 #### Usage
 
 ```sh
-tender recipients add EMAIL [--hub URL]
+tender channels add NAME --type TYPE [--to EMAIL | --url URL | --webhook-url-file PATH | --command NAME] [--min-severity SEVERITY] [--off] [--hub URL]
 ```
 
 #### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `EMAIL` | string | Yes | A bare address, such as `ops@example.com`, without a display name. |
+| `NAME` | string | Yes | The channel's name: lowercase letters, digits and dashes, such as `ops`. |
+| `--type` | string | Yes | `email`, `slack`, `webhook` or `exec`. |
+| `--to` | string | For `email` | A bare address, such as `ops@example.com`. |
+| `--webhook-url-file` | path | No | For `slack`, a file with the incoming webhook URL, instead of asking. |
+| `--url` | URL | For `webhook` | Where the hub posts the signed event. |
+| `--command` | string | For `exec` | The program's name in `/etc/tender/adapters`, never a path. |
+| `--min-severity` | string | No | The least severe alert it gets: `info`, `warning` or `critical`. The default is `warning`. |
+| `--off` | flag | No | Add it turned off, so it gets no alerts until you turn it on. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender recipients add ops@example.com
+tender channels add receiver --type webhook --url https://alerts.example.com/tender
 ```
 
 ```text
-Added ops@example.com. It gets every alert. Check that the email arrives with: tender email test
+Added channel receiver. It gets every alert from warning up. Check that it arrives with: tender channels test receiver
+
+Its signing secret, made by the hub and shown only now:
+  whsec_DegsXtcqOW0BeSvwAslbz0WjeZpZwFbB_W8oo6EHXuE
+
+Give it to the webhook's receiver, which checks the Tender-Signature header with it. Tender cannot
+show it again; replace it with: tender channels update receiver --secret-file PATH
 ```
+
+Other types print only the first line.
 
 #### Errors
 
-1. `email must be a bare address such as alerts@example.com.`
-2. `ops@example.com is already a recipient.`
+1. `A channel called ops already exists. Choose another name, or change that one.`
+2. `there is no /etc/tender/adapters/ntfy. As root on the hub, install the program there and make it executable.`
+3. `channels add needs --type: email, slack, webhook or exec. Run "tender channels add --help" for usage.`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `POST /v1/notifications/recipients` | `add_recipient` |
+| `POST /v1/notifications/channels` | `add_channel` |
 
-### `tender recipients remove`
+### `tender channels show`
 
-Removes an address from the alert emails.
+Shows one channel. Its secrets are never shown.
 
 #### Usage
 
 ```sh
-tender recipients remove EMAIL [--hub URL]
+tender channels show NAME [--hub URL]
 ```
 
 #### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `EMAIL` | string | Yes | The address to remove, in any case. |
+| `NAME` | string | Yes | The channel's name. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender recipients remove ops@example.com
+tender channels show receiver
 ```
 
 ```text
-Removed ops@example.com. It no longer gets alerts.
+FIELD          VALUE
+name           receiver
+type           webhook
+alerts         on
+min severity   warning
+secret         set (secret, never shown)
+url            https://alerts.example.com/tender
+added          just now
+changed        just now
 ```
 
 #### Errors
 
-1. `ops@example.com is not a recipient. Run "tender recipients list" to see who is.`
+1. `Channel "receiver" doesn't exist. List the channels to see their names.`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `GET /v1/notifications/recipients` and `DELETE /v1/notifications/recipients/{id}` | `remove_recipient` |
+| `GET /v1/notifications/channels/{channel}` | `list_channels` |
 
-## `tender email`
+### `tender channels update`
 
-Check that alert emails arrive.
-
-### `tender email test`
-
-Sends a test email, with the subject `Tender test email`, to every recipient.
+Changes a channel. Options left out stay as they are. Secrets are replaced from a file and never shown. Turning a channel off drops what it still owed.
 
 #### Usage
 
 ```sh
-tender email test [--hub URL]
+tender channels update NAME [--to EMAIL | --url URL | --command NAME] [--webhook-url-file PATH | --secret-file PATH] [--min-severity SEVERITY] [--on | --off] [--hub URL]
 ```
 
 #### Options
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `NAME` | string | Yes | The channel's name. Its type can't change. |
+| `--to`, `--url`, `--command` | string | No | A new address, URL or program, by the channel's type. |
+| `--webhook-url-file` | path | No | A file with a Slack channel's new webhook URL. |
+| `--secret-file` | path | No | A file with a webhook channel's new signing secret, 24 characters or more. |
+| `--min-severity` | string | No | `info`, `warning` or `critical`. |
+| `--on`, `--off` | flag | No | Turn it on or off. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender email test
+tender channels update ops --min-severity critical --off
 ```
 
 ```text
-Sent a test email to ops@example.com.
+Updated channel ops: alerts off, from critical up.
 ```
 
 #### Errors
 
-1. `Email is off on this hub. Set TENDER_SMTP_HOST and TENDER_SMTP_FROM in /etc/tender/hub.env and restart the hub.`
-2. `There are no recipients to send to. Add one first, such as alerts@example.com.`
+1. `channels update needs something to change, such as --off or --min-severity critical. Run "tender channels update --help" for usage.`
+2. `channels update takes --on or --off, not both. Run "tender channels update --help" for usage.`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `POST /v1/notifications/test` | `send_test_email` |
+| `PATCH /v1/notifications/channels/{channel}` | `update_channel` |
+
+### `tender channels remove`
+
+Removes a channel, so it gets no more alerts. What it still owed is dropped.
+
+#### Usage
+
+```sh
+tender channels remove NAME [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The channel's name. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender channels remove chat
+```
+
+```text
+Removed channel chat. It gets no more alerts.
+```
+
+#### Errors
+
+1. `Channel "chat" doesn't exist. List the channels to see their names.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/notifications/channels/{channel}` | `remove_channel` |
+
+### `tender channels test`
+
+Sends a test event to every enabled channel, or to one named channel even when it is off, and says how each went. Each waits at most 10 seconds, or 30 for email. It exits 1 when any channel failed.
+
+#### Usage
+
+```sh
+tender channels test [NAME] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | No | Test only this channel. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender channels test
+```
+
+```text
+CHANNEL    RESULT
+ops        delivered
+chat       failed: the Slack webhook answered 404: no_team
+receiver   delivered
+```
+
+A failed channel is followed by `the test didn't reach every channel. Fix the channel's settings with "tender channels update" and test again.`
+
+#### Errors
+
+1. `There are no enabled channels to test. Add one first, such as an email channel to ops@example.com.`
+2. `Channel "ops" doesn't exist. List the channels to see their names.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/notifications/test` | `send_test_notification` |
 
 ## `tender install`
 
@@ -1151,7 +1259,7 @@ The tender command on this machine finds it by itself.
 Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
 ```
 
-The output goes on with the next steps: add a destination, a machine, its schedule and the recipients. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
+The output goes on with the next steps: add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
 
 The host and the sender go together, so pass both empty to turn alert emails off:
 

@@ -1,6 +1,6 @@
 # Set up email alerts
 
-Send alert emails through your SMTP server to everyone who should hear when a backup fails or a service stops.
+Send alerts by email through your SMTP server to everyone who should hear when a backup fails or a service stops.
 
 ## Prerequisites
 
@@ -24,33 +24,37 @@ Send alert emails through your SMTP server to everyone who should hear when a ba
 
 The installer keeps the hub's key and every other setting, writes the SMTP settings to `/etc/tender/hub.env` and restarts the hub. To read the password from a file instead, add `--smtp-password-file PATH`.
 
-## Add recipients
+## Add an email channel
 
-1. Add each address that should get alerts:
+1. Add a channel for each address that should get alerts:
 
    ```sh
-   tender recipients add ops@example.com
+   tender channels add ops --type email --to ops@example.com
    ```
 
    ```text
-   Added ops@example.com. It gets every alert. Check that the email arrives with: tender email test
+   Added channel ops. It gets every alert from warning up. Check that it arrives with: tender channels test ops
    ```
 
-2. Send a test email to every recipient:
+   To get `info` alerts too, add `--min-severity info`. For only the worst, use `--min-severity critical`.
+
+2. Send it a test:
 
    ```sh
-   tender email test
+   tender channels test ops
    ```
 
    ```text
-   Sent a test email to ops@example.com.
+   CHANNEL   RESULT
+   ops       delivered
    ```
 
 3. Check that the email with the subject `Tender test email` arrived. Look in the spam folder too.
 
-Every recipient gets every alert. Remove one with `tender recipients remove ops@example.com`.
+Remove a channel with `tender channels remove ops`. To send alerts to Slack, a webhook or a program of your own as well, see [Adapters](../adapters.md).
 
 ## Next steps
 
 1. [Alerts](../alerts.md) explains each alert and when it opens.
-2. [Control a service](control-a-service.md) to turn one service's alerts off.
+2. [Adapters](../adapters.md) adds Slack, webhook and exec channels.
+3. [Control a service](control-a-service.md) to turn one service's alerts off.

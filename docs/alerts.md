@@ -1,20 +1,22 @@
 # Alerts
 
-The hub checks every machine once a minute and emails your recipients when a backup fails, a machine goes quiet, a disk fills up or a service has trouble.
+The hub checks every machine once a minute and tells your channels, such as an email address, Slack or a webhook, when a backup fails, a machine goes quiet, a disk fills up or a service has trouble.
 
-This page explains each alert and when it opens and resolves. To get the emails, see [Set up email alerts](guides/set-up-email-alerts.md).
+This page explains each alert and when it opens and resolves. To get them, see [Set up email alerts](guides/set-up-email-alerts.md), or [Adapters](adapters.md) for Slack, webhooks and your own programs.
 
 ## How an alert works
 
-An alert is a notification with a type, a severity and a status. The severity is `info`, `warning` or `critical`. The status is `pending` while an email is owed, `sent` once it went out, and `resolved` once the problem is gone. With email off or no recipients, an open alert stays `pending`.
+An alert is a notification with a type, a severity and a status. The severity is `info`, `warning` or `critical`. The status is `pending` while no channel has it yet, `sent` once a channel delivered it, or every channel's delivery of it failed, and `resolved` once the problem is gone. With no usable channel, an open alert stays `pending`. An email channel isn't usable while email is off on the hub.
 
-You get an email:
+Each channel gets an event:
 
-1. When the alert opens.
-2. The first time it gets worse, such as a disk going from 90% to 95% full. The email says it is now critical. Later rises change only the alert's severity and content, and a fall sends nothing.
-3. When it resolves.
+1. When the alert opens, if it is at least as severe as the channel's `min_severity`.
+2. The first time it gets worse, such as a disk going from 90% to 95% full. The event says it is now critical. Later rises change only the alert's severity and content, and a fall sends nothing.
+3. When it resolves, if the channel got an earlier event of the alert.
 
-If a send fails, the hub retries at its next checks, waiting longer each time up to 10 minutes, until the email goes out. An alert that was emailed stays open until its resolved email goes out. Alerts are recorded even when there are no recipients, so `tender status` and the API still show them.
+Each channel has its own deliveries, which `GET /v1/notifications` shows with each alert. A failed delivery is tried again after 1, 2, 5, 10 and 30 minutes, then every 30 minutes, for up to 24 hours. A `4xx` answer other than `429` fails at once. One failing channel never delays or repeats another, and it doesn't keep an alert open: the alert resolves when the problem is gone. [How delivery works](adapters.md#how-delivery-works) has the details.
+
+Alerts are recorded even when there are no channels, so `tender status`, `GET /metrics` and the API still show them.
 
 ## Machine and backup alerts
 
@@ -49,6 +51,14 @@ A service should be running when it exited with an error, or when its restart po
 
 A removed service's alerts resolve, because its counts start again. See [Removed services](services.md#removed-services).
 
+## Channel alerts
+
+| Type | Opens when | Severity |
+| --- | --- | --- |
+| `channel_failing` | A channel's deliveries have failed for 1 hour. | `warning` |
+
+`channel_failing` goes to every other enabled channel, whatever its `min_severity`, and never to the failing one. Its machine is `null`. It resolves once the channel delivers again, such as after you fix it and run `tender channels test`, or once you turn the channel off or remove it.
+
 ## Turn a service's alerts off
 
 Each service has its own alerts. Turn them off for a service you expect to stop, such as a worker you run by hand:
@@ -58,7 +68,7 @@ tender services alerts apps web off
 ```
 
 ```text
-Alerts for web on apps are off. Its open alerts resolve within a minute, or once their resolved email goes out when sending it is retried.
+Alerts for web on apps are off. Its open alerts resolve within a minute.
 ```
 
 This works even while Docker is unreachable. Turn them back on with `on`.
@@ -66,5 +76,6 @@ This works even while Docker is unreachable. Turn them back on with `on`.
 ## Next steps
 
 1. [Set up email alerts](guides/set-up-email-alerts.md) to send these to your team.
-2. [Services](services.md) explains what the daemon reports about each container.
-3. [API reference](api.md#notifications) lists the notification routes.
+2. [Adapters](adapters.md) sends them to Slack, a webhook or your own program.
+3. [Services](services.md) explains what the daemon reports about each container.
+4. [API reference](api.md#notifications) lists the notification routes.

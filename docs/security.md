@@ -4,7 +4,7 @@ Learn who can reach the hub, how Tender stores your keys and passwords, and what
 
 ## The hub has no login
 
-The hub has no login in this version. Anyone who can reach it can add, change and remove machines, destinations and alert recipients, stop and restart services, and read service and journal logs. Keep it on your tailnet or behind your own access control, and never expose it to the internet.
+The hub has no login in this version. Anyone who can reach it can add, change and remove machines, destinations and notification channels, stop and restart services, read service and journal logs, and read the metrics at `/metrics`. Keep it on your tailnet or behind your own access control, and never expose it to the internet.
 
 The installer publishes the hub on your tailnet with Tailscale Serve, so only devices on your tailnet reach it. The hub itself listens on `127.0.0.1:8080` only.
 
@@ -15,7 +15,9 @@ Web pages can't use the hub through your browser:
 
 ## How Tender stores secrets
 
-The hub keeps bucket keys and repository passwords in its SQLite database, encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY` from `/etc/tender/hub.env`. The hub refuses to start with a key that doesn't open them.
+The hub keeps bucket keys, repository passwords and the secrets of notification channels, such as a Slack webhook URL or a webhook's signing secret, in its SQLite database, encrypted with AES-256-GCM under `TENDER_ENCRYPTION_KEY` from `/etc/tender/hub.env`. The hub refuses to start with a key that doesn't open them.
+
+A channel's secrets never come back out: every route, tool and command shows them as `"***"` with a `<field>_set` field. A webhook's signing secret is shown once, when the hub makes it. A failed delivery's error never holds the URL it was sent to.
 
 The hub sends a destination's keys and password to one caller only: the daemon of a machine that backs up to that destination, signed in with its own token. No other route, MCP tool, CLI command or log line shows them.
 
@@ -52,6 +54,18 @@ The daemon runs as the `tender` system user under a systemd sandbox:
 
 The daemon keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
 
+## What an exec adapter can do
+
+An exec channel runs a program on the hub for each alert, as [Adapters](adapters.md#write-an-exec-adapter) explains. The API can only name a program in `/etc/tender/adapters`, never give a path or arguments:
+
+1. The hub runs a program only when it is a file in `/etc/tender/adapters`, owned by root and not writable by its group or others. Only root on the hub can install or change one.
+2. It runs as the hub's `tender` user, inside the hub's systemd sandbox, with no capabilities and no way to gain privileges.
+3. Its environment holds only `PATH` and `LANG`: the hub doesn't pass it `TENDER_ENCRYPTION_KEY`, the SMTP password or any other setting.
+4. It has 10 seconds per event, after which the hub kills it and every process it started. The hub keeps at most 64 KiB of its output.
+
+> [!WARNING]
+> An exec adapter runs as the hub's own user, so it can read whatever the hub can, such as its database and the hub process's own environment, which holds the encryption key. Install only programs you trust, as you would for root.
+
 ## Logs can hold secrets
 
 Service logs and the journal can hold tokens, passwords or customer data that an application printed. Tender treats them that way:
@@ -60,7 +74,7 @@ Service logs and the journal can hold tokens, passwords or customer data that an
 2. The hub clears the output of every completed logs action 1 hour after it finishes. A failed logs action holds why it failed, not logs, so it keeps its output.
 3. Cleared logs leave no bytes in the hub's database files, `hub.db`, `hub.db-wal` and `hub.db-shm`. The hub runs SQLite with `secure_delete`, which zeroes what a write frees, and after a pass that clears logs it empties the write-ahead log with `wal_checkpoint(TRUNCATE)`. A checkpoint that a reader holds up is tried again by the next minute's pass.
 4. The daemon never writes logs to disk. A report waiting for the hub keeps its logs in memory only, as [Services](services.md#when-the-hub-or-the-daemon-restarts) explains.
-5. Logs never go into the hub's or the daemon's own logs, into alerts or into emails.
+5. Logs never go into the hub's or the daemon's own logs, into alerts, or into the events that channels get.
 
 An AI client that reads logs sends them to its model provider. Ask for the narrowest logs you need, with `--unit`, `--priority` and `--since`.
 

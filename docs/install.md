@@ -49,6 +49,7 @@ The hub reads its settings from `/etc/tender/hub.env`. After editing the file by
 | `TENDER_SMTP_USERNAME` | None. | The SMTP login, for servers that ask for one. |
 | `TENDER_SMTP_PASSWORD` | None. | The SMTP password. |
 | `TENDER_SMTP_FROM` | None. | The sender, such as `Tender <alerts@example.com>`. |
+| `TENDER_HUB_URL` | `http://` and the machine's hostname. | The address people reach the hub at, such as `https://apps.your-tailnet.ts.net`. Alerts link to it, and the [event](adapters.md#the-event) that webhooks and exec adapters get carries it as `hub`. |
 | `TENDER_LISTEN` | `127.0.0.1:8080` | Where the hub listens, as an address with a port. The installer writes the port into the `tenderhub` service as `SocketBindAllow=tcp:PORT`, the only port the hub may bind, so run `sudo tender install refresh` after changing it. The installer stops before changing anything when the address has no port. |
 | `TENDER_HOSTS` | None. | More names the hub answers to, comma-separated, such as `tender.example.com` behind your own proxy. |
 | `TENDER_DATABASE` | `/var/lib/tender/hub/hub.db` | The hub's database. The `tenderhub` service can write only under `/var/lib/tender/hub`, and the hub refuses at startup a database path it can't write. Keep the database there, or allow its folder with `ReadWritePaths=` in a drop-in made with `sudo systemctl edit tenderhub`. |
@@ -182,6 +183,7 @@ Update the hub first, then the daemons.
 | `/usr/local/bin/tender` | The Tender binary. |
 | `/usr/local/bin/restic` | restic 0.19.1, checked against its official SHA-256, on machines with a daemon. |
 | `/etc/tender/hub.env` | The hub's encryption key and email settings, readable only by root. |
+| `/etc/tender/adapters` | The exec adapters you install for notification channels, if any. See [Adapters](adapters.md#write-an-exec-adapter). |
 | `/etc/tender/daemon.toml` | The daemon's hub, machine name, backup paths and excludes. |
 | `/etc/tender/credentials/hub-token` | The daemon's token, readable only by root and `tender`. |
 | `/var/lib/tender/hub/hub.db` | The hub's database. |
