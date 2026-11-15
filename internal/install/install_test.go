@@ -461,6 +461,11 @@ func TestHubFreshInstall(t *testing.T) {
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
+	// The first API token is made on the hub machine, which the next steps say before anything else.
+	if out := e.out.String(); !strings.Contains(out, "sudo tender tokens add NAME") || !strings.Contains(out, "export TENDER_TOKEN=") ||
+		strings.Index(out, "tokens add") > strings.Index(out, "destinations add") {
+		t.Errorf("the next steps don't start with making the API token:\n%s", out)
+	}
 	if e.mode(t, "/etc/tender/hub.env") != 0o600 || e.mode(t, "/etc/systemd/system/tenderhub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
 		t.Error("wrong modes")
 	}

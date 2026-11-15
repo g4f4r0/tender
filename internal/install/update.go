@@ -233,6 +233,9 @@ func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 	}
 	if err == nil {
 		in.say("\nUpdated to Tender %s.", tag)
+		if hub && !in.hubHasTokens(ctx) {
+			in.say("%s.", NoTokensYet)
+		}
 		return nil
 	}
 	in.say("Tender %s is not healthy. Rolling back to Tender %s.", tag, in.Version)
@@ -241,6 +244,27 @@ func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 			"Put %s back at %s and run \"sudo tender install refresh\"", tag, err, in.Version, rerr, in.path(previousBinaryPath), in.path(binaryPath))
 	}
 	return fmt.Errorf("Tender %s %s, so it rolled back to Tender %s: %w", tag, HealthCheckFailed, in.Version, err)
+}
+
+// NoTokensYet is what an update of a hub with no API token says, in one sentence.
+const NoTokensYet = "From v0.4 the hub refuses every request from people and AI clients until it has an API token; " +
+	"make the first one on this machine with: sudo tender tokens add NAME"
+
+// hubHasTokens reports whether the installed hub's database has an API token; false when it can't tell.
+func (in *Installer) hubHasTokens(ctx context.Context) bool {
+	if in.HubTokens == nil {
+		return false
+	}
+	env, err := os.ReadFile(in.path(hubEnvPath))
+	if err != nil {
+		return false
+	}
+	database := envValue(env, config.EnvDatabase)
+	if database == "" {
+		database = config.DefaultDatabase
+	}
+	has, err := in.HubTokens(ctx, in.path(database))
+	return err == nil && has
 }
 
 // waitIdle waits for a running backup or action to finish, and keeps new ones from starting until
