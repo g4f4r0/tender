@@ -3,8 +3,8 @@ package backups
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
