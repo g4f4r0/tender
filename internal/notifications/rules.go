@@ -114,8 +114,8 @@ type Service struct {
 	ExitCode        *int64
 	RestartCount    int64
 	RestartPolicy   string // no, always, unless-stopped or on-failure
-	AlertsEnabled   bool // the service's switch
-	StoppedByTender bool // a Tender stop left it stopped
+	AlertsEnabled   bool   // the service's switch
+	StoppedByTender bool   // a Tender stop left it stopped
 
 	MemoryBytes      *int64 // its memory use in the latest report, while it runs
 	MemoryLimitBytes *int64 // its memory limit, or nil without one
