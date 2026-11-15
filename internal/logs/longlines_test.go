@@ -47,7 +47,7 @@ func TestJournalSourceLongEntry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := make(chan item, 10)
-	go journalSource{bin: bin, filter: JournalSource{MinPriority: "debug"}, log: quiet}.run(ctx, cursors{Since: time.Unix(1, 0)}, out)
+	go journalSource{bin: bin, filter: JournalSource{MinPriority: "debug"}, log: quiet}.run(ctx, cursors{JournalSince: time.Unix(1, 0)}, out)
 	got := collect(out, 2, 10*time.Second)
 	if len(got) != 2 {
 		t.Fatalf("got %d entries", len(got))

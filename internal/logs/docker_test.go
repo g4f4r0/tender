@@ -26,21 +26,51 @@ type fakeContainer struct {
 	tty      bool
 	lines    []fakeLine
 	ended    chan struct{} // closed when the container stops
+	unlisted bool          // gone from the list already, as a container that ran for a moment
 }
 
 // fakeDocker serves the Engine API's container list, inspect and follow logs on a Unix socket.
 type fakeDocker struct {
 	mu         sync.Mutex
 	containers []*fakeContainer
-	sinces     []string // the since parameters of the logs requests
+	sinces     []string    // the since parameters of the logs requests
+	events     chan string // container ids, streamed as start events on GET /events
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/events" {
+		if f.events == nil || r.URL.Query().Get("filters") != `{"type":["container"],"event":["start"]}` {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		for {
+			select {
+			case id := <-f.events:
+				f.mu.Lock()
+				name := ""
+				for _, c := range f.containers {
+					if c.id == id {
+						name = c.name
+					}
+				}
+				f.mu.Unlock()
+				_ = json.NewEncoder(w).Encode(map[string]any{"Type": "container", "Action": "start", "id": id,
+					"Actor": map[string]any{"ID": id, "Attributes": map[string]string{"name": name}}})
+				w.(http.Flusher).Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}
 	f.mu.Lock()
 	if r.URL.Path == "/containers/json" {
 		var out []map[string]any
 		for _, c := range f.containers {
-			out = append(out, map[string]any{"Id": c.id, "Names": []string{"/" + c.name}})
+			if !c.unlisted {
+				out = append(out, map[string]any{"Id": c.id, "Names": []string{"/" + c.name}})
+			}
 		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(out)
@@ -141,7 +171,7 @@ func TestDockerSource(t *testing.T) {
 	out := make(chan item, 20)
 	done := make(chan struct{})
 	go func() {
-		src.run(ctx, cursors{Since: t0, Services: map[string]time.Time{"web": t0.Add(time.Second)}}, out)
+		src.run(ctx, cursors{ServicesSince: t0, Services: map[string]time.Time{"w1": t0.Add(time.Second)}}, out)
 		close(done)
 	}()
 
@@ -191,4 +221,98 @@ func TestDockerSourceNoDocker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	src.run(ctx, cursors{}, make(chan item))
+}
+
+// Cursors are kept by container id: a container re-created under the same name doesn't lose the
+// old one's last lines, though they are later than the new one's first.
+func TestDockerSourceRecreatedKeepsBoth(t *testing.T) {
+	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	old := &fakeContainer{id: "w1", name: "web", ended: make(chan struct{}), lines: []fakeLine{{at: t0.Add(10 * time.Second), text: "old last"}}}
+	recreated := &fakeContainer{id: "w2", name: "web", ended: make(chan struct{}), lines: []fakeLine{{at: t0.Add(5 * time.Second), text: "new first"}}}
+	f := &fakeDocker{containers: []*fakeContainer{old}}
+	src := dockerSource{socket: serveDocker(t, f), log: quiet, poll: 20 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan item, 10)
+	go src.run(ctx, cursors{ServicesSince: t0}, out)
+	if got := collect(out, 1, 3*time.Second); len(got) != 1 || got[0].rec.Message != "old last" || got[0].container != "w1" {
+		t.Fatalf("got %+v", got)
+	}
+	f.mu.Lock()
+	close(old.ended)
+	f.containers = []*fakeContainer{recreated}
+	f.mu.Unlock()
+	if got := collect(out, 1, 3*time.Second); len(got) != 1 || got[0].rec.Message != "new first" || got[0].container != "w2" {
+		t.Errorf("after the re-creation: %+v", got)
+	}
+}
+
+// A container Docker's events say started is followed at once, even one that is gone from the
+// list before the next poll.
+func TestDockerSourceFollowsStartEvents(t *testing.T) {
+	t0 := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	ended := make(chan struct{})
+	close(ended)
+	brief := &fakeContainer{id: "j1", name: "job", unlisted: true, ended: ended, lines: []fakeLine{{at: t0.Add(time.Second), text: "job ran"}}}
+	f := &fakeDocker{containers: []*fakeContainer{brief}, events: make(chan string, 1)}
+	src := dockerSource{socket: serveDocker(t, f), log: quiet, poll: time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan item, 10)
+	go src.run(ctx, cursors{ServicesSince: t0}, out)
+	time.Sleep(100 * time.Millisecond) // the first poll is done, and the events stream open
+	f.events <- "j1"
+	if got := collect(out, 1, 3*time.Second); len(got) != 1 || got[0].rec.Message != "job ran" || got[0].rec.Service != "job" {
+		t.Errorf("got %+v, want the brief container's line from its start event", got)
+	}
+}
+
+// A stopped source leaves no connection to Docker open, so restarting pipelines leaks nothing.
+func TestDockerSourceClosesItsConnections(t *testing.T) {
+	f := &fakeDocker{containers: []*fakeContainer{{id: "w1", name: "web", ended: make(chan struct{})}}, events: make(chan string)}
+	dir, err := os.MkdirTemp("", "tdk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	ln, err := net.Listen("unix", filepath.Join(dir, "d.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	open := map[net.Conn]bool{}
+	srv := &http.Server{Handler: f, ConnState: func(c net.Conn, s http.ConnState) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch s {
+		case http.StateNew:
+			open[c] = true
+		case http.StateClosed, http.StateHijacked:
+			delete(open, c)
+		}
+	}}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+	src := dockerSource{socket: filepath.Join(dir, "d.sock"), log: quiet, poll: 10 * time.Millisecond}
+	for range 3 {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { src.run(ctx, cursors{ServicesSince: time.Now()}, make(chan item, 10)); close(done) }()
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+		<-done
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(open)
+		mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d connections to Docker are still open after the sources stopped", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

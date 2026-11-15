@@ -22,6 +22,8 @@ type journalSource struct {
 	log    *slog.Logger
 }
 
+func (journalSource) kind() string { return sinks.SourceJournal }
+
 // journalRetry is the longest wait before journalctl is started again after it stopped.
 const journalRetry = time.Minute
 
@@ -61,7 +63,7 @@ func (j journalSource) run(ctx context.Context, start cursors, out chan<- item) 
 		}
 		missing = false
 		began := time.Now()
-		next, err := j.follow(ctx, bin, cursor, start.Since, out)
+		next, err := j.follow(ctx, bin, cursor, start.JournalSince, out)
 		if next != "" {
 			cursor = next
 		}

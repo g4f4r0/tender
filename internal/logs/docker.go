@@ -21,8 +21,7 @@ import (
 	"github.com/g4f4r0/tender/internal/logs/sinks"
 )
 
-// dockerSource follows the logs of the running Docker containers through the Engine API. It
-// looks for new and re-created containers every dockerPoll.
+// dockerSource follows the logs of the Docker containers through the Engine API.
 type dockerSource struct {
 	socket string
 	filter ServicesSource
@@ -69,16 +68,66 @@ func (d dockerSource) getJSON(ctx context.Context, hc *http.Client, path string,
 	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(v)
 }
 
+func (dockerSource) kind() string { return sinks.SourceService }
+
+// run follows every container the sink wants, each from after its own cursor, kept by container
+// id: a container re-created under the same name is another container, with logs of its own.
+// It follows a container as soon as Docker's events say it started, so even one that runs for
+// a moment is followed, and lists the containers every poll in case an event was missed.
 func (d dockerSource) run(ctx context.Context, start cursors, out chan<- item) {
 	hc := dockerClient(d.socket)
+	defer hc.CloseIdleConnections() // the transport is this run's own; leave no connection open
 	var mu sync.Mutex
-	last := map[string]time.Time{} // by container name: the time of its last record sent
-	for name, t := range start.Services {
-		last[name] = t
+	last := map[string]time.Time{} // by container id: the time of its last record sent
+	for id, t := range start.Services {
+		last[id] = t
 	}
 	active := map[string]bool{} // container ids being followed
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	started := make(chan container, 64)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		d.events(ctx, hc, started)
+	}()
+	follow := func(c container) {
+		name := c.name()
+		if c.ID == "" || name == "" || (len(d.filter.Names) > 0 && !slices.Contains(d.filter.Names, name)) {
+			return
+		}
+		mu.Lock()
+		if active[c.ID] {
+			mu.Unlock()
+			return
+		}
+		active[c.ID] = true
+		since, seen := last[c.ID]
+		if !seen {
+			since = start.ServicesSince
+			last[c.ID] = since
+		}
+		mu.Unlock()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := d.follow(ctx, hc, c.ID, name, since, func(t time.Time) bool {
+				mu.Lock()
+				defer mu.Unlock()
+				if !t.After(last[c.ID]) {
+					return false
+				}
+				last[c.ID] = t
+				return true
+			}, out)
+			if err != nil && ctx.Err() == nil {
+				d.log.Warn("stopped following a container's logs", "service", name, "error", err)
+			}
+			mu.Lock()
+			delete(active, c.ID)
+			mu.Unlock()
+		}()
+	}
 	failing := false
 	for {
 		var list []container
@@ -97,40 +146,59 @@ func (d dockerSource) run(ctx context.Context, start cursors, out chan<- item) {
 			failing = false
 		}
 		for _, c := range list {
-			name := c.name()
-			if name == "" || (len(d.filter.Names) > 0 && !slices.Contains(d.filter.Names, name)) {
-				continue
+			follow(c)
+		}
+		next := time.NewTimer(d.poll)
+	waiting:
+		for {
+			select {
+			case <-ctx.Done():
+				next.Stop()
+				return
+			case c := <-started:
+				follow(c)
+			case <-next.C:
+				break waiting
 			}
-			mu.Lock()
-			following := active[c.ID]
-			active[c.ID] = true
-			if _, seen := last[name]; !seen {
-				last[name] = start.Since
-			}
-			since := last[name]
-			mu.Unlock()
-			if following {
-				continue
-			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				err := d.follow(ctx, hc, c.ID, name, since, func(t time.Time) bool {
-					mu.Lock()
-					defer mu.Unlock()
-					if !t.After(last[name]) {
-						return false
+		}
+	}
+}
+
+// events sends each container Docker says started to started, until ctx ends. When the events
+// stream breaks it connects again after a poll; the poll in run covers what it missed.
+func (d dockerSource) events(ctx context.Context, hc *http.Client, started chan<- container) {
+	filters := url.QueryEscape(`{"type":["container"],"event":["start"]}`)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/events?filters="+filters, nil)
+		if err != nil {
+			return
+		}
+		resp, err := hc.Do(req)
+		if err == nil {
+			if resp.StatusCode == http.StatusOK {
+				dec := json.NewDecoder(resp.Body)
+				for {
+					var e struct {
+						ID    string `json:"id"`
+						Actor struct {
+							ID         string
+							Attributes map[string]string
+						}
 					}
-					last[name] = t
-					return true
-				}, out)
-				if err != nil && ctx.Err() == nil {
-					d.log.Warn("stopped following a container's logs", "service", name, "error", err)
+					if dec.Decode(&e) != nil {
+						break
+					}
+					id := e.Actor.ID
+					if id == "" {
+						id = e.ID
+					}
+					select {
+					case started <- container{ID: id, Names: []string{"/" + e.Actor.Attributes["name"]}}:
+					case <-ctx.Done():
+					}
 				}
-				mu.Lock()
-				delete(active, c.ID)
-				mu.Unlock()
-			}()
+			}
+			_ = resp.Body.Close()
 		}
 		if !wait(ctx, d.poll) {
 			return
@@ -173,7 +241,7 @@ func (d dockerSource) follow(ctx context.Context, hc *http.Client, id, name stri
 		if stderr {
 			priority = "err"
 		}
-		return send(ctx, out, item{rec: sinks.Record{Time: t.UTC(), Source: sinks.SourceService, Service: name, Priority: priority, Message: message(text, cut)}})
+		return send(ctx, out, item{rec: sinks.Record{Time: t.UTC(), Source: sinks.SourceService, Service: name, Priority: priority, Message: message(text, cut)}, container: id})
 	}
 	if info.Config.Tty { // a TTY's output comes raw, without frames
 		return readLines(resp.Body, dockerLineBytes, func(l []byte, cut bool) bool { return emit(string(l), false, cut) })

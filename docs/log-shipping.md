@@ -13,7 +13,7 @@ A log sink is a place logs go, with a type and its settings. The hub keeps the s
 | `otlp` | OTLP/HTTP JSON | An OpenTelemetry collector, or any service that takes OTLP logs, such as Grafana Cloud, Honeycomb or Datadog. |
 | `webhook` | Tender's own JSON, signed | Any HTTPS endpoint you run. [The webhook contract](#the-webhook-contract) describes it. |
 
-A sink applies to every machine, or to the machines you name. Each daemon sends the logs from the moment it first sees the sink. Older logs aren't sent.
+A sink applies to every machine, or to the machines you name. Each daemon sends the logs from the moment it first sees the sink. Older logs aren't sent. A source you turn on later, such as the journal after `--no-journal`, starts from the moment the daemon sees the change.
 
 ## Prerequisites
 
@@ -105,7 +105,7 @@ Updated log sink otel. Machines pick the change up within a minute.
 | `--no-services` | No container logs. |
 | `--machines` | Only from these machines. `all` sends from every machine. |
 
-The daemon follows every container, and picks up a new or re-created one within 5 seconds. A container's standard output gets the priority `info`, and its standard error `err`. The daemon reads what `docker logs` shows, so a container whose logs `docker logs` can't read sends nothing.
+The daemon follows every container. It starts following a new or re-created container as soon as Docker says it started, so even a job that runs for a moment is sent, and lists the containers every 5 seconds in case it missed one. A re-created container is a new container, with logs of its own, so the old one's last lines still go. A container's standard output gets the priority `info`, and its standard error `err`. The daemon reads what `docker logs` shows, so a container whose logs `docker logs` can't read sends nothing.
 
 `tender sinks update otel --disable` stops sending and keeps the sink. Each daemon then deletes the logs it buffered for it, as it does for a machine you take out of `--machines`. `--enable` starts sending again, with the logs from then on.
 

@@ -61,7 +61,7 @@ func TestJournalSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := make(chan item, 10)
-	go j.run(ctx, cursors{Journal: "2", Since: time.Unix(1794744000, 0)}, out)
+	go j.run(ctx, cursors{Journal: "2", JournalSince: time.Unix(1794744000, 0)}, out)
 	got := collect(out, 4, 5*time.Second)
 	if len(got) != 4 {
 		t.Fatalf("got %d entries", len(got))
@@ -87,7 +87,7 @@ func TestJournalSourceRestarts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := make(chan item, 20)
-	go j.run(ctx, cursors{Since: time.Unix(1794744000, 0)}, out)
+	go j.run(ctx, cursors{JournalSince: time.Unix(1794744000, 0)}, out)
 	got := collect(out, 6, 5*time.Second)
 	if len(got) != 6 {
 		t.Fatalf("got %d entries", len(got))

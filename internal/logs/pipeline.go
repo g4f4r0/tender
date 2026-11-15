@@ -65,17 +65,22 @@ type sinkStatus struct {
 func (p *pipeline) cursorsFile() string { return filepath.Join(p.dir, "cursors.json") }
 func (p *pipeline) statusFile() string  { return filepath.Join(p.dir, "status.json") }
 
-// load reads the saved cursors and status. A sink seen for the first time starts now.
+// load reads the saved cursors and status. A source the sink didn't have before starts now.
 func (p *pipeline) load() (cursors, error) {
 	var cur cursors
 	if err := readJSON(p.statusFile(), &p.status); err != nil {
 		p.log.Warn("the saved log sink status can't be read, so its counters start again", "sink", p.sink.Name, "error", err)
 	}
-	if err := readJSON(p.cursorsFile(), &cur); err != nil || cur.Since.IsZero() {
-		if err != nil {
-			p.log.Warn("the saved log cursors can't be read, so the sink gets the logs from now", "sink", p.sink.Name, "error", err)
-		}
-		cur = cursors{Since: p.now().UTC()}
+	if err := readJSON(p.cursorsFile(), &cur); err != nil {
+		p.log.Warn("the saved log cursors can't be read, so the sink gets the logs from now", "sink", p.sink.Name, "error", err)
+		cur = cursors{}
+	}
+	var journal, services bool
+	for _, s := range p.sources {
+		journal = journal || s.kind() == sinks.SourceJournal
+		services = services || s.kind() == sinks.SourceService
+	}
+	if cur.begin(journal, services, p.now().UTC()) {
 		if err := writeJSON(p.cursorsFile(), cur); err != nil {
 			return cur, err
 		}

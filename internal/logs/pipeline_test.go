@@ -23,6 +23,8 @@ type counting struct {
 	pause chan struct{} // when set, it waits here after each entry
 }
 
+func (counting) kind() string { return sinks.SourceJournal }
+
 func (c counting) run(ctx context.Context, start cursors, out chan<- item) {
 	from, _ := strconv.Atoi(start.Journal)
 	for i := from + 1; i <= c.n; i++ {
@@ -161,6 +163,8 @@ func TestBatchBytes(t *testing.T) {
 }
 
 type sourceFunc func(ctx context.Context, start cursors, out chan<- item)
+
+func (sourceFunc) kind() string { return sinks.SourceJournal }
 
 func (f sourceFunc) run(ctx context.Context, start cursors, out chan<- item) { f(ctx, start, out) }
 
