@@ -94,7 +94,7 @@ func (s *Store) finish(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var p Patch
-	if err := server.Decode(w, r, &p); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &p); err != nil {
 		return err
 	}
 	if p.Status == StatusInProgress {

@@ -94,7 +94,7 @@ func (s *Store) listUsage(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) addUsage(w http.ResponseWriter, r *http.Request) error {
 	var in UsageInput
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	if err := in.validate(); err != nil {

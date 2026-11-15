@@ -67,7 +67,7 @@ func (s *Store) patch(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) report(w http.ResponseWriter, r *http.Request) error {
 	var in Report
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	if err := s.Apply(r.Context(), server.MachineID(r.Context()), in); err != nil {

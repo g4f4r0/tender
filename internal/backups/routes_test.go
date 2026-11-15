@@ -407,7 +407,8 @@ func TestHistoryCreate(t *testing.T) {
 	} {
 		h.status(422, "POST", "/v1/machines/a/backups/history", "tok-a", in)
 	}
-	h.status(400, "POST", "/v1/machines/a/backups/history", "tok-a", map[string]any{"type": "backup", "status": "pending", "created_at": base, "extra": 1})
+	// A field this hub doesn't know, from a newer daemon, is ignored.
+	h.status(201, "POST", "/v1/machines/a/backups/history", "tok-a", map[string]any{"type": "backup", "status": "pending", "created_at": base, "extra": 1})
 	h.status(401, "POST", "/v1/machines/a/backups/history", "", backups.HistoryInput{Type: "backup", Status: "pending", CreatedAt: base})
 	h.status(403, "POST", "/v1/machines/a/backups/history", "tok-b", backups.HistoryInput{Type: "backup", Status: "pending", CreatedAt: base})
 
@@ -418,8 +419,8 @@ func TestHistoryCreate(t *testing.T) {
 	h.do("POST", "/v1/machines/a/backups/history", "tok-a", in, &second, "Idempotency-Key", "run-1")
 	var all server.List[backups.History]
 	h.do("GET", "/v1/machines/a/backups/history?limit=100", "", nil, &all)
-	if first.ID != second.ID || len(all.Data) != 5 {
-		t.Errorf("retry made ids %d and %d and %d runs, want one id and 5 runs", first.ID, second.ID, len(all.Data))
+	if first.ID != second.ID || len(all.Data) != 6 {
+		t.Errorf("retry made ids %d and %d and %d runs, want one id and 6 runs", first.ID, second.ID, len(all.Data))
 	}
 	var one backups.History
 	h.do("GET", "/v1/machines/a/backups/history/"+strconv.FormatInt(first.ID, 10), "", nil, &one)
@@ -490,7 +491,7 @@ func TestHistoryPatch(t *testing.T) {
 	h.status(422, "PATCH", path("a", id), "tok-a", backups.HistoryPatch{Error: ptr("x")})                                 // still in_progress
 	h.status(422, "PATCH", path("a", id), "tok-a", backups.HistoryPatch{Status: ptr("completed"), SnapshotID: &snapB.ID}) // b's snapshot
 	h.status(422, "PATCH", path("a", id), "tok-a", backups.HistoryPatch{Status: ptr("completed"), SnapshotID: ptr(int64(9999))})
-	h.status(400, "PATCH", path("a", id), "tok-a", map[string]any{"state": "completed"})
+	h.status(200, "PATCH", path("a", id), "tok-a", map[string]any{"state": "completed"}) // a newer daemon's field, ignored: no change
 	h.do("GET", path("a", id), "", nil, &out)
 	if out.Status != "in_progress" || out.SnapshotID != nil {
 		t.Errorf("run after rejected patches = %+v", out)

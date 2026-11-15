@@ -161,7 +161,7 @@ func (s *Store) listSnapshots(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) replaceSnapshots(w http.ResponseWriter, r *http.Request) error {
 	var in []SnapshotInput
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	if in == nil {
@@ -207,7 +207,7 @@ func (s *Store) listHistory(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Store) createHistory(w http.ResponseWriter, r *http.Request) error {
 	var in HistoryInput
-	if err := server.Decode(w, r, &in); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &in); err != nil {
 		return err
 	}
 	h, err := s.CreateHistory(r.Context(), server.MachineID(r.Context()), in)
@@ -238,7 +238,7 @@ func (s *Store) patchHistory(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var p HistoryPatch
-	if err := server.Decode(w, r, &p); err != nil {
+	if err := server.DecodeFromDaemon(w, r, &p); err != nil {
 		return err
 	}
 	h, err := s.PatchHistory(r.Context(), server.MachineID(r.Context()), id, p)
