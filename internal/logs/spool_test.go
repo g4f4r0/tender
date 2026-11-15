@@ -106,3 +106,39 @@ func TestSpoolUnreadable(t *testing.T) {
 		t.Errorf("oldest = %v %d %v", batch, unreadable, ok)
 	}
 }
+
+// add counts only the records it lost: a batch it can't write is lost whole, and an old batch
+// it fails to remove isn't lost at all; it stays for the next add to try again.
+func TestSpoolCountsOnlyWhatIsLost(t *testing.T) {
+	dir := t.TempDir()
+	s, err := openSpool(dir, 2500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.add(recs(10, strings.Repeat("a", 100))); err != nil {
+		t.Fatal(err)
+	}
+	// The oldest batch's file can't be removed: a directory with something in it has its name.
+	old := filepath.Join(dir, s.files[0].name())
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(old, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dropped, err := s.add(recs(20, strings.Repeat("b", 100)))
+	if err == nil || dropped != 0 {
+		t.Errorf("a failed removal: dropped %d, %v; want 0 and the error", dropped, err)
+	}
+	if len(s.files) != 2 {
+		t.Errorf("the buffer lists %d batches, want both", len(s.files))
+	}
+	// A batch that can't be written is lost whole.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	if dropped, err := s.add(recs(7, "c")); err == nil || dropped != 7 {
+		t.Errorf("a failed write: dropped %d, %v; want 7 and the error", dropped, err)
+	}
+}

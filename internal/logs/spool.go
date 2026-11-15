@@ -73,7 +73,9 @@ func openSpool(dir string, limit int64) (*spool, error) {
 }
 
 // add writes a batch to the buffer, then drops the oldest batches while it holds more than max,
-// keeping the newest and the one being sent. It returns how many records it dropped.
+// keeping the newest and the one being sent. It returns how many records are lost: the batch's
+// own when it can't be written, and those of each old batch it really removed. When removing an
+// old batch fails, the buffer keeps it, and the next add tries again.
 func (s *spool) add(batch []sinks.Record) (int, error) {
 	body, err := json.Marshal(batch)
 	if err != nil {
@@ -85,7 +87,7 @@ func (s *spool) add(batch []sinks.Record) (int, error) {
 	s.mu.Unlock()
 
 	if err := writeFile(filepath.Join(s.dir, f.name()), body); err != nil {
-		return 0, err
+		return len(batch), err
 	}
 
 	s.mu.Lock()

@@ -168,8 +168,7 @@ func (p *pipeline) batch(in <-chan item, cur cursors) {
 		}
 		dropped, err := p.spool.add(batch)
 		if err != nil {
-			p.log.Error("can't write logs to the buffer, so they are dropped", "sink", p.sink.Name, "records", len(batch), "error", err)
-			dropped = len(batch)
+			p.log.Error("can't write logs to the buffer or make room in it", "sink", p.sink.Name, "records_dropped", dropped, "error", err)
 		}
 		if dropped > 0 {
 			p.dropped(dropped, "the buffer is full")
