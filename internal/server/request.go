@@ -29,7 +29,9 @@ func Decode(w http.ResponseWriter, r *http.Request, v any) error { return decode
 
 // DecodeFromDaemon is Decode for the routes only a daemon calls, which ignore unknown fields: a
 // daemon updated before its hub, during a rollout, may send fields this hub doesn't know yet.
-func DecodeFromDaemon(w http.ResponseWriter, r *http.Request, v any) error { return decode(w, r, v, false) }
+func DecodeFromDaemon(w http.ResponseWriter, r *http.Request, v any) error {
+	return decode(w, r, v, false)
+}
 
 func decode(w http.ResponseWriter, r *http.Request, v any, strict bool) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
