@@ -61,8 +61,7 @@ func seeded(t *testing.T) *db.DB {
 			t.Fatal(err)
 		}
 	}
-	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Endpoint: "https://acct.r2.cloudflarestorage.com", Bucket: "b",
-		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}); err != nil {
+	if _, err := bs.AddDestination(ctx, backups.DestinationInput{Name: "r2-code", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "b", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bs.SetSettings(ctx, 1, "r2-code", "30 3 * * *", 30); err != nil {
@@ -171,13 +170,15 @@ func TestToolsList(t *testing.T) {
 		"set_backup": {false, true}, "unset_backup": {true, true},
 		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
+		"test_destination": {false, true},
 	}
+	// The tools that reach outside the hub.
+	open := map[string]bool{"send_test_email": true, "test_destination": true}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
-		// Only send_test_email reaches outside the hub.
-		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != (tool.Name == "send_test_email") {
-			t.Errorf("%s annotations = %+v, want open world only for send_test_email", tool.Name, a)
+		if a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint != open[tool.Name] {
+			t.Errorf("%s annotations = %+v, want open world only for %v", tool.Name, a, open)
 			continue
 		}
 		if tool.OutputSchema == nil || tool.InputSchema == nil || len(tool.Description) < 40 {
@@ -566,8 +567,7 @@ func TestMCPStdioRefusesTheWrongKey(t *testing.T) {
 	if err := d.Migrate(ctx, migrations()...); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Endpoint: "https://acct.r2.cloudflarestorage.com",
-		Bucket: "b", AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}); err != nil {
+	if _, err := backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "b", "access_key_id": "key-id", "secret_access_key": "key-secret"}, Password: "repo-password"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Close(); err != nil {

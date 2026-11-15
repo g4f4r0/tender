@@ -39,6 +39,13 @@ type Runner interface {
 	Changed()
 }
 
+// Backups tests backup destinations on the daemon. The backups domain implements it.
+type Backups interface {
+	// TestDestination opens this machine's repository at the destination target describes, or
+	// makes it, and says what it found.
+	TestDestination(ctx context.Context, target json.RawMessage) (string, error)
+}
+
 // Daemon long-polls the hub for this machine's actions and runs them one at a time. It claims each
 // before it runs it, and keeps each report until the hub has it. Set the exported fields after
 // NewDaemon. Run drives it; nothing else does.
@@ -48,6 +55,7 @@ type Daemon struct {
 	Log      *slog.Logger
 	Every    time.Duration // the wait before polling again after an error, or sending a waiting report again
 	Services Runner        // runs the service actions; without it they fail
+	Backups  Backups       // runs the destination tests; without it they fail
 	// StateDir is the daemon's state folder, where reports wait in actions/ until the hub has them.
 	// Empty keeps them in memory only.
 	StateDir string
@@ -77,7 +85,7 @@ func (d *Daemon) Run(ctx context.Context) {
 		if len(d.waiting) > 0 {
 			wait = 0
 		}
-		var list server.List[Action]
+		var list server.List[Handout]
 		err := d.poll.Do(ctx, http.MethodGet, d.path("?wait="+strconv.Itoa(wait)), "", nil, &list)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -113,7 +121,8 @@ const claimFor = 25 * time.Second
 
 // run claims an action, does it and reports how it ended. The output, which may be logs, is never
 // logged.
-func (d *Daemon) run(ctx context.Context, a Action) {
+func (d *Daemon) run(ctx context.Context, h Handout) {
+	a := h.Action
 	if !d.claim(ctx, a) {
 		return
 	}
@@ -123,7 +132,7 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 	}
 	r := &sent{ID: a.ID, Key: client.NewKey(), Type: a.Type}
 	d.keep(r) // before it runs, so a daemon that stops meanwhile still reports it
-	r.Patch = d.do(ctx, a)
+	r.Patch = d.do(ctx, h)
 	d.keep(r)
 	d.send(ctx, r)
 	if service && d.Services != nil {
@@ -164,9 +173,10 @@ func (d *Daemon) claim(ctx context.Context, a Action) bool {
 }
 
 // do runs the action and returns its report.
-func (d *Daemon) do(ctx context.Context, a Action) *Patch {
+func (d *Daemon) do(ctx context.Context, h Handout) *Patch {
+	a := h.Action
 	actx, cancel := context.WithTimeout(ctx, actionTimeout)
-	output, err := d.execute(actx, a)
+	output, err := d.execute(actx, h)
 	cancel()
 	p := Patch{Status: StatusCompleted}
 	if err != nil {
@@ -181,7 +191,8 @@ func (d *Daemon) do(ctx context.Context, a Action) *Patch {
 }
 
 // execute runs the action and returns its output.
-func (d *Daemon) execute(ctx context.Context, a Action) (string, error) {
+func (d *Daemon) execute(ctx context.Context, h Handout) (string, error) {
+	a := h.Action
 	lines := DefaultLines
 	if a.Lines != nil {
 		lines = *a.Lines
@@ -200,6 +211,10 @@ func (d *Daemon) execute(ctx context.Context, a Action) (string, error) {
 		return d.Services.Service(ctx, a.Type, *a.Service, lines, since)
 	case a.Service == nil && a.Type == TypeLogs:
 		return ReadJournal(ctx, Query{Unit: deref(a.Unit), Priority: deref(a.Priority), Since: since, Lines: lines}, time.Now())
+	case a.Type == TypeTest && d.Backups == nil:
+		return "", errors.New("this daemon can't test destinations")
+	case a.Type == TypeTest:
+		return d.Backups.TestDestination(ctx, h.Target)
 	}
 	return "", fmt.Errorf("this daemon doesn't know the action %q; update Tender on this machine", a.Type)
 }
@@ -215,6 +230,8 @@ func deref(s *string) string {
 func failure(a Action, err error) string {
 	var msg string
 	switch {
+	case a.Type == TypeTest:
+		msg = fmt.Sprintf("Could not reach the destination %s from %s: %v", deref(a.Destination), a.Machine, err)
 	case a.Service == nil:
 		msg = fmt.Sprintf("Could not read the machine's logs: %v", err)
 	case a.Type == TypeLogs:

@@ -36,7 +36,7 @@ type hub struct {
 	down     bool
 	fail     map[string]failure
 	nextID   int64
-	settings *Settings
+	settings *DaemonSettings // as a hub before v0.3 sends them, unless a test sets a config
 }
 
 type failure struct {
@@ -44,10 +44,10 @@ type failure struct {
 }
 
 func newHub(t *testing.T) *hub {
-	h := &hub{t: t, fail: map[string]failure{}, nextID: 1, settings: &Settings{
-		Destination: Destination{Name: "r2-test", Type: "s3", Endpoint: "https://x.example", Bucket: "b"},
-		Schedule:    "30 3 * * *", RetentionDays: 30,
-		Credentials: &Credentials{AccessKeyID: "test-access-key-id", SecretAccessKey: "test-secret-access-key", Password: "test-only-password"},
+	h := &hub{t: t, fail: map[string]failure{}, nextID: 1, settings: &DaemonSettings{
+		Settings: Settings{Schedule: "30 3 * * *", RetentionDays: 30,
+			Credentials: &Credentials{AccessKeyID: "test-access-key-id", SecretAccessKey: "test-secret-access-key", Password: "test-only-password"}},
+		Destination: DaemonDestination{Destination: Destination{Name: "r2-test", Type: "s3"}, Endpoint: "https://x.example", Bucket: "b"},
 	}}
 	h.srv = httptest.NewServer(h)
 	t.Cleanup(h.srv.Close)
@@ -241,7 +241,7 @@ func TestSavedSettingsKeepCredentialsAt0600(t *testing.T) {
 func TestNewResticUsesHubCredentials(t *testing.T) {
 	h := newHub(t)
 	a, _ := testDaemon(t, h)
-	r, err := a.newRestic(*h.settings)
+	r, err := a.newRestic(h.settings.settings())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	}
 
 	h.mu.Lock()
-	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "0 1 * * *", RetentionDays: 14, Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}
+	h.settings = &DaemonSettings{Settings: Settings{Schedule: "0 1 * * *", RetentionDays: 14, Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}, Destination: DaemonDestination{Destination: Destination{Name: "r2-test"}}}
 	h.mu.Unlock()
 	a.refreshSettings(ctx)
 	if a.settings == nil || a.settings.RetentionDays != 14 {
@@ -530,7 +530,7 @@ func TestSettingsFallBackToSavedCopy(t *testing.T) {
 	// An unusable schedule from the hub doesn't replace a good copy.
 	h.setDown(false)
 	h.mu.Lock()
-	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "nonsense", RetentionDays: 1, Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}
+	h.settings = &DaemonSettings{Settings: Settings{Schedule: "nonsense", RetentionDays: 1, Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}, Destination: DaemonDestination{Destination: Destination{Name: "r2-test"}}}
 	h.mu.Unlock()
 	b.refreshSettings(ctx)
 	if b.settings.RetentionDays != 14 {
@@ -680,8 +680,8 @@ func TestAsksForSettingsEveryTickWhileItHasNone(t *testing.T) {
 	}
 
 	h.mu.Lock()
-	h.settings = &Settings{Destination: Destination{Name: "r2-test"}, Schedule: "30 3 * * *", RetentionDays: 30,
-		Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}
+	h.settings = &DaemonSettings{Settings: Settings{Schedule: "30 3 * * *", RetentionDays: 30,
+		Credentials: &Credentials{AccessKeyID: "k", SecretAccessKey: "s", Password: "p"}}, Destination: DaemonDestination{Destination: Destination{Name: "r2-test"}}}
 	h.mu.Unlock()
 	now = now.Add(tickEvery)
 	a.tick(ctx)
@@ -719,5 +719,86 @@ func TestUnusableSettingsAreLoggedOnce(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "unusable backup settings"); n != 1 {
 		t.Errorf("logged %d times in three ticks, want once:\n%s", n, logs.String())
+	}
+}
+
+// A v0.3 hub sends the destination's whole config; the daemon uses it for any type, and hides
+// the type's secrets in restic's errors.
+func TestNewResticUsesTheConfig(t *testing.T) {
+	h := newHub(t)
+	a, _ := testDaemon(t, h)
+	s := h.settings.settings()
+	s.Destination = Destination{Name: "rs", Type: "rest"}
+	s.Credentials = &Credentials{Password: "pw", Config: map[string]any{"url": "https://r.example.com", "username": "apps", "password": "rest-secret"}}
+	r, err := a.newRestic(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restic := r.(*Restic)
+	if restic.Repository != "rest:https://r.example.com/m1" || strings.Join(restic.Env, ",") != "RESTIC_REST_USERNAME=apps,RESTIC_REST_PASSWORD=rest-secret" ||
+		strings.Join(restic.Secrets, ",") != "rest-secret" {
+		t.Errorf("rest runner = %+v", restic)
+	}
+	s.Destination.Type = "ftp"
+	if _, err := a.newRestic(s); err == nil || !strings.Contains(err.Error(), "Update Tender on this machine") {
+		t.Errorf("unknown type: %v", err)
+	}
+	s.Credentials = &Credentials{Password: "pw"}
+	if _, err := a.newRestic(s); err != errNoCredentials {
+		t.Errorf("no config: %v, want errNoCredentials", err)
+	}
+}
+
+// The test action opens the machine's repository at the destination, or makes it, with the real
+// restic and a local destination, and leaves no password behind.
+func TestTestDestination(t *testing.T) {
+	bin := lookRestic(t)
+	h := newHub(t)
+	a, _ := testDaemon(t, h)
+	a.ResticBin = bin
+	dir := filepath.Join(t.TempDir(), "dest")
+	target := func(password string) json.RawMessage {
+		b, _ := json.Marshal(Target{Name: "disk", Type: "local", Config: map[string]any{"path": dir}, Password: password})
+		return b
+	}
+	ctx := context.Background()
+	out, err := a.TestDestination(ctx, target("first-password"))
+	if err != nil || !strings.Contains(out, "made one") || !strings.Contains(out, "local:"+dir+"/m1") {
+		t.Fatalf("first test: %q, %v", out, err)
+	}
+	out, err = a.TestDestination(ctx, target("first-password"))
+	if err != nil || !strings.Contains(out, "opens with the destination's password") {
+		t.Errorf("second test: %q, %v", out, err)
+	}
+	_, err = a.TestDestination(ctx, target("wrong-password"))
+	if err == nil || !strings.Contains(err.Error(), "wrong password") || strings.Contains(err.Error(), "wrong-password") {
+		t.Errorf("wrong password: %v, want restic's reason without the password", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(a.StateDir, "test", "*")); len(left) != 0 {
+		t.Errorf("passwords left behind: %v", left)
+	}
+	if _, err := a.TestDestination(ctx, nil); err == nil || !strings.Contains(err.Error(), "may have been removed") {
+		t.Errorf("no target: %v", err)
+	}
+}
+
+// A copy of the settings that a daemon before v0.3 saved still opens its s3 repository after the
+// update, before the hub answers.
+func TestSavedSettingsFromBeforeV03(t *testing.T) {
+	h := newHub(t)
+	a, _ := testDaemon(t, h)
+	old := `{"destination":{"id":1,"name":"r2","type":"s3","endpoint":"https://x.example","bucket":"b","path":"p"},` +
+		`"schedule":"30 3 * * *","retention_days":30,"credentials":{"access_key_id":"k1","secret_access_key":"s1","password":"p1"}}`
+	writeFile(t, a.settingsFile(), old)
+	a.loadSavedSettings()
+	if a.settings == nil {
+		t.Fatal("the saved settings were not loaded")
+	}
+	r, err := a.newRestic(*a.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restic := r.(*Restic); restic.Repository != "s3:https://x.example/b/p/m1" || strings.Join(restic.Env, ",") != "AWS_ACCESS_KEY_ID=k1,AWS_SECRET_ACCESS_KEY=s1" {
+		t.Errorf("runner = %+v", restic)
 	}
 }

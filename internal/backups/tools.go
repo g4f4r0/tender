@@ -26,24 +26,17 @@ type historyInput struct {
 }
 
 type addDestinationInput struct {
-	Name            string `json:"name" jsonschema:"new destination name: lowercase letters, digits and hyphens, up to 63 characters"`
-	Type            string `json:"type,omitempty" jsonschema:"kind of destination; only s3 (any S3-compatible bucket, such as Cloudflare R2), the default"`
-	Endpoint        string `json:"endpoint" jsonschema:"S3 endpoint URL, such as https://ACCOUNT.r2.cloudflarestorage.com"`
-	Bucket          string `json:"bucket" jsonschema:"bucket name"`
-	Path            string `json:"path,omitempty" jsonschema:"folder inside the bucket; leave out for the bucket's top"`
-	AccessKeyID     string `json:"access_key_id" jsonschema:"S3 access key id"`
-	SecretAccessKey string `json:"secret_access_key" jsonschema:"S3 secret access key"`
-	Password        string `json:"password,omitempty" jsonschema:"restic repository password for every machine at this destination; leave out and the hub makes one and returns it once"`
+	Name     string         `json:"name" jsonschema:"new destination name: lowercase letters, digits and hyphens, up to 63 characters"`
+	Type     string         `json:"type,omitempty" jsonschema:"s3 (the default), local, sftp, rest or rclone"`
+	Config   map[string]any `json:"config" jsonschema:"the type's settings; see the tool's description for each type's fields"`
+	Password string         `json:"password,omitempty" jsonschema:"restic repository password for every machine at this destination; leave out and the hub makes one and returns it once"`
 }
 
 type updateDestinationInput struct {
-	Destination     string  `json:"destination" jsonschema:"destination name, as list_destinations shows it"`
-	Endpoint        *string `json:"endpoint,omitempty" jsonschema:"new S3 endpoint URL; leave out to keep it"`
-	Bucket          *string `json:"bucket,omitempty" jsonschema:"new bucket name; leave out to keep it"`
-	Path            *string `json:"path,omitempty" jsonschema:"new folder inside the bucket; leave out to keep it"`
-	AccessKeyID     *string `json:"access_key_id,omitempty" jsonschema:"new S3 access key id; leave out to keep it"`
-	SecretAccessKey *string `json:"secret_access_key,omitempty" jsonschema:"new S3 secret access key; leave out to keep it"`
-	Password        *string `json:"password,omitempty" jsonschema:"not accepted: the password can't change, because every repository is encrypted with it"`
+	Destination string         `json:"destination" jsonschema:"destination name, as list_destinations shows it"`
+	Config      map[string]any `json:"config,omitempty" jsonschema:"the config fields to change; null removes an optional one, and a secret given as *** stays as it is"`
+	Password    *string        `json:"password,omitempty" jsonschema:"not accepted: the password can't change, because every repository is encrypted with it"`
+	Type        *string        `json:"type,omitempty" jsonschema:"not accepted: the type can't change"`
 }
 
 type removeDestinationInput struct {
@@ -119,9 +112,10 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 
 	mcp.AddReadOnly(m, "list_destinations", "List backup destinations",
-		"List the places backups go, by name. Each has id, name, type (s3), endpoint, bucket and path (the folder inside the bucket, "+
-			"empty for its top); each machine's repository is a folder named after the machine under it. Keys and passwords are "+
-			"never shown. Each also has created_at and updated_at (RFC 3339 UTC). Use a name here as the destination of set_backup.",
+		"List the places backups go, by name. Each has id, name, type (s3, local, sftp, rest or rclone), config (the type's "+
+			"fields, with each secret shown as *** and <field>_set true), and location: the restic repository, under which each "+
+			"machine's repository is a folder named after the machine. Passwords are never shown. Each also has created_at and "+
+			"updated_at (RFC 3339 UTC). Use a name here as the destination of set_backup.",
 		func(ctx context.Context, _ struct{}) (server.List[Destination], error) {
 			list, err := s.Destinations(ctx)
 			return server.List[Destination]{Data: list}, err
@@ -131,25 +125,28 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		"into \"tender destinations add\", which hides them as they are typed. They are stored encrypted and no tool, route or log ever shows them again."
 
 	mcp.AddWrite(m, "add_destination", "Add a backup destination",
-		"Add a place to send backups: an S3-compatible bucket, such as Cloudflare R2. Each machine gets its own folder in it. "+
-			"Without a password, the hub makes one and returns it in the result, shown only this once: tell the owner to save it "+
+		"Add a place to send backups. Each machine gets its own folder in it. The config fields by type: "+destinationFields+
+			" Without a password, the hub makes one and returns it in the result, shown only this once: tell the owner to save it "+
 			"somewhere safe, because the backups can't be restored without it. A password you pass is not returned. The result is the "+
-			"destination, as list_destinations shows it, with password when the hub made it."+secrets,
+			"destination, as list_destinations shows it, with password when the hub made it. Check it from a machine with test_destination."+secrets,
 		mcp.WriteOptions{},
 		func(ctx context.Context, in addDestinationInput) (DestinationCreated, error) {
 			return s.AddDestination(ctx, DestinationInput(in))
 		})
 
 	mcp.AddWrite(m, "update_destination", "Update a backup destination",
-		"Change a destination's endpoint, bucket, path or keys; anything left out stays as it is. The password can't change, "+
-			"because the repositories are encrypted with it. The result is the destination, as list_destinations shows it."+secrets,
+		"Change fields of a destination's config; anything left out stays as it is, null removes an optional field, and a secret "+
+			"given as *** stays as it is. The type and the password can't change, because the repositories depend on them. "+
+			"The result is the destination, as list_destinations shows it."+secrets,
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in updateDestinationInput) (Destination, error) {
-			if in.Password != nil {
+			switch {
+			case in.Password != nil:
 				return Destination{}, errPasswordFixed
+			case in.Type != nil:
+				return Destination{}, errTypeFixed
 			}
-			return s.PatchDestination(ctx, in.Destination, DestinationPatch{Endpoint: in.Endpoint, Bucket: in.Bucket, Path: in.Path,
-				AccessKeyID: in.AccessKeyID, SecretAccessKey: in.SecretAccessKey})
+			return s.PatchDestination(ctx, in.Destination, DestinationPatch{Config: in.Config})
 		})
 
 	mcp.AddWrite(m, "remove_destination", "Remove a backup destination",
@@ -190,6 +187,15 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			return mcp.Removed{Removed: "backup settings of " + in.Machine}, nil
 		})
 }
+
+// destinationFields says each type's config fields, for the tool descriptions.
+const destinationFields = "s3 (any S3-compatible bucket: AWS, Cloudflare R2, Backblaze B2, Wasabi, MinIO, Google Cloud Storage interop): " +
+	"endpoint (URL), bucket, path (folder in the bucket, optional), access_key_id and secret_access_key (secrets). " +
+	"local (a folder on each machine, such as a mounted disk): path (absolute). " +
+	"sftp: host, port (default 22), user, path (absolute, or relative to the user's home); the SSH key and known_hosts must be " +
+	"installed by root on each machine in /etc/tender/ssh, so no key goes through Tender. " +
+	"rest (restic's rest-server): url, username and password (secret; give both or neither). " +
+	"rclone: remote (an rclone remote and folder, such as gdrive:backups), configured on each machine in /etc/tender/rclone.conf."
 
 func snapshotCursor(sn Snapshot) server.Cursor {
 	return server.Cursor{CreatedAt: sn.CreatedAt.Unix(), ID: sn.ID}

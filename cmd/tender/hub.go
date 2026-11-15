@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -102,7 +103,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	backups.NewStore(d, key).Routes(srv)
 	notifications.NewStore(d).Routes(srv, sender, hubName())
 	services.NewStore(d).Routes(srv)
-	newActions(d).Routes(srv)
+	newActions(d, key).Routes(srv)
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
 	tools := newTools(d, key, sender, log).Handler()
@@ -121,17 +122,35 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	backups.NewStore(d, key).RegisterTools(s, ms.Lookup)
 	notifications.NewStore(d).RegisterTools(s, ms.Lookup, sender, hubName())
 	services.NewStore(d).RegisterTools(s, ms.Lookup)
-	newActions(d).RegisterTools(s, ms.Lookup)
+	newActions(d, key).RegisterTools(s, ms.Lookup)
 	return s
 }
 
-// newActions returns the actions store, which hears about services from the services store.
-func newActions(d *db.DB) *actions.Store {
+// newActions returns the actions store, which hears about services from the services store and
+// hands the destination of a test, opened with key, to the daemon that runs it.
+func newActions(d *db.DB, key []byte) *actions.Store {
 	as := actions.NewStore(d, services.NewStore(d))
+	as.Destinations = destinationTargets{backups.NewStore(d, key)}
 	if keep, err := logsKeep(os.Getenv); err == nil {
 		as.Keep = keep
 	}
 	return as
+}
+
+// destinationTargets gives the actions domain the backups destinations it tests.
+type destinationTargets struct{ s *backups.Store }
+
+func (t destinationTargets) Check(ctx context.Context, name string) error {
+	_, err := t.s.Destination(ctx, name)
+	return err
+}
+
+func (t destinationTargets) Target(ctx context.Context, name string) (json.RawMessage, error) {
+	tg, err := t.s.Target(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(tg)
 }
 
 // envLogsKeep overrides how long a logs action keeps its output, for tests only.
@@ -207,7 +226,7 @@ func serveHub(args []string, log *slog.Logger) error {
 	ms := machines.NewStore(d)
 	go hub.PruneKeys(ctx)
 	go ms.PruneUsage(ctx, log)
-	go newActions(d).Sweep(ctx, log)
+	go newActions(d, nil).Sweep(ctx, log)
 	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
 	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d)))
 	// No write timeout: a daemon's long poll for actions holds its request up to 30 s.

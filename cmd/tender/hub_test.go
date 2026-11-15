@@ -85,8 +85,7 @@ func TestHubRefusesTheWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Endpoint: "https://x.example.com", Bucket: "b",
-		AccessKeyID: "marker-key-id", SecretAccessKey: "marker-secret", Password: "marker-password"})
+	_, err = backups.NewStore(d, testKey).AddDestination(ctx, backups.DestinationInput{Name: "r2", Config: map[string]any{"endpoint": "https://x.example.com", "bucket": "b", "access_key_id": "marker-key-id", "secret_access_key": "marker-secret"}, Password: "marker-password"})
 	if err != nil {
 		t.Fatal(err)
 	}

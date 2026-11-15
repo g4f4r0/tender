@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -77,14 +78,14 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	if status != 201 {
 		t.Fatal("create second machine")
 	}
-	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com",
-		"bucket": "code", "access_key_id": keyID, "secret_access_key": secretKey, "password": password})
+	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com",
+		"bucket": "code", "access_key_id": keyID, "secret_access_key": secretKey}, "password": password})
 	if status != 201 {
 		t.Fatalf("create destination: %d %s", status, body)
 	}
 	var generated struct{ Password string }
-	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-apps", "endpoint": "https://acct.r2.cloudflarestorage.com",
-		"bucket": "apps", "access_key_id": keyID, "secret_access_key": secretKey})
+	status, body = restCall(t, hub.URL, "POST", "/v1/backups/destinations", "", map[string]any{"name": "r2-apps", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com",
+		"bucket": "apps", "access_key_id": keyID, "secret_access_key": secretKey}})
 	if status != 201 || json.Unmarshal([]byte(body), &generated) != nil || generated.Password == "" {
 		t.Fatalf("create destination without a password: %d %s", status, body)
 	}
@@ -140,18 +141,18 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		rest("GET", path, nil)
 	}
 	// REST writes and refusals that carry secrets in their bodies.
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
-		"access_key_id": keyID, "secret_access_key": secretKey, "password": password}) // 409
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "endpoint": "nope", "bucket": "b",
-		"access_key_id": keyID, "secret_access_key": secretKey, "password": password}) // 422
-	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "endpoint": "https://x.example.com", "bucket": "b",
-		"access_key_id": keyID, "secret_access_key": secretKey, "password": password, "region": "auto"}) // 400
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
+		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}) // 409
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "b",
+		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}) // 422
+	rest("POST", "/v1/backups/destinations", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b",
+		"access_key_id": keyID, "secret_access_key": secretKey}, "password": password, "region": "auto"}) // 400
 	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"password": badPass}) // 422
-	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret})
-	rest("PATCH", "/v1/backups/destinations/nope", map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}) // 404
-	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"endpoint": "nope", "access_key_id": newKeyID})          // 422
-	rest("DELETE", "/v1/backups/destinations/r2-code", nil)                                                                   // 409, in use
-	rest("GET", "/v1/backups/destinations", nil)                                                                              // after the patch
+	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}})
+	rest("PATCH", "/v1/backups/destinations/nope", map[string]any{"config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}) // 404
+	rest("PATCH", "/v1/backups/destinations/r2-code", map[string]any{"config": map[string]any{"endpoint": "nope", "access_key_id": newKeyID}})          // 422
+	rest("DELETE", "/v1/backups/destinations/r2-code", nil)                                                                                             // 409, in use
+	rest("GET", "/v1/backups/destinations", nil)                                                                                                        // after the patch
 	rest("GET", "/v1/machines/g4f4r0-code/backups/settings", nil)
 
 	// Every MCP tool, with the same secrets where a tool takes them.
@@ -168,14 +169,14 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 		{"list_notifications", nil},
 		{"list_recipients", nil},
 		{"list_destinations", nil},
-		{"add_destination", map[string]any{"name": "r2-code", "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
-			"access_key_id": keyID, "secret_access_key": secretKey, "password": password}}, // 409
-		{"add_destination", map[string]any{"name": "tool-made", "endpoint": "https://other.r2.cloudflarestorage.com", "bucket": "tool",
-			"access_key_id": keyID, "secret_access_key": secretKey, "password": password}}, // an owner's password is not returned
-		{"add_destination", map[string]any{"name": "bad", "endpoint": "nope", "bucket": "b", "access_key_id": keyID, "secret_access_key": secretKey, "password": password}},
-		{"update_destination", map[string]any{"destination": "r2-code", "access_key_id": newKeyID, "secret_access_key": newSecret}},
+		{"add_destination", map[string]any{"name": "r2-code", "config": map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "code",
+			"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}}, // 409
+		{"add_destination", map[string]any{"name": "tool-made", "config": map[string]any{"endpoint": "https://other.r2.cloudflarestorage.com", "bucket": "tool",
+			"access_key_id": keyID, "secret_access_key": secretKey}, "password": password}}, // an owner's password is not returned
+		{"add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "nope", "bucket": "b", "access_key_id": keyID, "secret_access_key": secretKey}, "password": password}},
+		{"update_destination", map[string]any{"destination": "r2-code", "config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}},
 		{"update_destination", map[string]any{"destination": "r2-code", "password": badPass}},
-		{"update_destination", map[string]any{"destination": "nope", "access_key_id": newKeyID, "secret_access_key": newSecret}},
+		{"update_destination", map[string]any{"destination": "nope", "config": map[string]any{"access_key_id": newKeyID, "secret_access_key": newSecret}}},
 		{"remove_destination", map[string]any{"destination": "r2-code"}}, // in use
 		{"set_backup", map[string]any{"machine": "g4f4r0-apps", "destination": "r2-apps", "schedule": "0 4 * * *", "retention_days": 7}},
 		{"get_backup_status", nil},
@@ -198,10 +199,18 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 				t.Errorf("%s shows a secret (%q...): %s", o.label, s[:12], o.text)
 			}
 		}
-		for _, field := range []string{`"password"`, `"secret_access_key"`, `"access_key_id"`, `"credentials"`, `"token"`} {
+		for _, field := range []string{`"password"`, `"credentials"`, `"token"`} {
 			// None of the outputs above is one of the few that show a secret once, so none has these fields.
 			if strings.Contains(o.text, field) {
 				t.Errorf("%s has the field %s: %s", o.label, field, o.text)
+			}
+		}
+		// A destination's secret fields show only as hidden.
+		if m := regexp.MustCompile(`"(secret_access_key|access_key_id)": ?"([^"]*)"`).FindAllStringSubmatch(o.text, -1); m != nil {
+			for _, f := range m {
+				if f[2] != "***" {
+					t.Errorf("%s shows %s as %q, want ***", o.label, f[1], f[2])
+				}
 			}
 		}
 	}

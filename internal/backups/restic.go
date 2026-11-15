@@ -38,6 +38,8 @@ type Restic struct {
 	PasswordFile string
 	Host         string   // the machine name; scopes every command to this machine's snapshots
 	Env          []string // extra KEY=VALUE for the child only, such as the S3 keys
+	Options      []string // restic -o options, such as sftp.args; never secret
+	Secrets      []string // values hidden in error text, such as keys
 	CacheDir     string
 	StateDir     string // holds the exclude file and TMPDIR
 }
@@ -84,6 +86,19 @@ func (r *Restic) init(ctx context.Context) Outcome {
 		return failed(err)
 	}
 	return r.outcome(code, p, false)
+}
+
+// Open checks that the repository is there and opens with the password, with restic cat config,
+// and makes it when there is none yet. created says it made one.
+func (r *Restic) Open(ctx context.Context) (created bool, o Outcome) {
+	p, code, err := r.run(ctx, io.Discard, "cat", "config")
+	if err != nil {
+		return false, failed(err)
+	}
+	if code == 10 { // repository doesn't exist yet
+		return true, r.init(ctx)
+	}
+	return false, r.outcome(code, p, false)
 }
 
 // Cleanup forgets this machine's snapshots older than retentionDays and prunes.
@@ -162,10 +177,10 @@ func (r *Restic) outcome(code int, p *stderrParser, partialOK bool) Outcome {
 	return Outcome{Status: StatusFailed, Error: truncate(r.scrub(p.failureMessage(code)))}
 }
 
-// scrub hides the child's secret values in text that came from restic.
+// scrub hides the secret values in text that came from restic.
 func (r *Restic) scrub(s string) string {
-	for _, kv := range r.Env {
-		if _, v, ok := strings.Cut(kv, "="); ok && len(v) >= 8 {
+	for _, v := range r.Secrets {
+		if len(v) >= 4 {
 			s = strings.ReplaceAll(s, v, "***")
 		}
 	}
@@ -186,7 +201,11 @@ func (r *Restic) run(ctx context.Context, stdout io.Writer, args ...string) (*st
 	if bin == "" {
 		bin = "restic"
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	full := make([]string, 0, 2*len(r.Options)+len(args))
+	for _, o := range r.Options {
+		full = append(full, "-o", o)
+	}
+	cmd := exec.CommandContext(ctx, bin, append(full, args...)...)
 	cmd.Env = append([]string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + r.StateDir,

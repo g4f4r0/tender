@@ -85,12 +85,24 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	structured(t, callTool(t, cs, "add_machine", map[string]any{"name": "a"}), &machines.MachineCreated{})
 
 	dest := func(name string, extra map[string]any) map[string]any {
-		args := map[string]any{"name": name, "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": name,
+		config := map[string]any{"endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": name,
 			"access_key_id": "marker-key-id", "secret_access_key": "marker-secret-key"}
+		args := map[string]any{"name": name, "config": config}
 		for k, v := range extra {
-			args[k] = v
+			if k == "password" || k == "type" {
+				args[k] = v
+			} else {
+				config[k] = v
+			}
 		}
 		return args
+	}
+	creds := func(id int64) backups.Credentials {
+		st, err := backups.NewStore(d, testKey).DaemonSettings(context.Background(), id)
+		if err != nil || st.Credentials == nil {
+			t.Fatalf("daemon settings: %v", err)
+		}
+		return *st.Credentials
 	}
 
 	// Without a password, the hub makes one and returns it once.
@@ -103,13 +115,14 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	// With one, nothing comes back.
 	var given backups.DestinationCreated
 	structured(t, callTool(t, cs, "add_destination", dest("r2-two", map[string]any{"password": "marker-given", "path": "/hosts/"})), &given)
-	if given.Password != "" || given.Path != "hosts" {
+	if given.Password != "" || given.Config["path"] != "hosts" || given.Config["secret_access_key"] != "***" {
 		t.Errorf("add_destination with a password = %+v, want no password back and the trimmed path", given)
 	}
 	fails(t, cs, "add_destination", dest("r2", map[string]any{"bucket": "other"}), "already exists")
 	fails(t, cs, "add_destination", dest("bad", map[string]any{"endpoint": "nope"}), "endpoint must be a URL")
-	fails(t, cs, "add_destination", dest("bad", map[string]any{"type": "gcs"}), "type must be s3")
-	fails(t, cs, "add_destination", map[string]any{"name": "bad", "endpoint": "https://x.example.com", "bucket": "b"})
+	fails(t, cs, "add_destination", dest("bad", map[string]any{"type": "gcs"}), "type must be one of local, rclone, rest, s3, sftp")
+	fails(t, cs, "add_destination", map[string]any{"name": "bad", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b"}}, "access_key_id is required")
+	fails(t, cs, "add_destination", map[string]any{"name": "bad", "type": "local", "config": map[string]any{"path": "relative"}}, "absolute")
 
 	// The daemon's side shows the tool stored what it was given, sealed.
 	structured(t, callTool(t, cs, "set_backup", map[string]any{"machine": "a", "destination": "r2-two", "schedule": "30 3 * * *", "retention_days": 30}), &backups.Settings{})
@@ -117,23 +130,24 @@ func TestDestinationAndBackupTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds, err := backups.NewStore(d, testKey).Credentials(context.Background(), id)
-	if err != nil || creds != (backups.Credentials{AccessKeyID: "marker-key-id", SecretAccessKey: "marker-secret-key", Password: "marker-given"}) {
-		t.Errorf("stored credentials = %+v, %v", creds, err)
+	if c := creds(id); c.AccessKeyID != "marker-key-id" || c.SecretAccessKey != "marker-secret-key" || c.Password != "marker-given" {
+		t.Errorf("stored credentials = %+v", c)
 	}
 
 	// Update: new keys and a new bucket; the password can't change.
 	var upd backups.Destination
-	structured(t, callTool(t, cs, "update_destination", map[string]any{"destination": "r2-two", "bucket": "moved", "access_key_id": "marker-new-id"}), &upd)
-	if upd.Bucket != "moved" {
+	structured(t, callTool(t, cs, "update_destination", map[string]any{"destination": "r2-two",
+		"config": map[string]any{"bucket": "moved", "access_key_id": "marker-new-id"}}), &upd)
+	if upd.Config["bucket"] != "moved" || upd.Config["access_key_id"] != "***" {
 		t.Errorf("update_destination = %+v", upd)
 	}
-	if creds, _ := backups.NewStore(d, testKey).Credentials(context.Background(), id); creds.AccessKeyID != "marker-new-id" || creds.SecretAccessKey != "marker-secret-key" || creds.Password != "marker-given" {
-		t.Errorf("credentials after the update = %+v, want the new id and the old secret and password", creds)
+	if c := creds(id); c.AccessKeyID != "marker-new-id" || c.SecretAccessKey != "marker-secret-key" || c.Password != "marker-given" {
+		t.Errorf("credentials after the update = %+v, want the new id and the old secret and password", c)
 	}
 	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "password": "marker-other"}, "can't change", "encrypted with it")
-	fails(t, cs, "update_destination", map[string]any{"destination": "nope", "bucket": "x"}, `"nope" doesn't exist`)
-	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "bucket": ""}, "can't be empty")
+	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "type": "local"}, "type can't change")
+	fails(t, cs, "update_destination", map[string]any{"destination": "nope", "config": map[string]any{"bucket": "x"}}, `"nope" doesn't exist`)
+	fails(t, cs, "update_destination", map[string]any{"destination": "r2-two", "config": map[string]any{"bucket": ""}}, "bucket is required")
 
 	// set_backup answers with settings and no credentials.
 	var st backups.Settings
@@ -241,6 +255,6 @@ func TestToolsWithoutAKey(t *testing.T) {
 	t.Cleanup(func() { _ = cs.Close(); cancel(); <-done })
 
 	structured(t, callTool(t, cs, "list_machines", nil), &server.List[machines.Overview]{})
-	fails(t, cs, "add_destination", map[string]any{"name": "r2", "endpoint": "https://x.example.com", "bucket": "b",
-		"access_key_id": "k", "secret_access_key": "s"}, "TENDER_ENCRYPTION_KEY")
+	fails(t, cs, "add_destination", map[string]any{"name": "r2", "config": map[string]any{"endpoint": "https://x.example.com", "bucket": "b",
+		"access_key_id": "k", "secret_access_key": "s"}}, "TENDER_ENCRYPTION_KEY")
 }

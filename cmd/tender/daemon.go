@@ -64,8 +64,19 @@ func runDaemon(args []string, log *slog.Logger) error {
 	}
 	sd := services.NewDaemon(hub, cfg.Machine, socket, log)
 	sd.StateDir = *state
+	a := backups.NewDaemon(hub, cfg.Machine, *state, log)
+	a.Paths, a.Exclude = cfg.Backups.Paths, cfg.Backups.Exclude
+	if bin := os.Getenv("TENDER_RESTIC_BIN"); bin != "" {
+		a.ResticBin = bin
+	}
+	if dir := os.Getenv(envSSHDir); dir != "" {
+		a.Host.SSHDir = dir
+	}
+	if file := os.Getenv(envRcloneConfig); file != "" {
+		a.Host.RcloneConfig = file
+	}
 	ad := actions.NewDaemon(hub, cfg.Machine, log)
-	ad.Services, ad.StateDir = sd, *state
+	ad.Services, ad.Backups, ad.StateDir = sd, a, *state
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -76,17 +87,19 @@ func runDaemon(args []string, log *slog.Logger) error {
 		ad.Run(ctx)
 	}()
 
-	a := backups.NewDaemon(hub, cfg.Machine, *state, log)
-	a.Paths, a.Exclude = cfg.Backups.Paths, cfg.Backups.Exclude
-	if bin := os.Getenv("TENDER_RESTIC_BIN"); bin != "" {
-		a.ResticBin = bin
-	}
 	log.Info("daemon started", "machine", cfg.Machine, "hub", cfg.Hub, "version", version)
 	a.Run(ctx)
 	log.Info("daemon stopping")
 	wg.Wait()
 	return nil
 }
+
+// The folders a destination reads on the daemon's machine, for tests and unusual installs: the SSH
+// key folder of sftp destinations and rclone's config file.
+const (
+	envSSHDir       = "TENDER_SSH_DIR"
+	envRcloneConfig = "TENDER_RCLONE_CONFIG"
+)
 
 func defaultState() string {
 	if d := os.Getenv("STATE_DIRECTORY"); d != "" {

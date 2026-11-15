@@ -269,7 +269,8 @@ func (h *fakeHub) addDestination(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.AccessKeyID == "" || in.SecretAccessKey == "" || in.Endpoint == "" || in.Bucket == "" {
+	text := func(f string) string { v, _ := in.Config[f].(string); return v }
+	if in.Type == "s3" && (text("access_key_id") == "" || text("secret_access_key") == "" || text("endpoint") == "" || text("bucket") == "") {
 		problem(w, http.StatusUnprocessableEntity, "A destination needs an endpoint, a bucket, an access key ID and a secret access key.")
 		return
 	}
@@ -278,7 +279,12 @@ func (h *fakeHub) addDestination(w http.ResponseWriter, r *http.Request) {
 		in.Password = "generated-repository-password"
 		created.Password = in.Password
 	}
-	d := backups.Destination{ID: h.id(), Name: in.Name, Type: in.Type, Endpoint: in.Endpoint, Bucket: in.Bucket, Path: in.Path, CreatedAt: h.now, UpdatedAt: h.now}
+	location := in.Type + ":" + text("endpoint") + "/" + text("bucket")
+	if p := text("path"); p != "" {
+		location += "/" + p
+	}
+	d := backups.Destination{ID: h.id(), Name: in.Name, Type: in.Type, Location: location, CreatedAt: h.now, UpdatedAt: h.now,
+		Config: map[string]any{"endpoint": text("endpoint"), "bucket": text("bucket"), "path": text("path")}}
 	h.destinations = append(h.destinations, d)
 	h.secrets[in.Name] = in
 	created.Destination = d

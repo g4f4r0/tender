@@ -35,6 +35,7 @@ var mcpCoverage = map[string]string{
 	"GET /v1/backups/destinations/{destination}":        "list_destinations",
 	"PATCH /v1/backups/destinations/{destination}":      "update_destination",
 	"DELETE /v1/backups/destinations/{destination}":     "remove_destination",
+	"POST /v1/backups/destinations/{destination}/test":  "test_destination",
 	"GET /v1/notifications":                             "list_notifications",
 	"GET /v1/machines/{machine}/notifications":          "list_notifications",
 	"GET /v1/machines/{machine}/notifications/{id}":     "list_notifications",

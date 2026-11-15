@@ -147,8 +147,8 @@ func (h *hub) setup() {
 
 // input is a destination with keys and a password.
 func input(name, endpoint, bucket, path string) backups.DestinationInput {
-	return backups.DestinationInput{Name: name, Type: "s3", Endpoint: endpoint, Bucket: bucket, Path: path,
-		AccessKeyID: "key-id", SecretAccessKey: "key-secret", Password: "repo-password"}
+	return backups.DestinationInput{Name: name, Type: "s3", Password: "repo-password", Config: map[string]any{
+		"endpoint": endpoint, "bucket": bucket, "path": path, "access_key_id": "key-id", "secret_access_key": "key-secret"}}
 }
 
 func snap(id string, minutes int, size int64) backups.SnapshotInput {
@@ -182,7 +182,7 @@ func TestDestinations(t *testing.T) {
 
 	created, err := h.store.AddDestination(ctx, input("r2-code", "https://acct.r2.cloudflarestorage.com", "code", "/hosts/"))
 	d := created.Destination
-	if err != nil || d.Path != "hosts" || d.Type != "s3" || d.Repository("apps") != "s3:https://acct.r2.cloudflarestorage.com/code/hosts/apps" {
+	if err != nil || d.Config["path"] != "hosts" || d.Type != "s3" || d.Location != "s3:https://acct.r2.cloudflarestorage.com/code/hosts" {
 		t.Fatalf("AddDestination = %+v, %v", created, err)
 	}
 	if created.Password != "" {
@@ -196,11 +196,11 @@ func TestDestinations(t *testing.T) {
 			t.Errorf("%s: %v, want 409", name, err)
 		}
 	}
-	noKeyID, noSecret := input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", "")
-	noKeyID.AccessKeyID, noSecret.SecretAccessKey = "", ""
+	noKeyID, noSecret, badType := input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", ""), input("x", "https://x.example.com", "b", "")
+	noKeyID.Config["access_key_id"], noSecret.Config["secret_access_key"], badType.Type = "", "", "gcs"
 	for name, bad := range map[string]backups.DestinationInput{
 		"bad name":      input("R2", "https://x.example.com", "b", ""),
-		"bad type":      {Name: "x", Type: "gcs", Endpoint: "https://x.example.com", Bucket: "b", AccessKeyID: "a", SecretAccessKey: "b"},
+		"bad type":      badType,
 		"bad endpoint":  input("x", "x.example.com", "b", ""),
 		"no bucket":     input("x", "https://x.example.com", "", ""),
 		"no key id":     noKeyID,
@@ -221,7 +221,7 @@ func TestDestinations(t *testing.T) {
 	}
 	var got backups.Destination
 	h.do("GET", "/v1/backups/destinations/r2-code", "", nil, &got)
-	if got.ID != d.ID || got.Bucket != "code" {
+	if got.ID != d.ID || got.Config["bucket"] != "code" || got.Config["access_key_id"] != "***" || got.Config["secret_access_key_set"] != true {
 		t.Errorf("destination by name = %+v", got)
 	}
 	h.status(404, "GET", "/v1/backups/destinations/nope", "", nil)
