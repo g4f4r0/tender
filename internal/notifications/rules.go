@@ -64,6 +64,8 @@ type Machine struct {
 	DockerReason             string // why it is unreachable: socket_missing, permission_denied, refused, timeout or error
 	DockerUnreachableReports int
 	DockerReportedAt         *time.Time // when the daemon's latest services report arrived; nil before the first
+
+	LogSinks []LogSink // its sending to each enabled log sink that is for it
 }
 
 // The Docker states a daemon reports.
@@ -76,7 +78,7 @@ const (
 
 // keeps reports whether an open alert about m stays open though its finding doesn't hold now.
 //
-// A silent machine's Docker and service alerts, and service alerts while its Docker is
+// A silent machine's Docker, service and log shipping alerts, and service alerts while its Docker is
 // unreachable, are about a state nobody can see. A service alert also stays while the latest
 // report still finds the service so, because after an outage its count of reports in a row starts
 // again: it resolves once a report doesn't. The alerts of a service whose alerts are off, or
@@ -92,7 +94,7 @@ func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 			return true
 		}
 		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.typ == n.Type })
-	case n.Type == TypeDockerUnreachable:
+	case n.Type == TypeDockerUnreachable, n.Type == TypeLogShippingFailing:
 		return silent
 	}
 	return false
@@ -197,6 +199,7 @@ func evaluate(m Machine, now time.Time) []finding {
 	if len(out) > 0 && out[0].typ == TypeMachineSilent {
 		return out
 	}
+	out = append(out, evaluateLogs(m, now)...)
 	switch {
 	case m.DockerUnreachableReports >= serviceReports:
 		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
