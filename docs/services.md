@@ -12,6 +12,7 @@ For each service the hub keeps the latest report only:
 
 | Field | What it holds |
 | --- | --- |
+| `runtime` | What runs it. It is `docker`, the one runtime in this version, also for Podman. |
 | `state` | `created`, `running`, `paused`, `restarting`, `exited`, `removing` or `dead`, as Docker says. The hub sets `unknown` while Docker is unreachable, and `removed` once Docker no longer has the container. |
 | `health` | `healthy`, `unhealthy` or `starting`, or `null` for a container without a health check. |
 | `exit_code` | The exit code while the container is exited or dead, else `null`. It is `null` while Docker is unreachable too. |
@@ -94,6 +95,34 @@ Both return the newest entries, up to 2000 lines and 256 KiB. When the output is
 ## Docker and journal access
 
 The daemon reaches Docker as a member of the `docker` group, and reads the journal as a member of the `systemd-journal` group. [Install](install.md#docker-and-the-journal) explains what each group allows.
+
+## Podman
+
+The daemon talks to Docker's Engine API, and Podman serves the same API on its Docker-compatible socket. To use Podman, enable that socket and point the daemon at it:
+
+1. Enable the socket:
+
+   ```sh
+   sudo systemctl enable --now podman.socket
+   ```
+
+2. Set the socket for the daemon, then restart it:
+
+   ```sh
+   sudo systemctl edit tenderd
+   ```
+
+   Add these lines, save, and run `sudo systemctl restart tenderd`:
+
+   ```ini
+   [Service]
+   Environment=TENDER_DOCKER_SOCKET=/run/podman/podman.sock
+   ```
+
+Its services then show `"runtime": "docker"`, because the daemon speaks Docker's API to them.
+
+> [!WARNING]
+> Podman through its Docker-compatible socket is unverified: no Tender test runs against Podman. The daemon also needs read and write access to `/run/podman/podman.sock`, which the `docker` group doesn't give.
 
 ## Next steps
 

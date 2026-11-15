@@ -58,6 +58,7 @@ type Service struct {
 	ID            int64      `json:"id"`
 	Machine       string     `json:"machine"` // the machine's name
 	Name          string     `json:"name"`    // the container name, such as myapp-web-1
+	Runtime       string     `json:"runtime"` // what runs it: docker, also for Podman's Docker-compatible socket
 	Project       *string    `json:"project"` // the compose project, or null
 	ContainerID   string     `json:"container_id"`
 	Image         string     `json:"image"`
@@ -90,6 +91,7 @@ type Service struct {
 // reads it from Docker.
 type ServiceInput struct {
 	Name          string     `json:"name"`
+	Runtime       string     `json:"runtime"` // docker; a daemon before v0.3 leaves it out, which means docker
 	Project       *string    `json:"project"`
 	ContainerID   string     `json:"container_id"`
 	Image         string     `json:"image"`

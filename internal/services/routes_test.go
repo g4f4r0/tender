@@ -334,7 +334,7 @@ func TestDaemonLosesDocker(t *testing.T) {
 			if err := c.lose(f); err != nil {
 				t.Skip(err)
 			}
-			d.Docker.http.CloseIdleConnections() // a kept connection would still work; the next one doesn't
+			d.Runtime.(*Docker).http.CloseIdleConnections() // a kept connection would still work; the next one doesn't
 			d.reportNow(ctx)
 			ms, err := NewStore(h.db).Machines(ctx, 1)
 			if err != nil || ms[0].Docker == nil || *ms[0].Docker != DockerUnreachable || ms[0].Data[0].State != StateUnknown {

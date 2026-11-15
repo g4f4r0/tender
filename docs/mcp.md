@@ -1382,7 +1382,7 @@ Lists the Docker containers each machine's daemon reports once a minute, for eve
 
 #### Returns
 
-`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its daemon can't reach Docker, or `null` before any report), `docker_reason` (while unreachable, `socket_missing`, `permission_denied`, `refused`, `timeout` or `error`, else `null`) and `data`, its services. Each service is one container, by its container name, with `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender`, `removed_at` (when its container was gone, else `null`) and the timestamps. Usage is from the latest report. A `removed` service can't be started, stopped, restarted or read, and goes 7 days after `removed_at`, as [Removed services](services.md#removed-services) explains. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
+`data`, one entry per machine, with `machine`, `docker` (`running`, `unreachable` when its daemon can't reach Docker, or `null` before any report), `docker_reason` (while unreachable, `socket_missing`, `permission_denied`, `refused`, `timeout` or `error`, else `null`) and `data`, its services. Each service is one container, by its container name, with `runtime` (`docker`), `project` (the Compose project, or `null`), `container_id`, `image`, `state`, `health` (`null` without a health check), `exit_code` (while exited or dead), `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes` (`null` without a limit), `cpu_percent` (100 is one whole CPU), `alerts_enabled`, `stopped_by_tender`, `removed_at` (when its container was gone, else `null`) and the timestamps. Usage is from the latest report. A `removed` service can't be started, stopped, restarted or read, and goes 7 days after `removed_at`, as [Removed services](services.md#removed-services) explains. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
 
 #### Limits
 
@@ -1408,6 +1408,7 @@ None. A machine without Docker has no services.
           "id": 4,
           "machine": "apps",
           "name": "migrate",
+          "runtime": "docker",
           "project": null,
           "container_id": "c0ffee03",
           "image": "migrate:1",
@@ -1430,6 +1431,7 @@ None. A machine without Docker has no services.
           "id": 3,
           "machine": "apps",
           "name": "web",
+          "runtime": "docker",
           "project": "apps",
           "container_id": "c0ffee04",
           "image": "ghcr.io/example/web:2.4",
@@ -1503,6 +1505,7 @@ None.
   "id": 3,
   "machine": "apps",
   "name": "web",
+  "runtime": "docker",
   "project": "apps",
   "container_id": "c0ffee04",
   "image": "ghcr.io/example/web:2.4",

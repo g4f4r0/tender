@@ -26,7 +26,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		"List the Docker containers each machine's daemon reports, once a minute, by machine, or one machine's. Per machine: docker "+
 			"(running, unreachable when its daemon can't reach the Docker engine, or null before any report), docker_reason (while "+
 			"unreachable: socket_missing, permission_denied, refused, timeout or error; else null) and data, its services. Each service is "+
-			"one container, by its container name: project (the compose project, or null), image, state (created, running, paused, restarting, "+
+			"one container, by its container name: runtime (docker), project (the compose project, or null), image, state (created, running, paused, restarting, "+
 			"exited, removing, dead, unknown while Docker is unreachable, or removed once Docker no longer has the container), health (healthy, unhealthy, starting, or null without a health "+
 			"check), exit_code (while exited or dead), restart_count, restart_policy (no, always, unless-stopped or on-failure), started_at, "+
 			"memory_bytes (less the page cache it can drop), memory_limit_bytes (null without a limit) and cpu_percent (100 is one whole "+

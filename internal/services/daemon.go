@@ -35,7 +35,7 @@ var (
 type Daemon struct {
 	Hub     *client.Client
 	Machine string
-	Docker  *Docker
+	Runtime Runtime // what runs the services; Docker unless a test sets another
 	Log     *slog.Logger
 	Every   time.Duration // between reports, a minute
 	// StateDir is the daemon's state folder, where it remembers it saw Docker. Empty remembers
@@ -54,7 +54,7 @@ type Daemon struct {
 
 // NewDaemon returns a daemon that reaches Docker at socket.
 func NewDaemon(hub *client.Client, machine, socket string, log *slog.Logger) *Daemon {
-	return &Daemon{Hub: hub, Machine: machine, Docker: NewDocker(socket), Log: log, Every: reportEvery, report: make(chan struct{}, 1),
+	return &Daemon{Hub: hub, Machine: machine, Runtime: NewDocker(socket), Log: log, Every: reportEvery, report: make(chan struct{}, 1),
 		samples: map[string]sample{}}
 }
 
@@ -96,9 +96,9 @@ func (d *Daemon) Changed() {
 func (d *Daemon) Service(ctx context.Context, typ, service string, lines int, since time.Duration) (string, error) {
 	switch typ {
 	case actStart, actStop, actRestart:
-		return "", d.Docker.Act(ctx, typ, service)
+		return "", d.Runtime.Act(ctx, typ, service)
 	case actLogs:
-		return d.Docker.Logs(ctx, service, lines, since)
+		return d.Runtime.Logs(ctx, service, lines, since)
 	}
 	return "", errors.New("this daemon doesn't know the action " + typ + "; update Tender on this machine")
 }
@@ -110,7 +110,7 @@ func (d *Daemon) Service(ctx context.Context, typ, service string, lines int, si
 func (d *Daemon) reportNow(ctx context.Context) {
 	d.turn.Lock()
 	defer d.turn.Unlock()
-	if err := d.Docker.Ping(ctx); err != nil {
+	if err := d.Runtime.Ping(ctx); err != nil {
 		if ctx.Err() == nil {
 			d.unreachable(ctx, err, errors.Is(err, errUnreachable) || d.sawDocker())
 		}
@@ -118,8 +118,11 @@ func (d *Daemon) reportNow(ctx context.Context) {
 	}
 	d.rememberDocker()
 	lctx, cancel := context.WithTimeout(ctx, listTimeout)
-	list, err := d.Docker.Containers(lctx)
+	list, err := d.Runtime.Containers(lctx)
 	cancel()
+	for i := range list {
+		list[i].Runtime = d.Runtime.Name()
+	}
 	switch {
 	case ctx.Err() != nil:
 		return
@@ -162,7 +165,7 @@ func (d *Daemon) usage(ctx context.Context, list []ServiceInput) {
 			defer func() { <-slots }()
 			sctx, scancel := context.WithTimeout(bctx, statsTimeout)
 			defer scancel()
-			if st, err := d.Docker.Stats(sctx, sv.ContainerID); err == nil {
+			if st, err := d.Runtime.Stats(sctx, sv.ContainerID); err == nil {
 				now[i] = &st
 			}
 		}()

@@ -1365,7 +1365,7 @@ tender daemon [--config PATH] [--state PATH]
 | `--config` | path | No | The daemon's config file. The default is `/etc/tender/daemon.toml`. |
 | `--state` | path | No | The folder for the daemon's state. The default is `/var/lib/tender/daemon`. |
 
-It reaches Docker at `/var/run/docker.sock`, or at the socket in `TENDER_DOCKER_SOCKET`.
+It reaches Docker at `/var/run/docker.sock`, or at the socket in `TENDER_DOCKER_SOCKET`, such as Podman's `/run/podman/podman.sock`. See [Podman](services.md#podman).
 
 #### Example
 

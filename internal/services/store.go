@@ -27,7 +27,7 @@ var policies = map[string]bool{PolicyNo: true, PolicyAlways: true, PolicyUnlessS
 
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 const selectServices = `
-SELECT s.id, m.name, s.name, s.project, s.container_id, s.image, s.state, s.health, s.exit_code, s.restart_count,
+SELECT s.id, m.name, s.name, s.runtime, s.project, s.container_id, s.image, s.state, s.health, s.exit_code, s.restart_count,
        s.restart_policy, s.started_at, s.memory_bytes, s.memory_limit_bytes, s.cpu_percent, s.alerts_enabled, s.stopped_by_tender,
        s.down_reports, s.restarting_reports, s.unhealthy_reports, s.memory_high_reports, s.removed_at, s.created_at, s.updated_at
 FROM services s JOIN machines m ON m.id = s.machine_id`
@@ -38,7 +38,7 @@ func scanService(row scanner) (Service, error) {
 	var s Service
 	var started, removed *int64
 	var created, updated int64
-	err := row.Scan(&s.ID, &s.Machine, &s.Name, &s.Project, &s.ContainerID, &s.Image, &s.State, &s.Health, &s.ExitCode,
+	err := row.Scan(&s.ID, &s.Machine, &s.Name, &s.Runtime, &s.Project, &s.ContainerID, &s.Image, &s.State, &s.Health, &s.ExitCode,
 		&s.RestartCount, &s.RestartPolicy, &started, &s.MemoryBytes, &s.MemoryLimitBytes, &s.CPUPercent, &s.AlertsEnabled, &s.StoppedByTender,
 		&s.DownReports, &s.RestartingReports, &s.UnhealthyReports, &s.MemoryHighReports, &removed, &created, &updated)
 	for _, t := range []struct {
@@ -129,6 +129,8 @@ func (in ServiceInput) validate() error {
 		return server.Invalid("Every service needs a name of 1 to 255 characters.")
 	case in.ContainerID == "":
 		return server.Invalid("Service %q has no container_id.", in.Name)
+	case !runtimes[in.Runtime]:
+		return server.Invalid("Service %q has runtime %q; this hub knows only docker. Update the hub to the daemon's version.", in.Name, in.Runtime)
 	case !states[in.State]:
 		return server.Invalid("Service %q has state %q; it must be one of Docker's: created, running, paused, restarting, exited, removing or dead.", in.Name, in.State)
 	case in.Health != nil && !healths[*in.Health]:
@@ -227,6 +229,9 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 		if in[i].RestartPolicy == "" { // Docker's own word for no policy
 			in[i].RestartPolicy = PolicyNo
 		}
+		if in[i].Runtime == "" { // a daemon before v0.3
+			in[i].Runtime = RuntimeDocker
+		}
 	}
 	for _, sv := range in {
 		if err := sv.validate(); err != nil {
@@ -300,11 +305,11 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 			started = &u
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO services (machine_id, name, project, container_id, image, state, health, exit_code, restart_count, restart_policy,
+			`INSERT INTO services (machine_id, name, runtime, project, container_id, image, state, health, exit_code, restart_count, restart_policy,
 			   started_at, memory_bytes, memory_limit_bytes, cpu_percent, down_reports, restarting_reports, unhealthy_reports,
 			   memory_high_reports, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT (machine_id, name) DO UPDATE SET project = excluded.project, container_id = excluded.container_id,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT (machine_id, name) DO UPDATE SET runtime = excluded.runtime, project = excluded.project, container_id = excluded.container_id,
 			   image = excluded.image, state = excluded.state, health = excluded.health, exit_code = excluded.exit_code,
 			   restart_count = excluded.restart_count, restart_policy = excluded.restart_policy, started_at = excluded.started_at,
 			   memory_bytes = excluded.memory_bytes, memory_limit_bytes = excluded.memory_limit_bytes, cpu_percent = excluded.cpu_percent,
@@ -313,7 +318,7 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 			   down_reports = excluded.down_reports, restarting_reports = excluded.restarting_reports,
 			   unhealthy_reports = excluded.unhealthy_reports, memory_high_reports = excluded.memory_high_reports, removed_at = NULL,
 			   updated_at = excluded.updated_at`,
-			machineID, sv.Name, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, sv.RestartPolicy, started,
+			machineID, sv.Name, sv.Runtime, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, sv.RestartPolicy, started,
 			sv.MemoryBytes, sv.MemoryLimitBytes, sv.CPUPercent, down, restarting, unhealthy, memoryHigh, now, now)
 		if err != nil {
 			return nil, err

@@ -61,7 +61,7 @@ func TestReplace(t *testing.T) {
 		t.Fatalf("first report: %+v, %v", list, err)
 	}
 	w := list[0]
-	if w.Machine != "a" || w.Name != "web" || *w.Project != "shop" || !w.StartedAt.Equal(started) || !w.AlertsEnabled || w.StoppedByTender {
+	if w.Machine != "a" || w.Name != "web" || w.Runtime != RuntimeDocker || *w.Project != "shop" || !w.StartedAt.Equal(started) || !w.AlertsEnabled || w.StoppedByTender {
 		t.Errorf("web = %+v", w)
 	}
 	if _, err := s.Replace(ctx, 2, []ServiceInput{running("web", "c9")}); err != nil {
@@ -95,6 +95,7 @@ func TestReplace(t *testing.T) {
 		"bad health":   {{Name: "x", ContainerID: "c", State: StateRunning, Health: ptr("fine")}},
 		"negative":     {{Name: "x", ContainerID: "c", State: StateRunning, RestartCount: -1}},
 		"twice":        {running("x", "c"), running("x", "d")},
+		"bad runtime":  {{Name: "x", Runtime: "systemd", ContainerID: "c", State: StateRunning}},
 	} {
 		if _, err := s.Replace(ctx, 1, bad); status(err) != http.StatusUnprocessableEntity {
 			t.Errorf("%s: %v, want 422", name, err)
