@@ -123,6 +123,8 @@ tender services logs web-1 shop-web-1 --lines 500
 tender services alerts web-1 shop-worker-1 off
 ```
 
+If Docker stops answering on a machine, the hub keeps its last list with every state `unknown`, and alerts with `docker_unreachable`.
+
 `start`, `stop`, `restart` and `logs` go to the machine's daemon, which runs them through Docker's API. The command waits up to 60 seconds for the result. If the daemon hasn't answered by then, the action stays queued for 15 minutes. `logs` shows at most the last 2000 lines and 256 KiB.
 
 The daemon reaches Docker through `/var/run/docker.sock`, as a member of the `docker` group. The installer adds the group to `tenderd` when the machine has one. If you install Docker after Tender, run `sudo tender install refresh`.
@@ -152,11 +154,12 @@ The hub checks every machine once a minute:
 | `backup_failed` | The latest finished backup failed | critical |
 | `backup_stale` | No completed backup for 26 hours | warning, critical after 50 hours |
 | `disk_full` | The disk is at least 90% full | warning, critical at 95% |
-| `service_down` | The service is exited or dead in two reports in a row, unless Tender stopped it | critical |
+| `service_down` | The service is exited or dead in two reports in a row and should be running: it exited with an error, or its restart policy is `always` or `unless-stopped`. A Tender stop doesn't count | critical |
 | `service_restarting` | The service is restarting, or Docker restarted it again, in two reports in a row | critical |
 | `service_unhealthy` | The service's health check fails in two reports in a row | warning |
+| `docker_unreachable` | The machine's Docker refuses connections or doesn't answer, in two reports in a row | critical |
 
-Each service has its own alerts, and you can turn them off and on with `tender services alerts`. Turning them off resolves the service's open alerts. A silent machine alerts once, as `machine_silent`, not for each of its services.
+A container that exits 0 with restart policy `no` or `on-failure`, such as a migration job, finished on purpose and doesn't alert. Each service has its own alerts, and you can turn them off and on with `tender services alerts`. Turning them off resolves the service's open alerts. While Docker is unreachable, a machine's service alerts neither open nor resolve. A silent machine alerts once, as `machine_silent`, not for its Docker or its services.
 
 You get one email when an alert opens, one if it gets worse, and one when it resolves. If a send fails, the hub keeps retrying until the email goes out.
 
