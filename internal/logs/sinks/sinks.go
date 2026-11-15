@@ -56,6 +56,9 @@ type Type interface {
 	Secrets() []string
 	// Generated is the secret field the hub makes when it is left out, or "".
 	Generated() string
+	// URL is the field that holds where to send. Its query string, which can carry a key, is
+	// kept as a secret.
+	URL() string
 	// Check returns the config cleaned up, or a 422 that says what is wrong in a sentence.
 	Check(c Config) (Config, error)
 	// New returns the sender for a checked config, for the machine called machine.

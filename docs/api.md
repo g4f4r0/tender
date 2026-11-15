@@ -2205,7 +2205,7 @@ Content-Type: application/json
 
 A log sink is a place each machine's daemon sends its logs to: the systemd journal and its Docker containers' logs, straight from the machine. The logs never pass through the hub, which keeps only the sinks and each daemon's counters. [Log shipping](log-shipping.md) explains the batches, the buffer and the webhook contract.
 
-A sink's JSON has `id`, `name`, `type`, `config`, `enabled`, `sources`, `machines`, `status`, `created_at` and `updated_at`. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set.
+A sink's JSON has `id`, `name`, `type`, `config`, `enabled`, `sources`, `machines`, `status`, `created_at` and `updated_at`. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set. The query string of `url` or `endpoint`, which can carry a key, is kept as a secret too and shows as `?***`, such as `https://logs.example.com/in?***`. Send that URL back in a `PATCH` and the query stays as it is.
 
 | Type | `config` fields | Secrets |
 | --- | --- | --- |

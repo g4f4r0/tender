@@ -2091,7 +2091,7 @@ None.
 
 #### Returns
 
-`data`, the sinks, each with `id`, `name`, `type` (`otlp` or `webhook`), `config`, `enabled`, `sources`, `machines`, `status` and the timestamps. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set. `machines` is empty for every machine. `status` has one entry per machine that reported on the sink, with `machine`, `records_sent`, `records_dropped`, `last_sent_at`, `last_error`, `failing_since`, `last_dropped_at`, `created_at` (its first report) and `updated_at` (its latest). `last_error` and `failing_since` are `null` while sending works.
+`data`, the sinks, each with `id`, `name`, `type` (`otlp` or `webhook`), `config`, `enabled`, `sources`, `machines`, `status` and the timestamps. In `config`, each secret shows as `"***"`, with `<field>_set` saying whether it is set, and the query string of `url` or `endpoint` shows as `?***`. `machines` is empty for every machine. `status` has one entry per machine that reported on the sink, with `machine`, `records_sent`, `records_dropped`, `last_sent_at`, `last_error`, `failing_since`, `last_dropped_at`, `created_at` (its first report) and `updated_at` (its latest). `last_error` and `failing_since` are `null` while sending works.
 
 #### Limits
 

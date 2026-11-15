@@ -302,3 +302,42 @@ func TestStatus(t *testing.T) {
 		t.Errorf("negative count: %d %s", code, body)
 	}
 }
+
+// A URL's query string can carry a key, so it is kept like a secret: sealed in the database,
+// shown as ?***, kept when a read is sent back, and given in full only to the daemon.
+func TestURLQueryIsSecret(t *testing.T) {
+	h := newHub(t)
+	const key = "urlkey-in-the-query"
+	created := h.must(201, "POST", "/v1/logs/sinks", "", map[string]any{"name": "hook", "type": "webhook",
+		"config": map[string]any{"url": "https://logs.example.com/in?key=" + key, "secret": "0123456789abcdef"}})
+	if strings.Contains(created, key) || !strings.Contains(created, `"url":"https://logs.example.com/in?***"`) {
+		t.Errorf("create shows %s", created)
+	}
+	for _, p := range []string{"/v1/logs/sinks", "/v1/logs/sinks/hook"} {
+		if b := h.must(200, "GET", p, "", nil); strings.Contains(b, key) || strings.Contains(b, "url_query") {
+			t.Errorf("GET %s shows %s", p, b)
+		}
+	}
+	for _, f := range []string{h.path, h.path + "-wal"} {
+		if b, _ := os.ReadFile(f); bytes.Contains(b, []byte(key)) {
+			t.Errorf("%s holds the query in plain text", f)
+		}
+	}
+	// Sending back the URL a read showed keeps the query; a ?*** URL of another place is refused.
+	h.must(200, "PATCH", "/v1/logs/sinks/hook", "", map[string]any{"config": map[string]any{"url": "https://logs.example.com/in?***"}})
+	if b := h.must(200, "GET", "/v1/machines/a/logs/sinks", "tok-a", nil); !strings.Contains(b, `"url":"https://logs.example.com/in?key=`+key+`"`) {
+		t.Errorf("daemon got %s", b)
+	}
+	if code, b := h.do("PATCH", "/v1/logs/sinks/hook", "", map[string]any{"config": map[string]any{"url": "https://other.example.com/in?***"}}); code != 422 || !strings.Contains(b, "?***") {
+		t.Errorf("PATCH another masked URL = %d %s, want 422", code, b)
+	}
+	if code, _ := h.do("POST", "/v1/logs/sinks", "", map[string]any{"name": "x", "type": "otlp",
+		"config": map[string]any{"endpoint": "https://otel.example.com/v1/logs?***"}}); code != 422 {
+		t.Errorf("POST a masked endpoint = %d, want 422", code)
+	}
+	// A new query replaces the old; no query removes it.
+	h.must(200, "PATCH", "/v1/logs/sinks/hook", "", map[string]any{"config": map[string]any{"url": "https://logs.example.com/in"}})
+	if b := h.must(200, "GET", "/v1/machines/a/logs/sinks", "tok-a", nil); strings.Contains(b, key) || !strings.Contains(b, `"url":"https://logs.example.com/in"`) {
+		t.Errorf("daemon got %s after the query was removed", b)
+	}
+}

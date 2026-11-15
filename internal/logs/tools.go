@@ -67,7 +67,7 @@ const sinkFields = "otlp (OpenTelemetry, OTLP/HTTP JSON): endpoint (the collecto
 func (s *Store) RegisterTools(m *mcp.Server) {
 	mcp.AddReadOnly(m, "list_log_sinks", "List log sinks",
 		"List the log sinks: where each machine's daemon sends its journal and its Docker containers' logs, straight from the "+
-			"machine. Each has id, name, type (otlp or webhook), config (each secret shown as *** with <field>_set true), enabled, "+
+			"machine. Each has id, name, type (otlp or webhook), config (each secret shown as *** with <field>_set true, and the URL's query string as ?***), enabled, "+
 			"sources, machines (empty for every machine), and status: per machine, records_sent, records_dropped, last_sent_at, "+
 			"last_error (null while sending works), failing_since (null while sending works), last_dropped_at, created_at (its first "+
 			"report) and updated_at (its latest, sent every minute); and created_at and updated_at. Times are RFC 3339 UTC. The logs themselves never reach the hub, so no "+

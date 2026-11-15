@@ -31,6 +31,7 @@ const maxHeaders = 20
 func (otlp) Fields() []string  { return []string{"endpoint", "headers"} }
 func (otlp) Secrets() []string { return []string{"headers"} }
 func (otlp) Generated() string { return "" }
+func (otlp) URL() string       { return "endpoint" }
 
 func (t otlp) Check(c Config) (Config, error) {
 	var v otlpConfig

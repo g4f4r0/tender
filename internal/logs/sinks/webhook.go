@@ -27,6 +27,7 @@ const minSecret = 16
 func (webhook) Fields() []string  { return []string{"url", "secret"} }
 func (webhook) Secrets() []string { return []string{"secret"} }
 func (webhook) Generated() string { return "secret" }
+func (webhook) URL() string       { return "url" }
 
 func (t webhook) Check(c Config) (Config, error) {
 	var v webhookConfig

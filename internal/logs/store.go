@@ -132,6 +132,16 @@ func scanRow(r scanner) (row, error) {
 	return d, nil
 }
 
+// QueryMask stands for a URL's query string where people see the URL: the query can carry a
+// key, so the hub keeps it sealed in <field>_query, like a secret.
+const QueryMask = "?***"
+
+// cutQuery splits a URL at its query string.
+func cutQuery(u string) (base, query string, has bool) {
+	base, query, has = strings.Cut(u, "?")
+	return base, query, has
+}
+
 // redact is the config people see: the plain fields, and each secret as "***" with <field>_set.
 func redact(typ string, sealed map[string]any) map[string]any {
 	out := maps.Clone(sealed)
@@ -139,6 +149,7 @@ func redact(typ string, sealed map[string]any) map[string]any {
 		out = map[string]any{}
 	}
 	if t, ok := sinks.Get(typ); ok {
+		delete(out, t.URL()+"_query")
 		for _, f := range t.Secrets() {
 			_, set := out[f]
 			if set {
@@ -171,6 +182,17 @@ func (s *Store) plain(d row) (map[string]any, error) {
 		}
 		out[f] = opened
 	}
+	f := t.URL()
+	if q, set := out[f+"_query"]; set {
+		opened, err := s.open(d.Name, f, q)
+		if err != nil {
+			return nil, err
+		}
+		query, _ := opened.(string)
+		base, _ := out[f].(string)
+		out[f] = strings.TrimSuffix(base, QueryMask) + "?" + query
+		delete(out, f+"_query")
+	}
 	return out, nil
 }
 
@@ -187,6 +209,14 @@ func (s *Store) sealConfig(t sinks.Type, config map[string]any) (string, error) 
 		}
 		if clean[f], err = s.seal(v); err != nil {
 			return "", err
+		}
+	}
+	if u, ok := clean[t.URL()].(string); ok {
+		if base, query, has := cutQuery(u); has {
+			clean[t.URL()] = base + QueryMask
+			if clean[t.URL()+"_query"], err = s.seal(query); err != nil {
+				return "", err
+			}
 		}
 	}
 	b, err := json.Marshal(clean)
@@ -281,6 +311,9 @@ func (s *Store) AddSink(ctx context.Context, in SinkInput) (SinkCreated, error) 
 			return out, server.Invalid("config.%s is \"***\", which is how the hub hides a secret. Give the secret itself.", f)
 		}
 	}
+	if u, _ := config[t.URL()].(string); strings.HasSuffix(u, QueryMask) {
+		return out, maskedURL(t.URL())
+	}
 	if g := t.Generated(); g != "" {
 		if v, set := config[g]; !set || v == nil || v == "" {
 			out.Secret = newSecret()
@@ -321,6 +354,16 @@ func (s *Store) AddSink(ctx context.Context, in SinkInput) (SinkCreated, error) 
 	}
 	out.Sink, err = s.Sink(ctx, in.Name)
 	return out, err
+}
+
+func maskedURL(field string) error {
+	return server.Invalid("config.%s ends in ?***, which is how the hub hides a URL's query. Give the whole URL, or send back the one a read shows to keep it.", field)
+}
+
+// masks reports whether shown is how the hub shows the URL current.
+func masks(shown, current string) bool {
+	base, _, has := cutQuery(current)
+	return has && shown == base+QueryMask
 }
 
 // cleanNames sorts names and drops repeats.
@@ -470,6 +513,12 @@ func (s *Store) PatchSink(ctx context.Context, name string, patch map[string]any
 				delete(pc, f)
 			}
 			delete(pc, f+"_set")
+		}
+		if u, _ := pc[t.URL()].(string); strings.HasSuffix(u, QueryMask) {
+			if cur, _ := config[t.URL()].(string); !masks(u, cur) {
+				return Sink{}, maskedURL(t.URL())
+			}
+			delete(pc, t.URL()) // sent back as a read showed it: it stays as it is
 		}
 		merged, _ := merge(toJSON(config), pc).(map[string]any)
 		if merged == nil {
