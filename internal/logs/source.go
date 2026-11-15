@@ -1,7 +1,10 @@
 package logs
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -58,17 +61,61 @@ type source interface {
 // maxMessageBytes is the most of one log line a record carries.
 const maxMessageBytes = 64 << 10
 
-// message cleans a log line for a record: no trailing line break, at most maxMessageBytes, and
-// valid UTF-8.
-func message(s string) string {
+// truncatedMark ends a message that was cut.
+const truncatedMark = " [truncated]"
+
+// message cleans a log line for a record: no trailing line break, valid UTF-8, and at most
+// maxMessageBytes, ending in truncatedMark when it was longer or cut is set.
+func message(s string, cut bool) string {
 	s = strings.TrimRight(s, "\r\n")
-	if len(s) > maxMessageBytes {
-		s = s[:maxMessageBytes]
-	}
 	if !utf8.ValidString(s) {
 		s = strings.ToValidUTF8(s, "�")
 	}
+	if len(s) > maxMessageBytes || (cut && len(s) > maxMessageBytes-len(truncatedMark)) {
+		s = s[:maxMessageBytes-len(truncatedMark)]
+		for !utf8.ValidString(s) { // don't split a character
+			s = s[:len(s)-1]
+		}
+		cut = true
+	}
+	if cut {
+		s += truncatedMark
+	}
 	return s
+}
+
+// readLines calls fn with each line of r, without its line break, until fn returns false or r
+// ends. A line longer than limit comes cut to limit, with cut set, and the rest of it is skipped,
+// so one long line never stops the stream. line is only valid during the call.
+func readLines(r io.Reader, limit int, fn func(line []byte, cut bool) bool) error {
+	br := bufio.NewReaderSize(r, 64<<10)
+	var line []byte
+	cut := false
+	for {
+		chunk, err := br.ReadSlice('\n')
+		ended := err == nil // chunk ends with the line break
+		if ended {
+			chunk = chunk[:len(chunk)-1]
+		}
+		take := min(len(chunk), limit-len(line))
+		line = append(line, chunk[:take]...)
+		cut = cut || take < len(chunk)
+		switch {
+		case ended:
+			if !fn(line, cut) {
+				return nil
+			}
+			line, cut = line[:0], false
+		case errors.Is(err, bufio.ErrBufferFull): // the line goes on
+		case errors.Is(err, io.EOF):
+			if len(line) > 0 || cut {
+				fn(line, cut)
+			}
+			return nil
+		default:
+			return err
+		}
+	}
 }
 
 // send hands it to out, unless ctx ends first.

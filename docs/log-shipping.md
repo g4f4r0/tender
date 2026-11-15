@@ -111,7 +111,7 @@ The daemon follows every container, and picks up a new or re-created one within 
 
 ## Batches
 
-A daemon sends each sink's records in batches, one HTTP POST each. A batch goes out when it has 1000 records, when it reaches 1 MiB, or 5 seconds after its first record, whichever comes first. One log line is at most 64 KiB in a record, and the rest of it is cut off.
+A daemon sends each sink's records in batches, one HTTP POST each. A batch goes out when it has 1000 records, when it reaches 1 MiB, or 5 seconds after its first record, whichever comes first. One log line is at most 64 KiB in a record. A longer one is cut, ends in ` [truncated]`, and the lines after it come as usual.
 
 The daemon saves each batch on disk before it sends it, and saves where it has read up to in the journal and in each container's logs once the batch is saved. After a restart, it sends the saved batches, then reads on from there. No record is lost, and at most the one batch being sent when the daemon stopped is sent again. A receiver that must not count a record twice can drop a batch whose records it already has.
 
@@ -155,7 +155,7 @@ Tender-Signature: t=1763208250,v1=2fb5c3f2a793311e12f5f46614932d99fbb1d3769d06d9
 | `records[].unit` | string | For `journal`, the systemd unit, such as `nginx.service`, or the program's name for a line without one, such as `kernel`. Left out for `service`. |
 | `records[].service` | string | For `service`, the container's name. Left out for `journal`. |
 | `records[].priority` | string | `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. |
-| `records[].message` | string | The line, without its line break, at most 64 KiB, as valid UTF-8. |
+| `records[].message` | string | The line, without its line break, as valid UTF-8. A line over 64 KiB is cut to 64 KiB and ends in ` [truncated]`. |
 
 A receiver answers `2xx` once it has stored the batch. It answers `400`, `413` or `422` only for a batch it will never take, because the daemon then drops it. Any other status, such as `429` or `503`, makes the daemon send the same records again later.
 

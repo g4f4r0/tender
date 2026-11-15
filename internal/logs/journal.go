@@ -1,13 +1,13 @@
 package logs
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -93,19 +93,20 @@ func (j journalSource) follow(ctx context.Context, bin, cursor string, since tim
 		return "", err
 	}
 	last := ""
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64<<10), 8<<20)
-	for sc.Scan() {
-		it, ok := journalEntry(sc.Bytes())
+	scanErr := readLines(stdout, journalLineBytes, func(line []byte, cut bool) bool {
+		it, ok := journalEntry(line)
+		if cut {
+			it, ok = journalCut(line)
+		}
 		if !ok {
-			continue
+			return true
 		}
 		if !send(ctx, out, it) {
-			break
+			return false
 		}
 		last = it.journal
-	}
-	scanErr := sc.Err()
+		return true
+	})
 	if ctx.Err() != nil {
 		_ = cmd.Wait()
 		return last, ctx.Err()
@@ -120,6 +121,38 @@ func (j journalSource) follow(ctx context.Context, bin, cursor string, since tim
 		err = errors.New("it exited")
 	}
 	return last, err
+}
+
+// journalLineBytes is the most of one line of journalctl's output the daemon reads. journalctl
+// prints a field over 4 KiB as null, so only an entry with very many fields comes near it.
+const journalLineBytes = 8 << 20
+
+// cutField finds a string field in the start of a journal entry that was cut.
+var cutField = regexp.MustCompile(`"(__CURSOR|__REALTIME_TIMESTAMP|_SYSTEMD_UNIT|SYSLOG_IDENTIFIER|_COMM|PRIORITY)":"((?:[^"\\]|\\.)*)"`)
+
+// journalCut makes a record of an entry longer than journalLineBytes, from the fields at its
+// start, so the stream goes on past it: its message is cut, and ends in truncatedMark.
+func journalCut(b []byte) (item, bool) {
+	fields := map[string]json.RawMessage{}
+	for _, m := range cutField.FindAllSubmatch(b, -1) {
+		if _, seen := fields[string(m[1])]; !seen {
+			fields[string(m[1])] = json.RawMessage(`"` + string(m[2]) + `"`)
+		}
+	}
+	msg := ""
+	if _, rest, ok := bytes.Cut(b, []byte(`"MESSAGE":"`)); ok {
+		raw := rest[:min(len(rest), maxMessageBytes)]
+		for len(raw) > 0 && json.Unmarshal([]byte(`"`+string(raw)+`"`), &msg) != nil {
+			raw = raw[:len(raw)-1] // drop a split escape at the end
+		}
+	}
+	fields["MESSAGE"], _ = json.Marshal(msg)
+	e, _ := json.Marshal(fields)
+	it, ok := journalEntry(e)
+	if ok {
+		it.rec.Message = message(msg, true)
+	}
+	return it, ok
 }
 
 // journalEntry turns one line of journalctl's JSON output into a record. MESSAGE is a string, or
@@ -149,7 +182,7 @@ func journalEntry(b []byte) (item, bool) {
 	if p, err := strconv.Atoi(journalString(e["PRIORITY"])); err == nil && p >= 0 && p < len(sinks.Priorities) {
 		priority = sinks.Priorities[p]
 	}
-	return item{journal: cursor, rec: sinks.Record{Time: when, Source: sinks.SourceJournal, Unit: unit, Priority: priority, Message: message(msg)}}, true
+	return item{journal: cursor, rec: sinks.Record{Time: when, Source: sinks.SourceJournal, Unit: unit, Priority: priority, Message: message(msg, false)}}, true
 }
 
 func journalString(raw json.RawMessage) string {

@@ -163,7 +163,7 @@ func (d dockerSource) follow(ctx context.Context, hc *http.Client, id, name stri
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Docker answered %d", resp.StatusCode)
 	}
-	emit := func(line string, stderr bool) bool {
+	emit := func(line string, stderr, cut bool) bool {
 		ts, text, ok := strings.Cut(line, " ")
 		t, err := time.Parse(time.RFC3339Nano, ts)
 		if !ok || err != nil || !keep(t) {
@@ -173,32 +173,25 @@ func (d dockerSource) follow(ctx context.Context, hc *http.Client, id, name stri
 		if stderr {
 			priority = "err"
 		}
-		return send(ctx, out, item{rec: sinks.Record{Time: t.UTC(), Source: sinks.SourceService, Service: name, Priority: priority, Message: message(text)}})
+		return send(ctx, out, item{rec: sinks.Record{Time: t.UTC(), Source: sinks.SourceService, Service: name, Priority: priority, Message: message(text, cut)}})
 	}
 	if info.Config.Tty { // a TTY's output comes raw, without frames
-		return lines(resp.Body, func(l string) bool { return emit(l, false) })
+		return readLines(resp.Body, dockerLineBytes, func(l []byte, cut bool) bool { return emit(string(l), false, cut) })
 	}
 	return frames(resp.Body, emit)
 }
 
-// lines calls fn with each line read from r, until fn returns false or r ends.
-func lines(r io.Reader, fn func(string) bool) error {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	for sc.Scan() {
-		if !fn(sc.Text()) {
-			return nil
-		}
-	}
-	return sc.Err()
-}
+// dockerLineBytes is the most of one line the daemon keeps: its timestamp and a whole message.
+const dockerLineBytes = maxMessageBytes + 64
 
 // frames reads Docker's multiplexed stream: each frame is an 8-byte header, whose first byte is 1
 // for stdout and 2 for stderr and whose last four are the payload's size, big-endian, then the
-// payload. It calls fn with each whole line, until fn returns false or r ends.
-func frames(r io.Reader, fn func(line string, stderr bool) bool) error {
+// payload. It calls fn with each whole line, until fn returns false or r ends. A line longer than
+// dockerLineBytes comes cut, with cut set, and the rest of it is skipped.
+func frames(r io.Reader, fn func(line string, stderr, cut bool) bool) error {
 	br := bufio.NewReader(r)
 	partial := map[byte]string{}
+	skipping := map[byte]bool{} // a cut line's rest is still coming
 	var header [8]byte
 	for {
 		if _, err := io.ReadFull(br, header[:]); err != nil {
@@ -222,16 +215,23 @@ func frames(r io.Reader, fn func(line string, stderr bool) bool) error {
 			if !found {
 				break
 			}
-			if !fn(line, stream == 2) {
-				return nil
-			}
 			text = rest
-		}
-		if len(text) > maxMessageBytes*2 { // a line with no end in sight goes as it is
-			if !fn(text, stream == 2) {
+			if skipping[stream] {
+				skipping[stream] = false
+				continue
+			}
+			cut := len(line) > dockerLineBytes
+			if !fn(line[:min(len(line), dockerLineBytes)], stream == 2, cut) {
 				return nil
 			}
+		}
+		if skipping[stream] {
 			text = ""
+		} else if len(text) > dockerLineBytes { // send what fits now, and skip the rest of the line
+			if !fn(text[:dockerLineBytes], stream == 2, true) {
+				return nil
+			}
+			text, skipping[stream] = "", true
 		}
 		partial[stream] = text
 	}
