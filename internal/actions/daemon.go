@@ -39,33 +39,46 @@ type Runner interface {
 	Changed()
 }
 
-// Daemon long-polls the hub for this machine's actions and runs them one at a time. Set the
-// exported fields after NewDaemon. Run drives it; nothing else does.
+// Daemon long-polls the hub for this machine's actions and runs them one at a time. It claims each
+// before it runs it, and keeps each report until the hub has it. Set the exported fields after
+// NewDaemon. Run drives it; nothing else does.
 type Daemon struct {
 	Hub      *client.Client
 	Machine  string
 	Log      *slog.Logger
-	Every    time.Duration // the wait before polling again after an error
+	Every    time.Duration // the wait before polling again after an error, or sending a waiting report again
 	Services Runner        // runs the service actions; without it they fail
+	// StateDir is the daemon's state folder, where reports wait in actions/ until the hub has them.
+	// Empty keeps them in memory only.
+	StateDir string
 
-	poll    *client.Client // Hub, with room for the long poll
-	pollErr string         // the last poll error logged, so it is logged once
+	poll    *client.Client  // Hub, with room for the long poll
+	pollErr string          // the last poll error logged, so it is logged once
+	waiting map[int64]*sent // the reports the hub doesn't have yet, by action id
+	sendErr string          // the last report error logged, so it is logged once
 }
 
 // NewDaemon returns a daemon for machine.
 func NewDaemon(hub *client.Client, machine string, log *slog.Logger) *Daemon {
-	return &Daemon{Hub: hub, Machine: machine, Log: log, Every: time.Minute, poll: hub.WithTimeout(pollTimeout)}
+	return &Daemon{Hub: hub, Machine: machine, Log: log, Every: time.Minute, poll: hub.WithTimeout(pollTimeout), waiting: map[int64]*sent{}}
 }
 
 func (d *Daemon) path(rest string) string {
 	return "/v1/machines/" + url.PathEscape(d.Machine) + "/actions" + rest
 }
 
-// Run asks the hub for actions and runs them, until ctx ends.
+// Run asks the hub for actions and runs them, until ctx ends. Before each poll it sends the reports
+// still waiting; while some wait, it polls without waiting and tries again every Every.
 func (d *Daemon) Run(ctx context.Context) {
+	d.load()
 	for ctx.Err() == nil {
+		d.deliver(ctx)
+		wait := pollWait
+		if len(d.waiting) > 0 {
+			wait = 0
+		}
 		var list server.List[Action]
-		err := d.poll.Do(ctx, http.MethodGet, d.path("?wait="+strconv.Itoa(pollWait)), "", nil, &list)
+		err := d.poll.Do(ctx, http.MethodGet, d.path("?wait="+strconv.Itoa(wait)), "", nil, &list)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -74,26 +87,45 @@ func (d *Daemon) Run(ctx context.Context) {
 				d.Log.Warn("could not ask the hub for actions", "error", err)
 				d.pollErr = err.Error()
 			}
-			select {
-			case <-ctx.Done():
-			case <-time.After(d.Every):
-			}
+			d.sleep(ctx)
 			continue
 		}
 		d.pollErr = ""
 		for _, a := range list.Data {
 			d.run(ctx, a)
 		}
+		if len(d.waiting) > 0 && len(list.Data) == 0 {
+			d.sleep(ctx)
+		}
 	}
 }
 
-// run does one action and reports how it ended. The output, which may be logs, is never logged.
+func (d *Daemon) sleep(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d.Every):
+	}
+}
+
+// claimFor bounds the tries of one claim. It is under the hub's 30 s, after which it hands the
+// action out again.
+const claimFor = 25 * time.Second
+
+// run claims an action, does it and reports how it ended. The output, which may be logs, is never
+// logged.
 func (d *Daemon) run(ctx context.Context, a Action) {
+	if !d.claim(ctx, a) {
+		return
+	}
 	service := a.Service != nil
 	if service && d.Services != nil {
 		d.Services.Lock()
 	}
-	d.do(ctx, a)
+	r := &sent{ID: a.ID, Key: client.NewKey(), Type: a.Type}
+	d.keep(r) // before it runs, so a daemon that stops meanwhile still reports it
+	r.Patch = d.do(ctx, a)
+	d.keep(r)
+	d.send(ctx, r)
 	if service && d.Services != nil {
 		d.Services.Unlock()
 		if a.Type != TypeLogs {
@@ -102,7 +134,37 @@ func (d *Daemon) run(ctx context.Context, a Action) {
 	}
 }
 
-func (d *Daemon) do(ctx context.Context, a Action) {
+// claim tells the hub the daemon is about to run the action, and says whether it may. Every try
+// reuses one key: a claim that reached the hub but whose answer was lost gets that answer again,
+// so the action runs once. When no answer comes in time it doesn't run; a report that it failed
+// waits for the hub, in case the claim did reach it.
+func (d *Daemon) claim(ctx context.Context, a Action) bool {
+	cctx, cancel := context.WithTimeout(ctx, claimFor)
+	defer cancel()
+	key := client.NewKey()
+	for {
+		err := d.Hub.Do(cctx, http.MethodPatch, d.path("/"+strconv.FormatInt(a.ID, 10)), key, Patch{Status: StatusInProgress}, nil)
+		if err == nil {
+			return true
+		}
+		if !client.Retryable(err) && cctx.Err() == nil { // the hub answered no: it expired, or isn't pending
+			d.Log.Info("the hub did not let this daemon run an action", "id", a.ID, "type", a.Type, "error", err)
+			return false
+		}
+		select {
+		case <-time.After(time.Second):
+			continue
+		case <-cctx.Done():
+		}
+		d.Log.Warn("could not claim an action from the hub, so it did not run", "id", a.ID, "type", a.Type, "error", err)
+		out := notClaimed
+		d.keep(&sent{ID: a.ID, Key: client.NewKey(), Type: a.Type, Patch: &Patch{Status: StatusFailed, Output: &out}})
+		return false
+	}
+}
+
+// do runs the action and returns its report.
+func (d *Daemon) do(ctx context.Context, a Action) *Patch {
 	actx, cancel := context.WithTimeout(ctx, actionTimeout)
 	output, err := d.execute(actx, a)
 	cancel()
@@ -115,24 +177,7 @@ func (d *Daemon) do(ctx context.Context, a Action) {
 		p.Output = &output
 	}
 	d.Log.Info("action finished", "id", a.ID, "type", a.Type, "service", deref(a.Service), "status", p.Status)
-
-	// The report goes out even when the daemon is stopping. Every retry reuses the key.
-	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-	defer rcancel()
-	key := client.NewKey()
-	for try := 1; ; try++ {
-		err = d.Hub.Do(rctx, http.MethodPatch, d.path("/"+strconv.FormatInt(a.ID, 10)), key, p, nil)
-		if err == nil || !client.Retryable(err) || try == 3 {
-			break
-		}
-		select {
-		case <-rctx.Done():
-		case <-time.After(2 * time.Second):
-		}
-	}
-	if err != nil {
-		d.Log.Error("could not tell the hub how an action ended", "id", a.ID, "type", a.Type, "error", err)
-	}
+	return &p
 }
 
 // execute runs the action and returns its output.

@@ -38,6 +38,9 @@ func NewStore(d *db.DB, services Services) *Store {
 const (
 	// lifetime is how long an action may wait for the daemon, or run without an answer.
 	lifetime = 15 * time.Minute
+	// handOutAgain is how long, in seconds, the daemon has to claim an action it was handed, before
+	// it is handed out again.
+	handOutAgain = "30"
 	// kept is how many actions each machine keeps; older ones are deleted.
 	kept = 100
 	// pollEvery is how often a wait looks at the database again. Actions can be queued by another
@@ -204,9 +207,10 @@ func (s *Store) Await(ctx context.Context, machineID, id int64, timeout time.Dur
 	}
 }
 
-// Take returns the machine's oldest pending action, marked in_progress, or none. It hands out one
-// at a time because the daemon runs them one at a time: the others stay pending, so none of them
-// expires as unanswered while it waits its turn.
+// Take hands out the machine's oldest pending action that wasn't handed out in the last 30 s, or
+// none. It stays pending: the daemon claims it with Claim before it runs it, and one it doesn't
+// claim in time is handed out again. It hands out one at a time because the daemon runs them one
+// at a time: the others wait, so none of them expires as unanswered while it waits its turn.
 func (s *Store) Take(ctx context.Context, machineID int64) ([]Action, error) {
 	if err := s.tidy(ctx, machineID, time.Now()); err != nil {
 		return nil, err
@@ -214,12 +218,15 @@ func (s *Store) Take(ctx context.Context, machineID int64) ([]Action, error) {
 	return s.takeOne(ctx, machineID)
 }
 
+// available is a pending action of machine ?1 that may be handed out at ?2.
+const available = `machine_id = ?1 AND status = 'pending' AND (handed_out_at IS NULL OR handed_out_at <= ?2 - ` + handOutAgain + `)`
+
 func (s *Store) takeOne(ctx context.Context, machineID int64) ([]Action, error) {
 	var id int64
+	now := time.Now().Unix()
 	err := s.db.Write.QueryRowContext(ctx,
-		`UPDATE actions SET status = 'in_progress', updated_at = ? WHERE id = (
-		   SELECT id FROM actions WHERE machine_id = ? AND status = 'pending' ORDER BY id LIMIT 1) RETURNING id`,
-		time.Now().Unix(), machineID).Scan(&id)
+		`UPDATE actions SET handed_out_at = ?2 WHERE id = (SELECT id FROM actions WHERE `+available+` ORDER BY id LIMIT 1) RETURNING id`,
+		machineID, now).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return []Action{}, nil
 	}
@@ -243,8 +250,8 @@ func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, s
 	}
 	for {
 		var pending bool
-		if err := s.db.Read.QueryRowContext(ctx,
-			`SELECT EXISTS (SELECT 1 FROM actions WHERE machine_id = ? AND status = 'pending')`, machineID).Scan(&pending); err != nil {
+		if err := s.db.Read.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM actions WHERE `+available+`)`,
+			machineID, time.Now().Unix()).Scan(&pending); err != nil {
 			return nil, err
 		}
 		if pending {
@@ -266,19 +273,44 @@ func (s *Store) Wait(ctx context.Context, machineID int64, wait time.Duration, s
 	}
 }
 
-// Finish stores how an in_progress action ended. A completed start, stop or restart is told to the
-// services domain first, which marks a service Tender stopped, so it doesn't alert as down, and
-// clears the mark on a start or restart. If that fails, the action stays in_progress and the
-// daemon's retry tries again.
-func (s *Store) Finish(ctx context.Context, machineID, id int64, p Patch) error {
-	if p.Status != StatusCompleted && p.Status != StatusFailed {
-		return server.Invalid("status must be completed or failed.")
+// Claim moves a pending action to in_progress: the daemon is about to run it. It does that once;
+// claiming it again, or after it expired, is a 409. The daemon runs an action only when its claim
+// succeeded, and retries a claim with the same Idempotency-Key, so a claim whose answer was lost
+// gets that answer replayed rather than a 409, and nothing else can claim it.
+func (s *Store) Claim(ctx context.Context, machineID, id int64) error {
+	if err := s.tidy(ctx, machineID, time.Now()); err != nil {
+		return err
+	}
+	res, err := s.db.Write.ExecContext(ctx, `UPDATE actions SET status = 'in_progress', updated_at = ? WHERE machine_id = ? AND id = ? AND status = 'pending'`,
+		time.Now().Unix(), machineID, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 1 {
+		return err
 	}
 	a, err := s.get(ctx, machineID, id)
 	if err != nil {
 		return err
 	}
-	if a.Status != StatusInProgress {
+	return server.Conflict("Action %d is %s, not pending, so it can't be claimed.", id, a.Status)
+}
+
+// Finish stores how an in_progress action ended. It also takes a late report, for an action the
+// hub gave up on as unanswered: the daemon keeps a report until the hub has it, so the real result
+// replaces that failure. A completed start, stop or restart is told to the services domain first,
+// which marks a service Tender stopped, so it doesn't alert as down, and clears the mark on a start
+// or restart. If that fails, the action stays as it was and the daemon's retry tries again.
+func (s *Store) Finish(ctx context.Context, machineID, id int64, p Patch) error {
+	if p.Status != StatusCompleted && p.Status != StatusFailed {
+		return server.Invalid("status must be in_progress, completed or failed.")
+	}
+	a, err := s.get(ctx, machineID, id)
+	if err != nil {
+		return err
+	}
+	late := a.Status == StatusFailed && deref(a.Output) == notAnswered
+	if a.Status != StatusInProgress && !late {
 		return server.Conflict("Action %d is %s, not in_progress, so it can't finish now.", id, a.Status)
 	}
 	if a.Type != TypeLogs && a.Service != nil && p.Status == StatusCompleted {
@@ -286,8 +318,9 @@ func (s *Store) Finish(ctx context.Context, machineID, id int64, p Patch) error 
 			return err
 		}
 	}
-	res, err := s.db.Write.ExecContext(ctx, `UPDATE actions SET status = ?, output = ?, updated_at = ? WHERE id = ? AND status = 'in_progress'`,
-		p.Status, p.Output, time.Now().Unix(), id)
+	res, err := s.db.Write.ExecContext(ctx,
+		`UPDATE actions SET status = ?, output = ?, updated_at = ? WHERE id = ? AND (status = 'in_progress' OR (status = 'failed' AND output = ?))`,
+		p.Status, p.Output, time.Now().Unix(), id, notAnswered)
 	if err != nil {
 		return err
 	}

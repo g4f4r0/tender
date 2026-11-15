@@ -3,6 +3,8 @@
 -- the service's name, so it reads well after the service is gone. since is a duration such as 1h,
 -- as it was asked. output is the logs, or why the action failed; a logs action's output is cleared
 -- some time after it finished, because logs can hold secrets, and output_cleared says so.
+-- handed_out_at is when the daemon was last handed the action while it was pending: it must claim
+-- it, moving it to in_progress, within 30 s, or the action is handed out again.
 CREATE TABLE actions (
   id             INTEGER PRIMARY KEY,
   machine_id     INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
@@ -15,6 +17,7 @@ CREATE TABLE actions (
   status         TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
   output         TEXT,
   output_cleared INTEGER NOT NULL DEFAULT 0 CHECK (output_cleared IN (0, 1)),
+  handed_out_at  INTEGER,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL,
   CHECK (service IS NOT NULL OR type = 'logs')

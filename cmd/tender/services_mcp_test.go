@@ -28,7 +28,9 @@ func fakeDaemon(t *testing.T, as *actions.Store, finish func(actions.Action) act
 				return
 			}
 			for _, a := range list {
-				_ = as.Finish(ctx, 1, a.ID, finish(a))
+				if as.Claim(ctx, 1, a.ID) == nil {
+					_ = as.Finish(ctx, 1, a.ID, finish(a))
+				}
 			}
 		}
 	}()

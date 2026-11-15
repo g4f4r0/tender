@@ -85,8 +85,9 @@ func (s *Store) take(w http.ResponseWriter, r *http.Request, stop <-chan struct{
 	return nil
 }
 
-// finish takes the daemon's report of how an action ended. It answers 204: the body would repeat
-// the logs, and the hub keeps a daemon's answers for a day to replay them on a retry.
+// finish takes the daemon's claim of an action, status in_progress, or its report of how the action
+// ended. It answers 204: the body would repeat the logs, and the hub keeps a daemon's answers for a
+// day to replay them on a retry.
 func (s *Store) finish(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r)
 	if err != nil {
@@ -96,7 +97,15 @@ func (s *Store) finish(w http.ResponseWriter, r *http.Request) error {
 	if err := server.Decode(w, r, &p); err != nil {
 		return err
 	}
-	if err := s.Finish(r.Context(), server.MachineID(r.Context()), id, p); err != nil {
+	if p.Status == StatusInProgress {
+		if p.Output != nil {
+			return server.Invalid("output is only for completed or failed.")
+		}
+		err = s.Claim(r.Context(), server.MachineID(r.Context()), id)
+	} else {
+		err = s.Finish(r.Context(), server.MachineID(r.Context()), id, p)
+	}
+	if err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)

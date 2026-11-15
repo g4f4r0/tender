@@ -65,7 +65,7 @@ func runDaemon(args []string, log *slog.Logger) error {
 	sd := services.NewDaemon(hub, cfg.Machine, socket, log)
 	sd.StateDir = *state
 	ad := actions.NewDaemon(hub, cfg.Machine, log)
-	ad.Services = sd
+	ad.Services, ad.StateDir = sd, *state
 	wg.Add(2)
 	go func() {
 		defer wg.Done()

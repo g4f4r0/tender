@@ -65,6 +65,6 @@ type Input struct {
 // Patch is the body of PATCH /v1/machines/{machine}/actions/{id}, with which the daemon reports
 // how an action ended.
 type Patch struct {
-	Status string  `json:"status"` // completed or failed
+	Status string  `json:"status"` // in_progress to claim the action, then completed or failed
 	Output *string `json:"output,omitempty"`
 }

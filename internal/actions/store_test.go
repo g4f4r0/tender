@@ -154,8 +154,11 @@ func TestStore(t *testing.T) {
 	}
 	for _, want := range []int64{logs.ID, stop.ID, journal.ID} {
 		list, err := s.Take(ctx, 1)
-		if err != nil || len(list) != 1 || list[0].ID != want || list[0].Status != StatusInProgress {
-			t.Fatalf("take = %+v, %v; want only action %d", list, err, want)
+		if err != nil || len(list) != 1 || list[0].ID != want || list[0].Status != StatusPending {
+			t.Fatalf("take = %+v, %v; want only action %d, still pending", list, err, want)
+		}
+		if err := s.Claim(ctx, 1, want); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if again, _ := s.Take(ctx, 1); len(again) != 0 {
@@ -206,7 +209,7 @@ func TestStore(t *testing.T) {
 	}
 
 	// Old actions fail: one never picked up, one never answered.
-	if _, err := s.Take(ctx, 1); err != nil {
+	if err := s.Claim(ctx, 1, start.ID); err != nil {
 		t.Fatal(err)
 	}
 	pending, _ := s.Create(ctx, 1, Input{Type: TypeRestart, Service: ptr("web")})
@@ -244,7 +247,7 @@ func TestOutputCleared(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Take(ctx, 1); err != nil {
+		if err := s.Claim(ctx, 1, a.ID); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.Finish(ctx, 1, a.ID, Patch{Status: StatusCompleted, Output: ptr("password=hunter2\n")}); err != nil {
@@ -271,7 +274,7 @@ func TestOutputCleared(t *testing.T) {
 	// The sweep clears them when nobody reads them, on every machine.
 	s.Keep = time.Millisecond
 	b, _ := s.Create(ctx, 2, Input{Type: TypeLogs})
-	if _, err := s.Take(ctx, 2); err != nil {
+	if err := s.Claim(ctx, 2, b.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Finish(ctx, 2, b.ID, Patch{Status: StatusCompleted, Output: ptr("x\n")}); err != nil {
@@ -388,5 +391,89 @@ func TestListReadsNoOutput(t *testing.T) {
 		if strings.TrimSpace(col) == "a.output" {
 			t.Errorf("the list selects a.output: %s", sel)
 		}
+	}
+}
+
+// An action the daemon was handed but didn't claim is handed out again after 30 s; meanwhile the
+// next one is. A claim moves it from pending to in_progress once.
+func TestClaim(t *testing.T) {
+	d := newDB(t)
+	s := NewStore(d, &fakeServices{})
+	ctx := context.Background()
+	a, _ := s.Create(ctx, 1, Input{Type: TypeRestart, Service: ptr("web")})
+	b, _ := s.Create(ctx, 1, Input{Type: TypeStop, Service: ptr("web")})
+	for _, want := range []int64{a.ID, b.ID} {
+		if list, err := s.Take(ctx, 1); err != nil || len(list) != 1 || list[0].ID != want {
+			t.Fatalf("take = %+v, %v; want %d", list, err, want)
+		}
+	}
+	if list, _ := s.Take(ctx, 1); len(list) != 0 {
+		t.Errorf("handed out again at once: %+v", list)
+	}
+	if list, err := s.Wait(ctx, 1, 600*time.Millisecond, nil); err != nil || len(list) != 0 {
+		t.Errorf("wait handed out again at once: %+v, %v", list, err)
+	}
+	if _, err := d.Write.Exec(`UPDATE actions SET handed_out_at = handed_out_at - 30 WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.Wait(ctx, 1, time.Second, nil); err != nil || len(list) != 1 || list[0].ID != a.ID || list[0].Status != StatusPending {
+		t.Fatalf("after 30 s unclaimed = %+v, %v; want %d again", list, err, a.ID)
+	}
+	if err := s.Claim(ctx, 1, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, a.ID); got.Status != StatusInProgress {
+		t.Errorf("claimed = %+v", got)
+	}
+	if err := s.Claim(ctx, 1, a.ID); status(err) != http.StatusConflict {
+		t.Errorf("claimed twice: %v", err)
+	}
+	if err := s.Claim(ctx, 2, b.ID); status(err) != http.StatusNotFound {
+		t.Errorf("another machine claimed it: %v", err)
+	}
+	if err := s.Finish(ctx, 1, b.ID, Patch{Status: StatusCompleted}); status(err) != http.StatusConflict {
+		t.Errorf("finished without a claim: %v", err)
+	}
+	if _, err := d.Write.Exec(`UPDATE actions SET handed_out_at = handed_out_at - 30, updated_at = updated_at - 30 WHERE id = ?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.Take(ctx, 1); len(list) != 0 {
+		t.Errorf("a claimed action was handed out again: %+v", list)
+	}
+}
+
+// A report that comes after the hub gave up on the action replaces "did not say how it ended",
+// and a completed stop still marks the service stopped by Tender. Nothing else is replaced.
+func TestLateFinish(t *testing.T) {
+	d := newDB(t)
+	svc := &fakeServices{}
+	s := NewStore(d, svc)
+	ctx := context.Background()
+	stop, _ := s.Create(ctx, 1, Input{Type: TypeStop, Service: ptr("web")})
+	never, _ := s.Create(ctx, 1, Input{Type: TypeStart, Service: ptr("web")})
+	if err := s.Claim(ctx, 1, stop.ID); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-16 * time.Minute).Unix()
+	if _, err := d.Write.Exec(`UPDATE actions SET created_at = ?, updated_at = ?`, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, stop.ID); got.Status != StatusFailed || deref(got.Output) != notAnswered {
+		t.Fatalf("expired = %+v", got)
+	}
+	if err := s.Finish(ctx, 1, stop.ID, Patch{Status: StatusCompleted}); err != nil {
+		t.Fatalf("late report: %v", err)
+	}
+	if got, _ := s.Get(ctx, 1, stop.ID); got.Status != StatusCompleted || got.Output != nil {
+		t.Errorf("after the late report = %+v", got)
+	}
+	if !slices.Equal(svc.finished, []string{"stop web"}) {
+		t.Errorf("the services domain heard %q", svc.finished)
+	}
+	if err := s.Finish(ctx, 1, stop.ID, Patch{Status: StatusFailed}); status(err) != http.StatusConflict {
+		t.Errorf("a finished action was replaced: %v", err)
+	}
+	if err := s.Finish(ctx, 1, never.ID, Patch{Status: StatusCompleted}); status(err) != http.StatusConflict {
+		t.Errorf("an action never picked up took a report: %v", err)
 	}
 }
