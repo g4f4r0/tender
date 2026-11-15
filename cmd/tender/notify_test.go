@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/backups"
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/services"
@@ -52,7 +53,17 @@ func TestLoadMachines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := loadMachines(ms, bs, ss)(ctx)
+	ls := logs.NewStore(d, testKey)
+	sink, err := ls.AddSink(ctx, logs.SinkInput{Name: "otel", Type: "otlp", Config: map[string]any{"endpoint": "https://otel.example.com/v1/logs"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendErr := "the sink answered 503 Service Unavailable"
+	if err := ls.SetStatus(ctx, 1, logs.StatusReport{Data: []logs.StatusInput{{SinkID: sink.ID, FailingSince: &at, LastError: &sendErr, LastDroppedAt: &at}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadMachines(ms, bs, ss, ls)(ctx)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -67,12 +78,16 @@ func TestLoadMachines(t *testing.T) {
 		a.DockerReportedAt == nil || time.Since(*a.DockerReportedAt) > time.Minute {
 		t.Errorf("a's services = %+v, docker %q; want %+v", a.Services, a.Docker, want)
 	}
+	if len(a.LogSinks) != 1 || a.LogSinks[0].Name != "otel" || a.LogSinks[0].LastError != sendErr || a.LogSinks[0].FailingSince == nil ||
+		a.LogSinks[0].LastDroppedAt == nil || b.LogSinks != nil {
+		t.Errorf("log sinks: a %+v, b %+v", a.LogSinks, b.LogSinks)
+	}
 	for range 2 {
 		if err := ss.Unreachable(ctx, 1, services.ReasonRefused); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got, err := loadMachines(ms, bs, ss)(ctx); err != nil || got[0].Docker != "unreachable" || got[0].DockerUnreachableReports != 2 ||
+	if got, err := loadMachines(ms, bs, ss, ls)(ctx); err != nil || got[0].Docker != "unreachable" || got[0].DockerUnreachableReports != 2 ||
 		got[0].Services[0].State != "unknown" {
 		t.Errorf("after two unreachable reports: %+v, %v", got[0], err)
 	}

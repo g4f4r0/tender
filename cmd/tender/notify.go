@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/g4f4r0/tender/internal/backups"
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/services"
@@ -20,8 +21,8 @@ func hubName() string {
 }
 
 // loadMachines returns what the notification rules need to know about every machine, from the
-// machines, backups and services stores. The notifications domain imports none of them.
-func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) func(context.Context) ([]notifications.Machine, error) {
+// machines, backups, services and logs stores. The notifications domain imports none of them.
+func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls *logs.Store) func(context.Context) ([]notifications.Machine, error) {
 	return func(ctx context.Context) ([]notifications.Machine, error) {
 		overviews, err := ms.List(ctx)
 		if err != nil {
@@ -47,13 +48,26 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 		for _, e := range engines {
 			byMachine[e.Machine] = e
 		}
+		health, err := ls.Health(ctx)
+		if err != nil {
+			return nil, err
+		}
+		shipping := map[string][]notifications.LogSink{}
+		for _, h := range health {
+			s := notifications.LogSink{Name: h.Sink, FailingSince: h.FailingSince, LastSentAt: h.LastSentAt, LastDroppedAt: h.LastDroppedAt}
+			if h.LastError != nil {
+				s.LastError = *h.LastError
+			}
+			shipping[h.Machine] = append(shipping[h.Machine], s)
+		}
 		byName := map[string]backups.Summary{}
 		for _, s := range summaries {
 			byName[s.Machine] = s
 		}
 		out := make([]notifications.Machine, len(overviews))
 		for i, o := range overviews {
-			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name]}
+			m := notifications.Machine{ID: o.ID, Name: o.Name, CreatedAt: o.CreatedAt, LastSeen: o.LastSeen, LastCompletedBackup: completed[o.Name],
+				LogSinks: shipping[o.Name]}
 			if e, ok := byMachine[o.Name]; ok {
 				if e.Docker != nil {
 					m.Docker = *e.Docker

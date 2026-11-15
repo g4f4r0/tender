@@ -17,6 +17,7 @@ import (
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
+	"github.com/g4f4r0/tender/internal/logs"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/mcp"
 	"github.com/g4f4r0/tender/internal/notifications"
@@ -104,6 +105,7 @@ func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger)
 	notifications.NewStore(d).Routes(srv, sender, hubName())
 	services.NewStore(d).Routes(srv)
 	newActions(d, key).Routes(srv)
+	logs.NewStore(d, key).Routes(srv)
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
 	tools := newTools(d, key, sender, log).Handler()
@@ -123,6 +125,7 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	notifications.NewStore(d).RegisterTools(s, ms.Lookup, sender, hubName())
 	services.NewStore(d).RegisterTools(s, ms.Lookup)
 	newActions(d, key).RegisterTools(s, ms.Lookup)
+	logs.NewStore(d, key).RegisterTools(s)
 	return s
 }
 
@@ -174,6 +177,10 @@ func checkKey(ctx context.Context, d *db.DB, key []byte, path string) error {
 	if err := backups.NewStore(d, key).CheckKey(ctx); err != nil {
 		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
 			"without it they can't be read, and each destination needs its keys saved again", config.EnvEncryptionKey, path, err)
+	}
+	if err := logs.NewStore(d, key).CheckKey(ctx); err != nil {
+		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
+			"without it they can't be read, and each log sink needs its secrets saved again", config.EnvEncryptionKey, path, err)
 	}
 	return nil
 }
@@ -228,7 +235,7 @@ func serveHub(args []string, log *slog.Logger) error {
 	go ms.PruneUsage(ctx, log)
 	go newActions(d, nil).Sweep(ctx, log)
 	engine := notifications.NewEngine(notifications.NewStore(d), sender, hubName(), log)
-	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d)))
+	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d), logs.NewStore(d, nil)))
 	// No write timeout: a daemon's long poll for actions holds its request up to 30 s.
 	srv := &http.Server{
 		Addr:              cfg.Listen,

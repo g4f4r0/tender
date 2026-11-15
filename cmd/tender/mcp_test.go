@@ -162,7 +162,8 @@ func TestToolsList(t *testing.T) {
 		t.Fatal(err)
 	}
 	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_recipient", "get_service_logs", "list_actions",
-		"list_backup_history", "list_backup_snapshots", "list_destinations", "list_machines", "list_notifications", "list_recipients", "list_services"}
+		"list_backup_history", "list_backup_snapshots", "list_destinations", "list_log_sinks", "list_machines", "list_notifications", "list_recipients",
+		"list_services"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
@@ -171,6 +172,7 @@ func TestToolsList(t *testing.T) {
 		"add_recipient": {false, false}, "remove_recipient": {true, true}, "send_test_email": {false, false},
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
 		"test_destination": {false, true},
+		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
 	}
 	// The tools that reach outside the hub.
 	open := map[string]bool{"send_test_email": true, "test_destination": true}

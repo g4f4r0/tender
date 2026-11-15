@@ -56,11 +56,11 @@ func rows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 func TestSchemaAppliesTwice(t *testing.T) {
 	d := schema(t)
-	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 12 {
-		t.Fatalf("migrations rows = %d, want 12 (machines, backups three times, notifications three times, services, actions twice, server twice)", n)
+	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 13 {
+		t.Fatalf("migrations rows = %d, want 13 (machines, backups three times, notifications three times, services, actions twice, logs, server twice)", n)
 	}
 	for _, table := range []string{"machines", "machine_usage", "backup_destinations", "backup_settings",
-		"backup_snapshots", "backup_history", "notifications", "notification_recipients", "service_engines", "services", "actions", "idempotency_keys"} {
+		"backup_snapshots", "backup_history", "notifications", "notification_recipients", "service_engines", "services", "actions", "log_sinks", "log_sink_status", "idempotency_keys"} {
 		if n := rows(t, d, `SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table); n != 1 {
 			t.Errorf("table %s missing", table)
 		}

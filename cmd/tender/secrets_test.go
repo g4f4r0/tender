@@ -191,6 +191,37 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 	rest("GET", "/v1/backups/destinations/tool-made", nil)
 	rest("GET", "/v1/machines/g4f4r0-apps/backups/settings", nil)
 
+	// Log sinks: an OTLP header and a webhook secret go in, and come out only to the daemon.
+	const (
+		otlpKey     = "MARKER-OTLP-HEADER-4c1d"
+		hookSecret  = "MARKER-WEBHOOK-SECRET-a9e0"
+		newHookSec  = "MARKER-NEW-WEBHOOK-SECRET-77b2"
+		toolHookSec = "MARKER-TOOL-WEBHOOK-SECRET-1f5c"
+	)
+	secrets = append(secrets, otlpKey, hookSecret, newHookSec, toolHookSec)
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "otel", "type": "otlp", "config": map[string]any{"endpoint": "https://otel.example.com/v1/logs",
+		"headers": map[string]any{"Authorization": "Bearer " + otlpKey}}})
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/in", "secret": hookSecret}})
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/in", "secret": hookSecret}}) // 409
+	rest("POST", "/v1/logs/sinks", map[string]any{"name": "bad", "type": "webhook", "config": map[string]any{"url": "nope", "secret": hookSecret}})                     // 422
+	rest("PATCH", "/v1/logs/sinks/hook", map[string]any{"config": map[string]any{"secret": newHookSec}})
+	rest("PATCH", "/v1/logs/sinks/hook", map[string]any{"config": map[string]any{"secret": newHookSec, "url": "nope"}}) // 422
+	rest("GET", "/v1/logs/sinks", nil)
+	rest("GET", "/v1/logs/sinks/otel", nil)
+	rest("GET", "/v1/logs/sinks/hook", nil)
+	tool("list_log_sinks", nil)
+	tool("add_log_sink", map[string]any{"name": "tool-hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/t", "secret": toolHookSec}})
+	tool("add_log_sink", map[string]any{"name": "tool-hook", "type": "webhook", "config": map[string]any{"url": "https://logs.example.com/t", "secret": toolHookSec}}) // 409
+	tool("update_log_sink", map[string]any{"sink": "otel", "config": map[string]any{"headers": map[string]any{"Authorization": "Bearer " + otlpKey}}})
+	tool("update_log_sink", map[string]any{"sink": "otel", "config": map[string]any{"headers": "***", "endpoint": "nope"}}) // 422
+	tool("list_log_sinks", nil)
+	status, body = restCall(t, hub.URL, "GET", "/v1/machines/g4f4r0-code/logs/sinks", machine.Token, nil)
+	for _, want := range []string{otlpKey, newHookSec, toolHookSec} {
+		if status != 200 || !strings.Contains(body, want) {
+			t.Fatalf("the daemon's sinks lack %q: %d %s", want, status, body)
+		}
+	}
+
 	checked := 0
 	for _, o := range outputs {
 		checked++
@@ -206,7 +237,7 @@ func TestNoSecretAppearsAnywhere(t *testing.T) {
 			}
 		}
 		// A destination's secret fields show only as hidden.
-		if m := regexp.MustCompile(`"(secret_access_key|access_key_id)": ?"([^"]*)"`).FindAllStringSubmatch(o.text, -1); m != nil {
+		if m := regexp.MustCompile(`"(secret_access_key|access_key_id|secret|headers)": ?"([^"]*)"`).FindAllStringSubmatch(o.text, -1); m != nil {
 			for _, f := range m {
 				if f[2] != "***" {
 					t.Errorf("%s shows %s as %q, want ***", o.label, f[1], f[2])

@@ -405,7 +405,7 @@ func TestHubErrorWithoutAProblemBody(t *testing.T) {
 }
 
 func TestGroupsPrintUsage(t *testing.T) {
-	for _, group := range []string{"machines", "destinations", "backups", "recipients", "email"} {
+	for _, group := range []string{"machines", "destinations", "backups", "recipients", "email", "sinks"} {
 		var out bytes.Buffer
 		run := hubCommands[group]
 		if err := run(nil, session{out: &out}); !errors.Is(err, errUsageShown) || !strings.HasPrefix(out.String(), "Usage: tender "+group+" COMMAND\n") {
@@ -424,7 +424,8 @@ func TestGroupsPrintUsage(t *testing.T) {
 func TestEveryHubCommandHasUsageThatFits(t *testing.T) {
 	for _, args := range [][]string{
 		{"status"}, {"machines", "list"}, {"machines", "add"}, {"machines", "remove"}, {"machines", "rotate-token"},
-		{"destinations", "list"}, {"destinations", "add"}, {"destinations", "remove"},
+		{"destinations", "list"}, {"destinations", "add"}, {"destinations", "update"}, {"destinations", "test"}, {"destinations", "remove"},
+		{"sinks", "list"}, {"sinks", "add"}, {"sinks", "show"}, {"sinks", "update"}, {"sinks", "remove"},
 		{"backups", "status"}, {"backups", "set"}, {"backups", "unset"},
 		{"recipients", "list"}, {"recipients", "add"}, {"recipients", "remove"}, {"email", "test"},
 	} {
@@ -443,7 +444,7 @@ func TestEveryHubCommandHasUsageThatFits(t *testing.T) {
 			}
 		}
 	}
-	for _, text := range []string{machinesUsage, destinationsUsage, backupsUsage, recipientsUsage, emailUsage} {
+	for _, text := range []string{machinesUsage, destinationsUsage, backupsUsage, recipientsUsage, emailUsage, sinksUsage, usage} {
 		for _, line := range strings.Split(text, "\n") {
 			if len(line) > 99 {
 				t.Errorf("line over 99 characters: %q", line)
