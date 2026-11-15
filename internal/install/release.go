@@ -2,6 +2,7 @@ package install
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -168,8 +169,9 @@ func parseVersion(s string) (version, bool) {
 	return v, errors.Join(errs[:]...) == nil
 }
 
-// CompareVersions returns -1, 0 or 1 as a is older than, the same as or newer than b. A version with
-// a prerelease part is older than the same version without one. A version that isn't one, such as
+// CompareVersions returns -1, 0 or 1 as a is older than, the same as or newer than b, as semver
+// orders them: a version with a prerelease part is older than the same version without one, and
+// prerelease identifiers compare one by one, numbers by value. A version that isn't one, such as
 // "dev", is older than every version.
 func CompareVersions(a, b string) int {
 	va, oka := parseVersion(a)
@@ -182,13 +184,14 @@ func CompareVersions(a, b string) int {
 	case !okb:
 		return 1
 	}
-	for _, d := range [][2]int{{va.major, vb.major}, {va.minor, vb.minor}, {va.patch, vb.patch}} {
-		if d[0] != d[1] {
-			if d[0] < d[1] {
-				return -1
-			}
-			return 1
-		}
+	if c := cmp.Compare(va.major, vb.major); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(va.minor, vb.minor); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(va.patch, vb.patch); c != 0 {
+		return c
 	}
 	switch {
 	case va.pre == vb.pre:
@@ -197,10 +200,44 @@ func CompareVersions(a, b string) int {
 		return 1
 	case vb.pre == "":
 		return -1
-	case va.pre < vb.pre:
-		return -1
 	}
-	return 1
+	return comparePre(strings.Split(va.pre, "."), strings.Split(vb.pre, "."))
+}
+
+// comparePre compares prerelease identifiers as semver does: numbers by value and below words,
+// words in ASCII order, and a shorter list first when the longer one starts with it.
+func comparePre(a, b []string) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		na, erra := strconv.ParseUint(a[i], 10, 64)
+		nb, errb := strconv.ParseUint(b[i], 10, 64)
+		var c int
+		switch {
+		case erra == nil && errb == nil:
+			c = cmp.Compare(na, nb)
+		case erra == nil:
+			c = -1
+		case errb == nil:
+			c = 1
+		default:
+			c = strings.Compare(a[i], b[i])
+		}
+		if c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+// devPattern is the prerelease part of a build between releases, as git describe names it: the
+// commits since the tag and the commit, such as 4-gabc123, or anything -dirty.
+var devPattern = regexp.MustCompile(`^[0-9]+-g[0-9a-f]+(-dirty)?$|(^|-)dirty$`)
+
+// DevBuild reports whether v is a development build, such as dev, 0.3.1-4-gabc123 or
+// 0.3.1-dirty. It may be newer than the latest release, so the hub never updates it and an
+// update job refuses it; root can still update it by hand.
+func DevBuild(v string) bool {
+	pv, ok := parseVersion(v)
+	return !ok || devPattern.MatchString(pv.pre)
 }
 
 // ValidVersion reports whether s is a version a daemon may report, such as 0.3.1 or 0.3.1-4-gabc123.

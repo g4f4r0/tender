@@ -92,7 +92,7 @@ func (s *Store) autoStart(ctx context.Context, now time.Time) (int64, error) {
 	}
 	var pick []Machine
 	for _, m := range ms {
-		if effective(m.Updates, st.Mode) == ModeAuto && m.Version != nil && install.CompareVersions(*latest.Version, *m.Version) > 0 &&
+		if effective(m.Updates, st.Mode) == ModeAuto && m.Version != nil && !install.DevBuild(*m.Version) && install.CompareVersions(*latest.Version, *m.Version) > 0 &&
 			m.LastSeen != nil && now.Sub(*m.LastSeen) < silentAfter {
 			pick = append(pick, m)
 		}

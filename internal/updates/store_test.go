@@ -417,3 +417,25 @@ func TestRoutes(t *testing.T) {
 		t.Errorf("overview during a rollout: %d %s", status, body)
 	}
 }
+
+// A machine on a development build may be newer than the release: the hub never updates it.
+func TestDevBuildsStayOut(t *testing.T) {
+	r := newRig(t)
+	r.machine("a").Version = ptr("0.3.0-4-gabc123")
+	r.check(t0)
+	_, err := r.store.Start(context.Background(), RolloutInput{Machines: []string{"a"}})
+	if err == nil || !strings.Contains(err.Error(), "development build") {
+		t.Errorf("start a development build: %v", err)
+	}
+	o, err := r.store.Overview(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range o.Data {
+		if m.Machine == "a" && m.UpdateAvailable {
+			t.Error("a development build shows an update available")
+		}
+	}
+	r.step(t0)
+	r.want(1, "in_progress", "hub:in_progress", "b:pending")
+}

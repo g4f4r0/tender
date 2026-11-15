@@ -23,6 +23,8 @@ The hub moves to the next machine once a machine reports the new version. It sto
 
 An update never installs a prerelease, a draft or an older version. Only root can go back to an older release, by hand on that machine, with `sudo tender update --version X.Y.Z`.
 
+The hub never updates a machine that runs a development build, such as `0.3.1-4-gabc123` or one ending in `-dirty`, which may be newer than the release. Update it by hand on that machine with `sudo tender update`.
+
 ## Choose auto or manual
 
 The hub's mode applies to every machine that doesn't have its own.

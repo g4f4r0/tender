@@ -171,7 +171,7 @@ func (s *Store) Overview(ctx context.Context) (Overview, error) {
 	o := Overview{Settings: st, Latest: latest, Data: []MachineVersion{}}
 	for _, m := range ms {
 		mv := MachineVersion{Machine: m.Name, Version: m.Version, Updates: m.Updates, Mode: effective(m.Updates, st.Mode)}
-		mv.UpdateAvailable = m.Version != nil && latest.Version != nil && install.CompareVersions(*latest.Version, *m.Version) > 0
+		mv.UpdateAvailable = m.Version != nil && !install.DevBuild(*m.Version) && latest.Version != nil && install.CompareVersions(*latest.Version, *m.Version) > 0
 		o.Data = append(o.Data, mv)
 	}
 	if id, err := s.current(ctx); err != nil {
@@ -231,7 +231,7 @@ func (s *Store) Start(ctx context.Context, in RolloutInput) (Rollout, error) {
 	var pick []Machine
 	if len(in.Machines) == 0 {
 		for _, m := range ms {
-			if m.Version != nil { // a daemon before v0.3.0 can't take an update
+			if m.Version != nil && !install.DevBuild(*m.Version) { // a daemon before v0.3.0 can't take an update
 				pick = append(pick, m)
 			}
 		}
@@ -246,6 +246,9 @@ func (s *Store) Start(ctx context.Context, in RolloutInput) (Rollout, error) {
 			return Rollout{}, server.NotFound("Machine %q doesn't exist.", name)
 		case ms[i].Version == nil:
 			return Rollout{}, server.Invalid("%s runs a Tender before v0.3.0, which can't update through the hub. Update it once by hand, on that machine: sudo tender update", name)
+		case install.DevBuild(*ms[i].Version):
+			return Rollout{}, server.Invalid("%s runs a development build of Tender, %s, which may be newer than the release, so the hub doesn't update it. "+
+				"Update it by hand, on that machine: sudo tender update", name, *ms[i].Version)
 		case slices.ContainsFunc(pick, func(m Machine) bool { return m.Name == name }):
 			continue
 		}

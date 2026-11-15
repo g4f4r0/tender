@@ -99,7 +99,13 @@ func (in *Installer) Update(ctx context.Context, version string) error {
 // when the hub rolls out a release. It refuses a downgrade, and leaves how it ended in the daemon's
 // state folder, which the daemon reports to the hub.
 func (in *Installer) Apply(ctx context.Context, version string) error {
-	tag, err := in.pick(ctx, version, false)
+	tag, err := "", error(nil)
+	if DevBuild(in.Version) {
+		err = fmt.Errorf("this machine runs a development build of Tender, %s, which may be newer than %s, so nothing was changed. "+
+			"Root can update it by hand with: sudo tender update", in.Version, version)
+	} else {
+		tag, err = in.pick(ctx, version, false)
+	}
 	if err == nil && tag != "" {
 		err = in.swap(ctx, tag)
 	}

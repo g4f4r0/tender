@@ -473,11 +473,39 @@ func TestCompareVersions(t *testing.T) {
 	}{
 		{"0.3.0", "v0.3.0", 0}, {"0.3.1", "0.3.0", 1}, {"0.2.9", "0.3.0", -1}, {"1.0.0", "0.99.99", 1},
 		{"0.3.0-rc.1", "0.3.0", -1}, {"0.3.0", "0.3.0-rc.1", 1}, {"dev", "0.1.0", -1}, {"0.10.0", "0.9.0", 1},
-		{"0.3.0-5-gabc123", "0.3.0", -1},
+		{"0.3.0-5-gabc123", "0.3.0", -1}, {"0.3.0-rc.10", "0.3.0-rc.9", 1}, {"0.3.0-rc.9", "0.3.0-rc.10", -1},
+		{"0.3.0-rc.1", "0.3.0-rc.beta", -1}, {"0.3.0-alpha", "0.3.0-alpha.1", -1}, {"0.3.0-rc.1", "0.3.0-rc.1", 0},
 	} {
 		if got := CompareVersions(c.a, c.b); got != c.want {
 			t.Errorf("CompareVersions(%s, %s) = %d, want %d", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// A build between releases is a development build: the hub never updates it.
+func TestDevBuild(t *testing.T) {
+	for v, want := range map[string]bool{
+		"0.3.1": false, "v0.3.1": false, "0.3.1-rc.1": false, "0.3.1-4-gabc123": true, "0.3.1-4-gabc123-dirty": true,
+		"0.3.1-dirty": true, "dev": true, "": true,
+	} {
+		if got := DevBuild(v); got != want {
+			t.Errorf("DevBuild(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// The update job refuses to replace a development build, which may be newer than the release;
+// root still can, by hand.
+func TestApplyRefusesADevBuild(t *testing.T) {
+	e := newEnv(t)
+	installBoth(t, e)
+	newRelease(t, e, goodSums)
+	e.in.Version = "0.1.0-3-gabc123"
+	if err := e.in.Apply(context.Background(), "v0.2.0"); err == nil || !strings.Contains(err.Error(), "development build") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := e.in.Update(context.Background(), ""); err != nil {
+		t.Fatalf("by hand: %v\n%s", err, e.out.String())
 	}
 }
 
