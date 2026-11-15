@@ -12,6 +12,7 @@ func (s *Store) Routes(srv *server.Server) {
 	srv.Handle("GET /v1/machines", srv.People(s.list))
 	srv.Handle("POST /v1/machines", srv.People(s.create))
 	srv.Handle("GET /v1/machines/{machine}", srv.People(s.get))
+	srv.Handle("PATCH /v1/machines/{machine}", srv.People(s.patch))
 	srv.Handle("DELETE /v1/machines/{machine}", srv.People(s.remove))
 	srv.Handle("POST /v1/machines/{machine}/token", srv.People(s.rotateToken))
 	srv.Handle("GET /v1/machines/{machine}/usage", srv.People(s.listUsage))
@@ -59,6 +60,19 @@ func (s *Store) remove(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *Store) patch(w http.ResponseWriter, r *http.Request) error {
+	var p Patch
+	if err := server.Decode(w, r, &p); err != nil {
+		return err
+	}
+	o, err := s.Update(r.Context(), r.PathValue("machine"), p)
+	if err != nil {
+		return err
+	}
+	server.WriteJSON(w, http.StatusOK, o)
 	return nil
 }
 
