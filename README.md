@@ -1,8 +1,8 @@
 # Tender
 
-Whole-server backups for your Linux machines, one place to see how they're doing, and an MCP endpoint so your AI client can run it all for you.
+Whole-server backups for your Linux machines, control of their Docker services, one place to see how they're doing, and an MCP endpoint so your AI client can run it all for you.
 
-You install a small daemon on each machine and one hub on any of them. Each night, every daemon backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects results and usage from every machine, and emails you when a backup fails, a machine goes quiet or a disk fills up.
+You install a small daemon on each machine and one hub on any of them. Each night, every daemon backs up its whole machine to your S3 bucket, keeps snapshots for as long as you choose, and once a week reads part of the data back to prove it restores. The hub holds the settings, collects results and usage from every machine, and emails you when a backup fails, a machine goes quiet, a disk fills up or a service stops.
 
 You set everything up with the `tender` command or from an AI client such as Claude Code. Root is needed only to install.
 
@@ -13,9 +13,10 @@ Tender is one static Go binary. It uses [restic](https://restic.net) underneath,
 1. Whole-server backups of every real filesystem, without caches, temp files, container images or `node_modules`. Snapshots are deduplicated and encrypted before they leave the machine.
 2. Retention by days, and a weekly check that reads back 5% of the stored data.
 3. CPU load, memory, disk and uptime from every machine, once a minute.
-4. Email alerts to as many people as you like: one email when something goes wrong, one if it gets worse and one when it's fixed.
-5. MCP tools for AI clients that can do everything the `tender` command does, from "did last night's backups work?" to adding a machine.
-6. Backups keep running when the hub is down. Daemons use their last known settings and send their reports once the hub is back.
+4. Every Docker container on every machine, with its state and health, and a way to start, stop, restart it and read its logs.
+5. Email alerts to as many people as you like: one email when something goes wrong, one if it gets worse and one when it's fixed.
+6. MCP tools for AI clients that can do everything the `tender` command does, from "did last night's backups work?" to adding a machine.
+7. Backups keep running when the hub is down. Daemons use their last known settings and send their reports once the hub is back.
 
 ## Requirements
 
@@ -100,15 +101,34 @@ To add more machines, repeat steps 3 and 5 for each.
 
 | Command | What it does |
 | --- | --- |
-| `tender status` | Every machine, its last backup and the open alerts |
+| `tender status` | Every machine, its last backup, its services and the open alerts |
 | `tender machines list \| add \| remove \| rotate-token` | Manage machines and their tokens |
 | `tender destinations list \| add \| remove` | Manage where backups go |
 | `tender backups status \| set \| unset` | See and change each machine's backups |
+| `tender services list \| start \| stop \| restart \| logs \| alerts` | See and control each machine's Docker services |
 | `tender recipients list \| add \| remove` | Manage who gets alert emails |
 | `tender email test` | Send a test email to every recipient |
 | `tender update` | Install the latest release on this machine (root) |
 
 Run `tender help`, or add `--help` to any command, for the details.
+
+## Services
+
+Every daemon reports its machine's Docker containers to the hub once a minute. Each container is a service, named by its container name, such as `shop-web-1` for a compose service. A machine without Docker has no services and works as before.
+
+```sh
+tender services list web-1
+tender services restart web-1 shop-web-1
+tender services logs web-1 shop-web-1 --lines 500
+tender services alerts web-1 shop-worker-1 off
+```
+
+`start`, `stop`, `restart` and `logs` go to the machine's daemon, which runs them through Docker's API. The command waits up to 60 seconds for the result. If the daemon hasn't answered by then, the action stays queued for 15 minutes. `logs` shows at most the last 2000 lines and 256 KiB.
+
+The daemon reaches Docker through `/var/run/docker.sock`, as a member of the `docker` group. The installer adds the group to `tenderd` when the machine has one. If you install Docker after Tender, run `sudo tender install refresh`.
+
+> [!WARNING]
+> The `docker` group is root-equivalent: whoever can use Docker's socket controls the whole machine. Tender's daemon uses it only to list, start, stop and restart containers and to read their logs. Anyone who can reach the hub can do the same, so keep the hub private.
 
 ## Ask your AI client
 
@@ -132,6 +152,11 @@ The hub checks every machine once a minute:
 | `backup_failed` | The latest finished backup failed | critical |
 | `backup_stale` | No completed backup for 26 hours | warning, critical after 50 hours |
 | `disk_full` | The disk is at least 90% full | warning, critical at 95% |
+| `service_down` | The service is exited or dead in two reports in a row, unless Tender stopped it | critical |
+| `service_restarting` | The service is restarting, or Docker restarted it again, in two reports in a row | critical |
+| `service_unhealthy` | The service's health check fails in two reports in a row | warning |
+
+Each service has its own alerts, and you can turn them off and on with `tender services alerts`. Turning them off resolves the service's open alerts. A silent machine alerts once, as `machine_silent`, not for each of its services.
 
 You get one email when an alert opens, one if it gets worse, and one when it resolves. If a send fails, the hub keeps retrying until the email goes out.
 
@@ -183,7 +208,7 @@ The hub keeps everything in one SQLite database and listens on `127.0.0.1:8080` 
 
 Each daemon signs in with its own token. The hub stores only a SHA-256 hash of it, and a token works only for its own machine: it can't report for another one or get another machine's keys.
 
-The daemon runs as the `tender` system user. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, but can write only to its own folder. It keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
+The daemon runs as the `tender` system user. It can read every file on the machine through the `CAP_DAC_READ_SEARCH` capability, but can write only to its own folder. On a machine with Docker it is also in the `docker` group, which is root-equivalent. It keeps the last settings it got from the hub, readable only by itself, so backups go on when the hub is unreachable.
 
 Every backup covers all real filesystems on the machine and leaves out:
 
