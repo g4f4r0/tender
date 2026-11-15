@@ -122,7 +122,7 @@ func (e *Engine) Tick(ctx context.Context, now time.Time, ms []Machine) error {
 	}
 	for _, n := range sortedByID(rows) {
 		k := keyOf(n)
-		kept := byName[k.machine].keeps(n, silent[k.machine])
+		kept := byName[k.machine].keeps(n, silent[k.machine], now)
 		switch {
 		case !holds[k] && !kept:
 			err = e.resolve(ctx, now, n, to)

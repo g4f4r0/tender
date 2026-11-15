@@ -113,10 +113,14 @@ type MachineServices struct {
 	Data    []Service `json:"data"`
 
 	unreachableReports int
+	reportedAt         *time.Time
 }
 
 // UnreachableReports is how many reports in a row said Docker is unreachable.
 func (m MachineServices) UnreachableReports() int { return m.unreachableReports }
+
+// ReportedAt is when the machine's daemon last sent a services report, or nil before the first.
+func (m MachineServices) ReportedAt() *time.Time { return m.reportedAt }
 
 // ServicePatch is the JSON Merge Patch body of PATCH /v1/machines/{machine}/services/{service}.
 type ServicePatch struct {

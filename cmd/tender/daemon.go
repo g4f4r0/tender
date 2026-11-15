@@ -63,6 +63,7 @@ func runDaemon(args []string, log *slog.Logger) error {
 		socket = services.DefaultSocket
 	}
 	sd := services.NewDaemon(hub, cfg.Machine, socket, log)
+	sd.StateDir = *state
 	ad := actions.NewDaemon(hub, cfg.Machine, log)
 	ad.Services = sd
 	wg.Add(2)

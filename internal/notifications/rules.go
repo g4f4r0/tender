@@ -35,6 +35,10 @@ const (
 	// serviceReports is how many reports in a row must find a service down, restarting or
 	// unhealthy before it alerts, so a quick restart or a deploy doesn't.
 	serviceReports = 2
+
+	// dockerSilentAfter is how long a daemon that still sends usage may go without a services
+	// report, once it has sent one, before its Docker counts as unreachable.
+	dockerSilentAfter = 5 * time.Minute
 )
 
 // Machine is what the rules need to know about one machine. The hub's wiring fills it from the
@@ -58,6 +62,7 @@ type Machine struct {
 	// unreachable, or empty before any report, and how many reports in a row said unreachable.
 	Docker                   string
 	DockerUnreachableReports int
+	DockerReportedAt         *time.Time // when the daemon's latest services report arrived; nil before the first
 }
 
 // The Docker states a daemon reports.
@@ -75,14 +80,14 @@ const (
 // report still finds the service so, because after an outage its count of reports in a row starts
 // again: it resolves once a report doesn't. The alerts of a service whose alerts are off, or
 // that is gone, never stay.
-func (m Machine) keeps(n Notification, silent bool) bool {
+func (m Machine) keeps(n Notification, silent bool, now time.Time) bool {
 	switch {
 	case n.Service != nil:
 		i := slices.IndexFunc(m.Services, func(s Service) bool { return s.Name == *n.Service })
 		if i < 0 || !m.Services[i].AlertsEnabled {
 			return false
 		}
-		if silent || m.Docker == dockerUnreachable {
+		if silent || m.Docker == dockerUnreachable || m.dockerSilent(now) {
 			return true
 		}
 		return slices.ContainsFunc(evaluateService(m.Name, m.Services[i], 1), func(f finding) bool { return f.typ == n.Type })
@@ -90,6 +95,13 @@ func (m Machine) keeps(n Notification, silent bool) bool {
 		return silent
 	}
 	return false
+}
+
+// dockerSilent says the daemon still sends usage but has sent no services report for
+// dockerSilentAfter, after it sent one: it lost Docker without saying so.
+func (m Machine) dockerSilent(now time.Time) bool {
+	return m.DockerReportedAt != nil && m.LastSeen != nil &&
+		now.Sub(*m.DockerReportedAt) >= dockerSilentAfter && now.Sub(*m.LastSeen) < dockerSilentAfter
 }
 
 // Service is what the rules need to know about one Docker service. The hub's wiring fills it
@@ -184,11 +196,16 @@ func evaluate(m Machine, now time.Time) []finding {
 	if len(out) > 0 && out[0].typ == TypeMachineSilent {
 		return out
 	}
-	if m.DockerUnreachableReports >= serviceReports {
+	switch {
+	case m.DockerUnreachableReports >= serviceReports:
 		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
 			fmt.Sprintf("Docker on %s is not answering: its socket refuses connections or doesn't answer. Its services' states are unknown until it is back.", m.Name), ""})
+	case m.dockerSilent(now):
+		out = append(out, finding{TypeDockerUnreachable, SeverityCritical,
+			fmt.Sprintf("Docker on %s hasn't been reported since %s, though the machine still reports. Its services' states are unknown until it is back.",
+				m.Name, formatTime(*m.DockerReportedAt)), ""})
 	}
-	if m.Docker == dockerUnreachable { // its services' states are unknown
+	if m.Docker == dockerUnreachable || m.dockerSilent(now) { // its services' states are unknown
 		return out
 	}
 	for _, s := range m.Services {

@@ -72,7 +72,7 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Service, error) {
 // machineID is 0, with what the latest report said about its Docker, by machine name.
 func (s *Store) Machines(ctx context.Context, machineID int64) ([]MachineServices, error) {
 	rows, err := s.db.Read.QueryContext(ctx, `
-		SELECT m.name, e.docker, coalesce(e.unreachable_reports, 0)
+		SELECT m.name, e.docker, coalesce(e.unreachable_reports, 0), e.updated_at
 		FROM machines m LEFT JOIN service_engines e ON e.machine_id = m.id
 		WHERE m.id = ? OR (? = 0 AND (e.id IS NOT NULL OR EXISTS (SELECT 1 FROM services s WHERE s.machine_id = m.id)))
 		ORDER BY m.name`, machineID, machineID)
@@ -83,8 +83,13 @@ func (s *Store) Machines(ctx context.Context, machineID int64) ([]MachineService
 	at := map[string]int{}
 	for rows.Next() {
 		ms := MachineServices{Data: []Service{}}
-		if err := rows.Scan(&ms.Machine, &ms.Docker, &ms.unreachableReports); err != nil {
+		var reported *int64
+		if err := rows.Scan(&ms.Machine, &ms.Docker, &ms.unreachableReports, &reported); err != nil {
 			return nil, errors.Join(err, rows.Close())
+		}
+		if reported != nil {
+			at := time.Unix(*reported, 0).UTC()
+			ms.reportedAt = &at
 		}
 		at[ms.Machine] = len(out)
 		out = append(out, ms)

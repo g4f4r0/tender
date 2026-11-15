@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,12 +37,15 @@ type Daemon struct {
 	Docker  *Docker
 	Log     *slog.Logger
 	Every   time.Duration // between reports, a minute
+	// StateDir is the daemon's state folder, where it remembers it saw Docker. Empty remembers
+	// nothing past a restart.
+	StateDir string
 
 	// turn lets one report (list and PUT) or one action (run and PATCH, under Lock) go at a time,
 	// so a report can't carry a state read before an action and reach the hub after its result.
 	turn    sync.Mutex
 	report  chan struct{}     // asks for a report now, after an action changed a container
-	seen    bool              // Docker answered since the daemon started, so losing it is an outage
+	seen    bool              // Docker answered on this machine, so losing it is an outage; see sawDocker
 	problem string            // the last Docker problem logged, so it is logged once
 	hubErr  string            // the last hub error logged, so it is logged once
 	samples map[string]sample // each running container's last usage reading, by sampleKey
@@ -98,7 +103,7 @@ func (d *Daemon) Service(ctx context.Context, typ, service string, lines int, si
 }
 
 // reportNow sends the hub the full container list. It first pings Docker: when its socket is
-// there but doesn't answer, or this daemon has seen Docker before and can't reach it now, it tells
+// there but doesn't answer, or Docker answered on this machine before (see sawDocker) and can't be reached now, it tells
 // the hub Docker is unreachable. A machine that never had Docker sends nothing. A list that fails
 // after Docker answered is logged, and the hub keeps the last one.
 func (d *Daemon) reportNow(ctx context.Context) {
@@ -106,11 +111,11 @@ func (d *Daemon) reportNow(ctx context.Context) {
 	defer d.turn.Unlock()
 	if err := d.Docker.Ping(ctx); err != nil {
 		if ctx.Err() == nil {
-			d.unreachable(ctx, err, errors.Is(err, errUnreachable) || d.seen)
+			d.unreachable(ctx, err, errors.Is(err, errUnreachable) || d.sawDocker())
 		}
 		return
 	}
-	d.seen = true
+	d.rememberDocker()
 	lctx, cancel := context.WithTimeout(ctx, listTimeout)
 	list, err := d.Docker.Containers(lctx)
 	cancel()
@@ -195,6 +200,33 @@ func sampleKey(sv ServiceInput) string {
 		return sv.ContainerID
 	}
 	return sv.ContainerID + "@" + sv.StartedAt.Format(time.RFC3339Nano)
+}
+
+// seenFile marks, in the state folder, that this machine's daemon has seen Docker answer.
+const seenFile = "docker-seen"
+
+// sawDocker says this daemon, or one before it on this machine, has seen Docker answer.
+func (d *Daemon) sawDocker() bool {
+	if !d.seen && d.StateDir != "" {
+		_, err := os.Stat(filepath.Join(d.StateDir, seenFile))
+		d.seen = err == nil
+	}
+	return d.seen
+}
+
+// rememberDocker notes that Docker answered, in memory and once in the state folder, so a
+// restart doesn't forget it.
+func (d *Daemon) rememberDocker() {
+	if d.sawDocker() {
+		return
+	}
+	d.seen = true
+	if d.StateDir == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(d.StateDir, seenFile), nil, 0o600); err != nil {
+		d.Log.Warn("could not note that this machine has Docker", "error", err)
+	}
 }
 
 // unreachable logs once why Docker can't be reached and, when tell, tells the hub.

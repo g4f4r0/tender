@@ -299,3 +299,37 @@ func TestDockerUnreachableAlert(t *testing.T) {
 		t.Errorf("rows after Docker is back = %q, want %q", got, want)
 	}
 }
+
+// A daemon that still sends usage but stopped sending services reports, after it had sent them,
+// has lost Docker without saying so: after 5 minutes that is docker_unreachable, and the services'
+// states are unknown. A machine whose usage stopped too is just silent.
+func TestDockerReportsStop(t *testing.T) {
+	down := Service{Name: "web", State: "exited", ExitCode: ptr(int64(1)), AlertsEnabled: true, DownReports: 2}
+	for _, c := range []struct {
+		name               string
+		reported, lastSeen time.Duration // before t0
+		want               []string
+	}{
+		{"fresh", time.Minute, 0, []string{"service_down:critical"}},
+		{"4 minutes old", 4 * time.Minute, 0, []string{"service_down:critical"}},
+		{"5 minutes old, usage fresh", 5 * time.Minute, 30 * time.Second, []string{"docker_unreachable:critical"}},
+		{"usage stopped as well", 6 * time.Minute, 6 * time.Minute, []string{"service_down:critical"}},
+	} {
+		m := up(-c.lastSeen, down)
+		m.Docker, m.DockerReportedAt = "running", ptr(t0.Add(-c.reported))
+		if got := summary(evaluate(m, t0)); !slices.Equal(got, c.want) {
+			t.Errorf("%s: findings = %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	// The service's open alert stays while Docker's reports are missing, and resolves with it.
+	r := newRig(t)
+	r.tick(0, up(0, down))
+	m := up(6*time.Minute, down)
+	m.Docker, m.DockerReportedAt = "running", ptr(t0)
+	m.Services[0].State = "running"
+	r.tick(6*time.Minute, m)
+	if got, want := r.serviceRows(), []string{"service_down web sent", "docker_unreachable - sent"}; !slices.Equal(got, want) {
+		t.Errorf("rows = %q, want %q", got, want)
+	}
+}

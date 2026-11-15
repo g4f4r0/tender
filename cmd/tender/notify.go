@@ -58,7 +58,7 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store) fun
 				if e.Docker != nil {
 					m.Docker = *e.Docker
 				}
-				m.DockerUnreachableReports = e.UnreachableReports()
+				m.DockerUnreachableReports, m.DockerReportedAt = e.UnreachableReports(), e.ReportedAt()
 				for _, s := range e.Data {
 					m.Services = append(m.Services, notifications.Service{
 						Name: s.Name, State: s.State, ExitCode: s.ExitCode, RestartCount: s.RestartCount, RestartPolicy: s.RestartPolicy,

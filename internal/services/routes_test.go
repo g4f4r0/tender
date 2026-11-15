@@ -535,3 +535,26 @@ func TestDaemonStatsUnavailable(t *testing.T) {
 		t.Errorf("after a failed stats read: %+v, %v; want the last memory numbers", web, err)
 	}
 }
+
+// The daemon remembers in its state folder that it saw Docker, so losing Docker while the daemon
+// restarts is still an outage, not a machine that never had Docker.
+func TestDaemonRemembersDocker(t *testing.T) {
+	h := newTestHub(t)
+	f := newFakeDocker(t, &fakeContainer{ID: "aaa", Name: "web", State: "running"})
+	state := t.TempDir()
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	d := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, quiet)
+	d.StateDir = state
+	ctx := context.Background()
+	d.reportNow(ctx)
+	if err := os.Remove(f.socket); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewDaemon(client.New(h.URL, "token-a"), "a", f.socket, quiet)
+	restarted.StateDir = state
+	restarted.reportNow(ctx)
+	ms, err := NewStore(h.db).Machines(ctx, 1)
+	if err != nil || ms[0].Docker == nil || *ms[0].Docker != DockerUnreachable {
+		t.Errorf("after a restart without Docker: %+v, %v; want unreachable", ms, err)
+	}
+}
