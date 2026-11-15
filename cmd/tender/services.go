@@ -53,7 +53,8 @@ func twoArgs(fs *flag.FlagSet, args []string) (string, string, error) {
 func servicesList(args []string, s session) error {
 	fs := newFlagSet("services list", "[MACHINE] [--hub URL]",
 		"List every machine's Docker services, or one machine's: the state Docker reports (with the exit code once stopped), "+
-			"the health check, its memory (with its limit) and CPU from the latest report, where 100% is one whole CPU, how "+
+			"unknown while Docker is unreachable, or removed, with when, for a container that is gone; the hub keeps a removed one 7 days. "+
+			"It shows the health check, its memory (with its limit) and CPU from the latest report, where 100% is one whole CPU, how "+
 			"often Docker restarted it, when it started and whether it sends alerts.")
 	hubURL := hubFlag(fs)
 	rest, err := parseWithArgs(fs, args, s.out)
@@ -101,11 +102,17 @@ func servicesList(args []string, s session) error {
 	rows := make([][]string, len(list))
 	for i, sv := range list {
 		state := sv.State
-		if sv.ExitCode != nil {
-			state += fmt.Sprintf(" (%d)", *sv.ExitCode)
-		}
-		if sv.StoppedByTender {
-			state += ", by Tender"
+		switch {
+		case sv.State == services.StateRemoved && sv.RemovedAt != nil:
+			state += " " + ago(s.now(), *sv.RemovedAt)
+		case sv.State == services.StateUnknown, sv.State == services.StateRemoved: // what Docker said last no longer holds
+		default:
+			if sv.ExitCode != nil && (sv.State == services.StateExited || sv.State == services.StateDead) {
+				state += fmt.Sprintf(" (%d)", *sv.ExitCode)
+			}
+			if sv.StoppedByTender {
+				state += ", by Tender"
+			}
 		}
 		health, started, alerts := "-", "-", "on"
 		if sv.Health != nil {

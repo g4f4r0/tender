@@ -337,7 +337,7 @@ func TestStatus(t *testing.T) {
 	}
 	h.pageSize = 1 // one alert per page: status must follow next_cursor
 	h.addServices(t, "web-1", services.Service{Name: "app", State: "running"}, services.Service{Name: "worker", State: "exited"},
-		services.Service{Name: "cron", State: "running"})
+		services.Service{Name: "cron", State: "running"}, services.Service{Name: "gone", State: services.StateRemoved})
 	h.addServices(t, "db-1")
 	h.docker["db-1"] = services.DockerUnreachable
 	out := mustRun(t, h, a, "status")

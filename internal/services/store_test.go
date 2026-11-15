@@ -73,21 +73,18 @@ func TestReplace(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err = s.Replace(ctx, 1, []ServiceInput{running("web", "c3")})
-	if err != nil || len(list) != 1 || list[0].ContainerID != "c3" || list[0].AlertsEnabled || list[0].ID != w.ID {
+	if err != nil || len(list) != 2 || list[0].ContainerID != "c3" || list[0].AlertsEnabled || list[0].ID != w.ID || list[1].State != StateRemoved {
 		t.Fatalf("second report: %+v, %v", list, err)
 	}
-	if all, _ := s.List(ctx, 0); len(all) != 2 || all[1].Machine != "b" {
+	if all, _ := s.List(ctx, 0); len(all) != 3 || all[2].Machine != "b" {
 		t.Errorf("every machine's services = %+v", all)
-	}
-	if _, err := s.Get(ctx, 1, "worker"); status(err) != http.StatusNotFound {
-		t.Errorf("removed service: %v", err)
 	}
 	if _, err := s.SetAlerts(ctx, 1, "nope", true); status(err) != http.StatusNotFound {
 		t.Errorf("alerts of an unknown service: %v", err)
 	}
 
 	// An empty report removes everything.
-	if list, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil || len(list) != 0 {
+	if list, err := s.Replace(ctx, 1, []ServiceInput{}); err != nil || len(list) != 2 || list[0].State != StateRemoved || list[1].State != StateRemoved {
 		t.Errorf("empty report: %+v, %v", list, err)
 	}
 
@@ -288,9 +285,9 @@ func TestUnreachable(t *testing.T) {
 	if err != nil || len(ms) != 1 || *ms[0].Docker != DockerUnreachable || ms[0].UnreachableReports() != 3 {
 		t.Fatalf("unreachable: %+v, %v", ms, err)
 	}
-	// The list stays with its state unknown, and the counts start again, so two reports in a row
+	// The list stays with its state unknown and no exit code, and the counts start again, so two reports in a row
 	// can't span the outage.
-	if sv := ms[0].Data[0]; sv.State != StateUnknown || sv.DownReports != 0 || sv.RestartingReports != 0 || sv.UnhealthyReports != 0 || *sv.ExitCode != 1 {
+	if sv := ms[0].Data[0]; sv.State != StateUnknown || sv.DownReports != 0 || sv.RestartingReports != 0 || sv.UnhealthyReports != 0 || sv.ExitCode != nil {
 		t.Errorf("service while unreachable = %+v", sv)
 	}
 	if err := s.Apply(ctx, 1, RunningReport([]ServiceInput{down})); err != nil {
@@ -342,5 +339,59 @@ func TestStatsUnavailable(t *testing.T) {
 		if _, err := s.Replace(ctx, 1, []ServiceInput{bad}); status(err) != http.StatusUnprocessableEntity {
 			t.Errorf("%s: %v, want 422", name, err)
 		}
+	}
+}
+
+// A service whose container is gone keeps its row as removed, with its settings: its counts
+// start again so its alerts resolve, actions refuse it, and a container that comes back under
+// the name takes the row back. After 7 days removed it is purged.
+func TestRemovedService(t *testing.T) {
+	d := newDB(t)
+	s := NewStore(d)
+	ctx := context.Background()
+	worker := running("worker", "c2")
+	worker.State, worker.ExitCode = StateExited, ptr(int64(1))
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1"), worker}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetAlerts(ctx, 1, "worker", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil { // docker compose down, say
+		t.Fatal(err)
+	}
+	gone, err := s.Get(ctx, 1, "worker")
+	if err != nil || gone.State != StateRemoved || gone.AlertsEnabled || gone.ExitCode != nil || gone.DownReports != 0 || gone.RemovedAt == nil {
+		t.Fatalf("removed = %+v, %v", gone, err)
+	}
+	if err := s.Check(ctx, 1, "worker"); status(err) != http.StatusConflict {
+		t.Errorf("an action on a removed service: %v", err)
+	}
+	if err := s.Unreachable(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, "worker"); got.State != StateRemoved {
+		t.Errorf("Docker unreachable made a removed service %s", got.State)
+	}
+
+	back := running("worker", "c9")
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1"), back}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, 1, "worker"); got.ID != gone.ID || got.State != StateRunning || got.AlertsEnabled || got.RemovedAt != nil {
+		t.Errorf("back = %+v; want row %d, running, alerts still off", got, gone.ID)
+	}
+
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Write.Exec(`UPDATE services SET removed_at = ? WHERE name = 'worker'`, time.Now().Add(-7*24*time.Hour-time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, 1, "worker"); status(err) != http.StatusNotFound {
+		t.Errorf("removed 7 days ago, still there: %v", err)
 	}
 }

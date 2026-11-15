@@ -26,12 +26,13 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		"List the Docker containers each machine's daemon reports, once a minute, by machine, or one machine's. Per machine: docker "+
 			"(running, unreachable when its Docker engine doesn't answer, or null before any report) and data, its services. Each service is "+
 			"one container, by its container name: project (the compose project, or null), image, state (created, running, paused, restarting, "+
-			"exited, removing, dead, or unknown while Docker is unreachable), health (healthy, unhealthy, starting, or null without a health "+
+			"exited, removing, dead, unknown while Docker is unreachable, or removed once Docker no longer has the container), health (healthy, unhealthy, starting, or null without a health "+
 			"check), exit_code (while exited or dead), restart_count, restart_policy (no, always, unless-stopped or on-failure), started_at, "+
 			"memory_bytes (less the page cache it can drop), memory_limit_bytes (null without a limit) and cpu_percent (100 is one whole "+
 			"CPU; null on its first report and after a restart), from the latest report and null while stopped, "+
-			"alerts_enabled, stopped_by_tender (a Tender stop left it stopped, so it doesn't alert as down) and updated_at (RFC 3339 UTC). "+
-			"A machine without Docker has none.",
+			"alerts_enabled, stopped_by_tender (a Tender stop left it stopped, so it doesn't alert as down), removed_at (when it was "+
+			"removed, or null) and updated_at (RFC 3339 UTC). A removed service keeps its settings for a container back under its name, "+
+			"and goes 7 days after it was removed; it can't be started, stopped, restarted or read. A machine without Docker has none.",
 		func(ctx context.Context, in listInput) (server.List[MachineServices], error) {
 			var id int64
 			if in.Machine != "" {

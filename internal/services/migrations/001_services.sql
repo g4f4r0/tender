@@ -12,8 +12,10 @@ CREATE TABLE service_engines (
 -- One row per container, keyed by its name, so settings such as alerts_enabled follow the name
 -- when the container is made again. The *_reports columns count the reports in a row in which
 -- the container was down, restarting, unhealthy or near its memory limit; the alert rules read
--- them. state is unknown while the machine's Docker is unreachable. memory_bytes,
--- memory_limit_bytes and cpu_percent are the latest report's usage, null while stopped.
+-- them. state is unknown while the machine's Docker is unreachable, and removed once a report
+-- no longer has the container: the row keeps its settings for a container that comes back under
+-- the name, and is deleted 7 days after removed_at. memory_bytes, memory_limit_bytes and
+-- cpu_percent are the latest report's usage, null while stopped.
 CREATE TABLE services (
   id                 INTEGER PRIMARY KEY,
   machine_id         INTEGER NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
@@ -21,7 +23,7 @@ CREATE TABLE services (
   project            TEXT,
   container_id       TEXT NOT NULL,
   image              TEXT NOT NULL,
-  state              TEXT NOT NULL CHECK (state IN ('created', 'running', 'paused', 'restarting', 'exited', 'removing', 'dead', 'unknown')),
+  state              TEXT NOT NULL CHECK (state IN ('created', 'running', 'paused', 'restarting', 'exited', 'removing', 'dead', 'unknown', 'removed')),
   health             TEXT CHECK (health IN ('healthy', 'unhealthy', 'starting')),
   exit_code          INTEGER,
   restart_count      INTEGER NOT NULL CHECK (restart_count >= 0),
@@ -36,6 +38,7 @@ CREATE TABLE services (
   restarting_reports INTEGER NOT NULL DEFAULT 0,
   unhealthy_reports  INTEGER NOT NULL DEFAULT 0,
   memory_high_reports INTEGER NOT NULL DEFAULT 0,
+  removed_at         INTEGER,
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL,
   UNIQUE (machine_id, name)

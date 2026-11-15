@@ -13,6 +13,7 @@ const (
 	StateRemoving   = "removing"
 	StateDead       = "dead"
 	StateUnknown    = "unknown" // the machine's Docker is unreachable; Tender sets it, Docker never does
+	StateRemoved    = "removed" // the container is gone from Docker; Tender sets it, and keeps the row 7 days
 
 	HealthHealthy   = "healthy"
 	HealthUnhealthy = "unhealthy"
@@ -51,7 +52,7 @@ type Service struct {
 	Project       *string    `json:"project"` // the compose project, or null
 	ContainerID   string     `json:"container_id"`
 	Image         string     `json:"image"`
-	State         string     `json:"state"`     // created, running, paused, restarting, exited, removing, dead, or unknown while Docker is unreachable
+	State         string     `json:"state"`     // created, running, paused, restarting, exited, removing, dead, unknown while Docker is unreachable, or removed
 	Health        *string    `json:"health"`    // healthy, unhealthy, starting, or null without a health check
 	ExitCode      *int64     `json:"exit_code"` // set while the container is exited or dead
 	RestartCount  int64      `json:"restart_count"`
@@ -63,6 +64,9 @@ type Service struct {
 	CPUPercent       *float64  `json:"cpu_percent"`        // 100 is one whole CPU; null on its first report and after a restart
 	AlertsEnabled    bool      `json:"alerts_enabled"`
 	StoppedByTender  bool      `json:"stopped_by_tender"` // a Tender stop left it stopped, so it doesn't alert as down
+	// RemovedAt is when a report first lacked the container, while its state is removed. The hub
+	// deletes the service 7 days after it; a container back under the name before then keeps it.
+	RemovedAt *time.Time `json:"removed_at"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"` // the daemon's report updates it every minute
 

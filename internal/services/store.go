@@ -29,21 +29,26 @@ var policies = map[string]bool{PolicyNo: true, PolicyAlways: true, PolicyUnlessS
 const selectServices = `
 SELECT s.id, m.name, s.name, s.project, s.container_id, s.image, s.state, s.health, s.exit_code, s.restart_count,
        s.restart_policy, s.started_at, s.memory_bytes, s.memory_limit_bytes, s.cpu_percent, s.alerts_enabled, s.stopped_by_tender,
-       s.down_reports, s.restarting_reports, s.unhealthy_reports, s.memory_high_reports, s.created_at, s.updated_at
+       s.down_reports, s.restarting_reports, s.unhealthy_reports, s.memory_high_reports, s.removed_at, s.created_at, s.updated_at
 FROM services s JOIN machines m ON m.id = s.machine_id`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanService(row scanner) (Service, error) {
 	var s Service
-	var started *int64
+	var started, removed *int64
 	var created, updated int64
 	err := row.Scan(&s.ID, &s.Machine, &s.Name, &s.Project, &s.ContainerID, &s.Image, &s.State, &s.Health, &s.ExitCode,
 		&s.RestartCount, &s.RestartPolicy, &started, &s.MemoryBytes, &s.MemoryLimitBytes, &s.CPUPercent, &s.AlertsEnabled, &s.StoppedByTender,
-		&s.DownReports, &s.RestartingReports, &s.UnhealthyReports, &s.MemoryHighReports, &created, &updated)
-	if started != nil {
-		t := time.Unix(*started, 0).UTC()
-		s.StartedAt = &t
+		&s.DownReports, &s.RestartingReports, &s.UnhealthyReports, &s.MemoryHighReports, &removed, &created, &updated)
+	for _, t := range []struct {
+		unix *int64
+		to   **time.Time
+	}{{started, &s.StartedAt}, {removed, &s.RemovedAt}} {
+		if t.unix != nil {
+			at := time.Unix(*t.unix, 0).UTC()
+			*t.to = &at
+		}
 	}
 	s.CreatedAt, s.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return s, err
@@ -160,7 +165,7 @@ func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
 }
 
 // Unreachable records a report that the machine's Docker doesn't answer: the hub keeps the last
-// list and sets every state to unknown. The counts of reports in a row start again, so two
+// list and sets every state to unknown, but a removed one's. The counts of reports in a row start again, so two
 // reports can't span the outage; the alert rules keep open alerts as they are meanwhile.
 func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 	tx, err := s.db.Write.BeginTx(ctx, nil)
@@ -175,8 +180,9 @@ func (s *Store) Unreachable(ctx context.Context, machineID int64) error {
 		   updated_at = excluded.updated_at`, machineID, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', down_reports = 0, restarting_reports = 0, unhealthy_reports = 0, memory_high_reports = 0,
-		   memory_bytes = NULL, cpu_percent = NULL, updated_at = ? WHERE machine_id = ?`, now, machineID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE services SET state = 'unknown', exit_code = NULL, down_reports = 0, restarting_reports = 0,
+		   unhealthy_reports = 0, memory_high_reports = 0, memory_bytes = NULL, cpu_percent = NULL, updated_at = ?
+		 WHERE machine_id = ? AND state != 'removed'`, now, machineID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -190,6 +196,9 @@ type previous struct {
 	memory, limit                          *int64
 }
 
+// removedFor is how long the hub keeps a removed service, for a container back under its name.
+const removedFor = 7 * 24 * time.Hour
+
 // memoryHighShare is how much of its memory limit a service may use before it counts as near it.
 const memoryHighShare = 0.9
 
@@ -201,9 +210,9 @@ func streak(holds bool, n int) int {
 	return 0
 }
 
-// Replace makes in the machine's full service list, from a report that Docker is running, as the daemon reports it: it adds new
-// services, updates the others and deletes the ones that are gone. A service
-// keeps its alert switch. stopped_by_tender clears once the service runs again, or its container
+// Replace makes in the machine's full service list, from a report that Docker is running: it adds
+// new services, updates the others, marks the ones that are gone removed and deletes those removed
+// for 7 days. A service keeps its alert switch, also across being removed. stopped_by_tender clears once the service runs again, or its container
 // is made again or started since (a new container_id or started_at).
 func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput) ([]Service, error) {
 	names := make([]string, 0, len(in))
@@ -296,15 +305,25 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 			   stopped_by_tender = CASE WHEN excluded.state = 'running' OR excluded.container_id != services.container_id
 			     OR excluded.started_at IS NOT services.started_at THEN 0 ELSE services.stopped_by_tender END,
 			   down_reports = excluded.down_reports, restarting_reports = excluded.restarting_reports,
-			   unhealthy_reports = excluded.unhealthy_reports, memory_high_reports = excluded.memory_high_reports, updated_at = excluded.updated_at`,
+			   unhealthy_reports = excluded.unhealthy_reports, memory_high_reports = excluded.memory_high_reports, removed_at = NULL,
+			   updated_at = excluded.updated_at`,
 			machineID, sv.Name, sv.Project, sv.ContainerID, sv.Image, sv.State, sv.Health, exitCode, sv.RestartCount, sv.RestartPolicy, started,
 			sv.MemoryBytes, sv.MemoryLimitBytes, sv.CPUPercent, down, restarting, unhealthy, memoryHigh, now, now)
 		if err != nil {
 			return nil, err
 		}
 	}
+	// A container the report lacks is removed: its row stays, with its settings, for a container
+	// back under the name, and its counts start again, so its alerts resolve. 7 days on it goes.
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM services WHERE machine_id = ? AND name NOT IN (SELECT value FROM json_each(?))`, machineID, string(keep)); err != nil {
+		`UPDATE services SET state = 'removed', removed_at = ?3, health = NULL, exit_code = NULL, memory_bytes = NULL, memory_limit_bytes = NULL,
+		   cpu_percent = NULL, stopped_by_tender = 0, down_reports = 0, restarting_reports = 0, unhealthy_reports = 0, memory_high_reports = 0,
+		   updated_at = ?3
+		 WHERE machine_id = ?1 AND state != 'removed' AND name NOT IN (SELECT value FROM json_each(?2))`, machineID, string(keep), now); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE machine_id = ? AND state = 'removed' AND removed_at < ?`,
+		machineID, now-int64(removedFor/time.Second)); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -329,9 +348,13 @@ func (s *Store) SetAlerts(ctx context.Context, machineID int64, name string, on 
 }
 
 // Check returns nil when the machine has the service, else a 404. The actions domain calls it
-// before it queues an action for a service.
+// before it queues an action for a service. A removed service is a 409: Docker has no container
+// to act on.
 func (s *Store) Check(ctx context.Context, machineID int64, name string) error {
-	_, err := s.Get(ctx, machineID, name)
+	sv, err := s.Get(ctx, machineID, name)
+	if err == nil && sv.State == StateRemoved {
+		return server.Conflict("Service %q was removed: Docker on this machine no longer has its container.", name)
+	}
 	return err
 }
 

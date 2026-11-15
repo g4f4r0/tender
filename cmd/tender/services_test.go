@@ -174,6 +174,14 @@ func TestServicesList(t *testing.T) {
 	if got := mustRun(t, h, a, "services", "list", "apps"); !strings.Contains(got, "worker") {
 		t.Errorf("one machine's list =\n%s", got)
 	}
+	// A service whose container is gone shows as removed, with when.
+	removedAt := h.now.Add(-2 * time.Hour)
+	h.addServices(t, "code", services.Service{Name: "old-job", State: services.StateRemoved, RemovedAt: &removedAt, AlertsEnabled: true})
+	if got := mustRun(t, h, a, "services", "list", "code"); !strings.Contains(got, "code      old-job   removed 2 hours ago   -") {
+		t.Errorf("removed service =\n%s", got)
+	}
+	delete(h.services, "code")
+	delete(h.docker, "code")
 
 	// Docker stops answering: the states are unknown, and the list says why.
 	h.docker["apps"] = services.DockerUnreachable
@@ -181,6 +189,7 @@ func TestServicesList(t *testing.T) {
 		h.services["apps"][i].State = services.StateUnknown
 	}
 	if got := mustRun(t, h, a, "services", "list"); !strings.Contains(got, "apps      cli-proxy-api   unknown") ||
+		!strings.Contains(got, "apps      worker          unknown   ") || strings.Contains(got, "unknown (") ||
 		!strings.HasSuffix(got, "\nDocker is unreachable on apps, so the states of its services are unknown.\n") {
 		t.Errorf("list while Docker is unreachable =\n%s", got)
 	}

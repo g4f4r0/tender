@@ -63,17 +63,22 @@ func runStatus(args []string, s session) error {
 		}
 		summary := map[string]string{}
 		for _, e := range engines {
-			running := 0
+			running, present := 0, 0
 			for _, sv := range e.Data {
-				if sv.State == services.StateRunning {
+				switch sv.State {
+				case services.StateRunning:
 					running++
+					present++
+				case services.StateRemoved: // its container is gone
+				default:
+					present++
 				}
 			}
 			switch {
 			case e.Docker != nil && *e.Docker == services.DockerUnreachable:
 				summary[e.Machine] = "Docker unreachable"
-			case len(e.Data) > 0:
-				summary[e.Machine] = fmt.Sprintf("%d/%d running", running, len(e.Data))
+			case present > 0:
+				summary[e.Machine] = fmt.Sprintf("%d/%d running", running, present)
 			}
 		}
 		rows := make([][]string, len(ms))
