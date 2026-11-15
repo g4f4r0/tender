@@ -8,12 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  # Tests and builds the release. It runs third-party actions, so it never sees the signing key.
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -24,39 +21,74 @@ jobs:
           version: v2.15.0
       - run: go test -race ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      # SHA256SUMS lists tender-release.json too, so the signature covers whether auto mode may roll
+      # the release out. Set {"auto": false} in the repository's file for a release that needs a person.
       - name: Build
         run: |
           mkdir dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME#v}" -o dist/tender_linux_amd64 ./cmd/tender
+          cp tender-release.json dist/
           cd dist
-          sha256sum tender_linux_amd64 > SHA256SUMS
-      # Signs SHA256SUMS with the release key, an ed25519 seed kept only in this secret and in
-      # Infisical. Every tender update checks SHA256SUMS.sig against the public keys in
-      # internal/install/release.go, so this step also checks that the key matches one of them.
+          sha256sum tender_linux_amd64 tender-release.json > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Signs SHA256SUMS in the release environment, whose secret TENDER_RELEASE_SIGNING_KEY is the base64
+  # of the ed25519 seed. Only first-party actions and the repository's own standard-library program run
+  # here. The program refuses an empty key, or one whose public key isn't in internal/release/keys.go.
+  sign:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - name: Sign the checksums
         env:
-          SIGNING_KEY: ${{ secrets.TENDER_RELEASE_SIGNING_KEY }}
-        run: |
-          set -eu
-          umask 077
-          key="$RUNNER_TEMP/release-key.der"
-          trap 'rm -f "$key" "$RUNNER_TEMP/sig.bin"' EXIT
-          # A PKCS#8 ed25519 private key is this fixed prefix followed by the 32-byte seed.
-          { printf '\060\056\002\001\000\060\005\006\003\053\145\160\004\042\004\040'; printf '%s' "$SIGNING_KEY" | base64 -d; } > "$key"
-          [ "$(wc -c < "$key")" -eq 48 ] || { echo "TENDER_RELEASE_SIGNING_KEY must be the base64 of a 32-byte ed25519 seed" >&2; exit 1; }
-          public=$(openssl pkey -inform DER -in "$key" -pubout -outform DER | tail -c 32 | base64)
-          grep -qF "\"$public\"" internal/install/release.go || { echo "the signing key's public key $public is not in internal/install/release.go" >&2; exit 1; }
-          openssl pkeyutl -sign -inkey "$key" -keyform DER -rawin -in dist/SHA256SUMS -out "$RUNNER_TEMP/sig.bin"
-          base64 -w0 "$RUNNER_TEMP/sig.bin" > dist/SHA256SUMS.sig
-          echo >> dist/SHA256SUMS.sig
+          TENDER_RELEASE_SIGNING_KEY: ${{ secrets.TENDER_RELEASE_SIGNING_KEY }}
+        run: go run ./internal/release/sign dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signature
+          path: dist/SHA256SUMS.sig
+          if-no-files-found: error
+
+  publish:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: signature
+          path: dist/
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/tender_linux_amd64
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/tender_linux_amd64 dist/SHA256SUMS dist/SHA256SUMS.sig \
+          gh release create "$GITHUB_REF_NAME" dist/tender_linux_amd64 dist/tender-release.json dist/SHA256SUMS dist/SHA256SUMS.sig \
             --verify-tag --generate-notes --title "$GITHUB_REF_NAME" $prerelease
