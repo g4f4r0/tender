@@ -1591,7 +1591,7 @@ Runs the daemon, which backs up the machine on the schedule the hub sets, report
 #### Usage
 
 ```sh
-tender daemon [--config PATH] [--state PATH]
+tender daemon [--config PATH] [--state PATH] [--check]
 ```
 
 #### Options
@@ -1600,6 +1600,7 @@ tender daemon [--config PATH] [--state PATH]
 | --- | --- | --- | --- |
 | `--config` | path | No | The daemon's config file. The default is `/etc/tender/daemon.toml`. |
 | `--state` | path | No | The folder for the daemon's state. The default is `/var/lib/tender/daemon`. |
+| `--check` | flag | No | Check that the config, the hub token and the state folder can be read, print `The daemon's config, hub token and state folder are in order.`, and exit. `sudo tender update` runs it as its health check. |
 
 It reaches Docker at `/var/run/docker.sock`, or at the socket in `TENDER_DOCKER_SOCKET`.
 

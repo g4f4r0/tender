@@ -92,7 +92,7 @@ func (in *Installer) Update(ctx context.Context, version string) error {
 	if err != nil || tag == "" {
 		return err
 	}
-	return in.swap(ctx, tag)
+	return in.swap(ctx, tag, true)
 }
 
 // Apply runs "tender update --apply VERSION", the job the daemon starts as the tenderupdate unit
@@ -107,7 +107,7 @@ func (in *Installer) Apply(ctx context.Context, version string) error {
 		tag, err = in.pick(ctx, version, false)
 	}
 	if err == nil && tag != "" {
-		err = in.swap(ctx, tag)
+		err = in.swap(ctx, tag, false)
 	}
 	result := config.UpdateResult{Version: strings.TrimPrefix(version, "v"), Status: resultCompleted}
 	switch {
@@ -178,7 +178,8 @@ func (in *Installer) pick(ctx context.Context, version string, downgrade bool) (
 // reads this machine's configs, keeps the running binary as tender.previous, waits for a running
 // backup or action, swaps the binary and restarts the services. If they aren't healthy on the new
 // version within HealthWait, it puts the previous binary back and restarts them again.
-func (in *Installer) swap(ctx context.Context, tag string) error {
+// byHand is root's own "tender update": healthy needs no report to the hub, which may be down.
+func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 	daemon, hub := in.installedServices()
 	want := strings.TrimPrefix(tag, "v")
 	in.say("Updating Tender %s to %s", in.Version, tag)
@@ -224,7 +225,7 @@ func (in *Installer) swap(ctx context.Context, tag string) error {
 	out, err = in.run(ctx, in.path(binaryPath), "install", "refresh")
 	_, _ = in.Out.Write(out)
 	if err == nil {
-		err = in.healthy(ctx, want, daemon, hub)
+		err = in.healthy(ctx, want, daemon, hub, byHand)
 	}
 	if err == nil {
 		in.say("\nUpdated to Tender %s.", tag)
@@ -261,10 +262,10 @@ func (in *Installer) rollback(ctx context.Context, previous []byte) error {
 
 // healthy waits up to HealthWait for the installed services to be healthy on version, and says
 // what isn't when they aren't.
-func (in *Installer) healthy(ctx context.Context, version string, daemon, hub bool) error {
+func (in *Installer) healthy(ctx context.Context, version string, daemon, hub, byHand bool) error {
 	deadline := time.Now().Add(in.HealthWait)
 	for {
-		err := in.health(ctx, version, daemon, hub)
+		err := in.health(ctx, version, daemon, hub, byHand)
 		if err == nil || !time.Now().Before(deadline) {
 			if err != nil {
 				return fmt.Errorf("after %s, %w", in.HealthWait, err)
@@ -280,12 +281,18 @@ func (in *Installer) healthy(ctx context.Context, version string, daemon, hub bo
 }
 
 // health is nil when the units run, the daemon reported to the hub on version and the hub answers.
-func (in *Installer) health(ctx context.Context, version string, daemon, hub bool) error {
+// By hand, the daemon's own check stands in for its report.
+func (in *Installer) health(ctx context.Context, version string, daemon, hub, byHand bool) error {
 	if daemon {
 		if _, err := in.Run(ctx, "systemctl", "is-active", "--quiet", "tenderd"); err != nil {
 			return errors.New("tenderd is not running")
 		}
-		if got := config.ReadReportedVersion(in.path(config.DefaultStateDir)); got != version {
+		if byHand {
+			out, err := in.Run(ctx, in.path(binaryPath), "daemon", "--check", "--config", in.path(daemonConfigPath), "--state", in.path(config.DefaultStateDir))
+			if err != nil {
+				return fmt.Errorf("the daemon's own check failed: %s", strings.TrimPrefix(lastLine(string(out), err), "tender: "))
+			}
+		} else if got := config.ReadReportedVersion(in.path(config.DefaultStateDir)); got != version {
 			return fmt.Errorf("the daemon has not reported to the hub on Tender %s", version)
 		}
 	}
@@ -374,4 +381,13 @@ func (in *Installer) Refresh(ctx context.Context) error {
 		return in.Hub(ctx, HubOptions{})
 	}
 	return nil
+}
+
+// lastLine is the last line a command printed, or its error when it printed nothing.
+func lastLine(out string, err error) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if l := strings.TrimSpace(lines[len(lines)-1]); l != "" {
+		return strings.TrimSuffix(l, ".")
+	}
+	return err.Error()
 }

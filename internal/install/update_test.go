@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -335,6 +336,44 @@ func TestUpdateRollsBackAnUnhealthyRelease(t *testing.T) {
 }
 
 // A hub that doesn't answer /v1/health fails the health check too.
+// By hand, healthy is the units running and the new daemon's own check: the hub may be down.
+func TestUpdateByHandNeedsNoHubReport(t *testing.T) {
+	e := newEnv(t)
+	installBoth(t, e)
+	newRelease(t, e, goodSums)
+	e.fake.unhealthy = true // the new daemon never reports to the hub
+	if err := e.in.Update(context.Background(), ""); err != nil {
+		t.Fatalf("%v\n%s", err, e.out.String())
+	}
+	want := e.path(binaryPath) + " daemon --check --config " + e.path(daemonConfigPath) + " --state " + e.path(config.DefaultStateDir)
+	if cmds := strings.Join(e.commands(), "\n"); !strings.Contains(cmds, want) {
+		t.Errorf("did not run %q:\n%s", want, cmds)
+	}
+
+	e = newEnv(t)
+	installBoth(t, e)
+	newRelease(t, e, goodSums)
+	e.fake.respond = checkFails(e.fake.respond, e.path(binaryPath))
+	old := e.read(t, binaryPath)
+	err := e.in.Update(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "rolled back") || !strings.Contains(err.Error(), "the daemon's own check failed: cannot read the hub token") {
+		t.Fatalf("err = %v", err)
+	}
+	if e.read(t, binaryPath) != old {
+		t.Error("a release that fails its own check stayed")
+	}
+}
+
+// checkFails has "tender daemon --check" of the new binary at bin fail, and the old one pass.
+func checkFails(next func(string, []string) ([]byte, bool, error), bin string) func(string, []string) ([]byte, bool, error) {
+	return func(name string, args []string) ([]byte, bool, error) {
+		if name == bin && len(args) > 0 && args[0] == "daemon" {
+			return []byte("tender: cannot read the hub token in /etc/tender/credentials.\n"), true, errors.New("exit status 1")
+		}
+		return next(name, args)
+	}
+}
+
 func TestUpdateChecksTheHubsHealth(t *testing.T) {
 	e := newEnv(t)
 	installBoth(t, e)

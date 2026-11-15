@@ -16,7 +16,7 @@ The hub asks GitHub for the latest stable release every 6 hours. A rollout updat
 3. It runs the new binary's `tender version` and checks that it reads the machine's daemon config and hub settings.
 4. It keeps the current binary as `/usr/local/bin/tender.previous`.
 5. It waits up to 30 minutes for a running backup or action to finish, then swaps the binary and restarts the services.
-6. Within 2 minutes, `tenderd` must be active and have reported to the hub on the new version. On the hub's machine, `tenderhub` must be active and answer `GET /v1/health` with `200`.
+6. Within 2 minutes, `tenderd` must be active and have reported to the hub on the new version. On the hub's machine, `tenderhub` must be active and answer `GET /v1/health` with `200`. When root updates a machine by hand, the hub may be down, so instead of the report the new binary's `tender daemon --check` must pass.
 7. Otherwise it puts the previous binary back, restarts the services and reports the failure.
 
 The hub moves to the next machine once a machine reports the new version. It stops the rollout at the first machine that fails, and opens an `update.failed` alert for it. [Alerts](alerts.md#update-alerts) explains that alert.

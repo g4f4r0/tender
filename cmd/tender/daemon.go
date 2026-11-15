@@ -24,7 +24,7 @@ import (
 )
 
 func runDaemon(args []string, log *slog.Logger) error {
-	fs := newFlagSet("daemon", "[--config PATH] [--state PATH]",
+	fs := newFlagSet("daemon", "[--config PATH] [--state PATH] [--check]",
 		"Run the daemon: it backs up this machine on the schedule the hub sets and reports every run to the hub, "+
 			"reports this machine's Docker services and security checks, and runs the actions the hub queues: service starts, "+
 			"stops, restarts and logs, reads of this machine's journal with journalctl, upgrades of its packages and updates "+
@@ -33,6 +33,7 @@ func runDaemon(args []string, log *slog.Logger) error {
 			"Run it as a service; \"sudo tender install daemon\" sets that up.")
 	configPath := fs.String("config", config.DefaultDaemonPath, "`PATH` the daemon config file")
 	state := fs.String("state", defaultState(), "`PATH` the folder for the daemon's state")
+	check := fs.Bool("check", false, "check that the config, the hub token and the state folder can be read, and exit")
 	if err := parseFlags(fs, args, os.Stdout); err != nil {
 		return err
 	}
@@ -48,6 +49,13 @@ func runDaemon(args []string, log *slog.Logger) error {
 	token, err := config.ReadCredential(dir, "hub-token")
 	if err != nil {
 		return fmt.Errorf("cannot read the hub token in %s. Run \"sudo tender install daemon --token-file PATH\" to save it.", dir)
+	}
+	if *check {
+		if fi, err := os.Stat(*state); err != nil || !fi.IsDir() {
+			return fmt.Errorf("cannot find the daemon's state folder %s. Run \"sudo tender install refresh\" to make it", *state)
+		}
+		fmt.Println("The daemon's config, hub token and state folder are in order.")
+		return nil
 	}
 	hub := client.New(cfg.Hub, token)
 
