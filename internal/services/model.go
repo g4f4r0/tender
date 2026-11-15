@@ -28,6 +28,10 @@ const (
 	// What a machine's daemon says about its Docker engine.
 	DockerRunning     = "running"
 	DockerUnreachable = "unreachable" // the daemon can't reach it; DockerReason says why
+	// DockerOff says Docker is turned off on the machine: its socket is missing or refuses
+	// connections, and neither docker.service nor docker.socket is enabled. Only a report says it:
+	// the hub then forgets the machine's Docker, so GET shows docker null.
+	DockerOff = "off"
 
 	// Why a daemon can't reach Docker, once it had it.
 	ReasonSocketMissing    = "socket_missing"    // the socket is gone
@@ -113,8 +117,9 @@ type ServiceInput struct {
 // Report is the body of PUT /v1/machines/{machine}/services: {"docker": "running", "services": [...]}
 // when the Engine API answers, the full list and [] for none, or {"docker": "unreachable",
 // "docker_reason": "refused"} when the daemon can't reach it, with why. Then the hub keeps the last list with every state
-// unknown. Make one with RunningReport or UnreachableReport, so a running report always carries
-// its list and an unreachable one never does.
+// unknown. {"docker": "off"} says Docker is turned off: the hub forgets the machine's Docker and
+// marks its services removed. Make one with RunningReport, UnreachableReport or OffReport, so a
+// running report always carries its list and the others never do.
 type Report struct {
 	Docker       string          `json:"docker"`
 	DockerReason string          `json:"docker_reason,omitempty"` // why, when unreachable
@@ -125,7 +130,7 @@ type Report struct {
 // and each element of GET /v1/services.
 type MachineServices struct {
 	Machine string  `json:"machine"`
-	Docker  *string `json:"docker"` // running or unreachable, from the latest report; null before any
+	Docker  *string `json:"docker"` // running or unreachable, from the latest report; null before any, and once Docker is turned off
 	// DockerReason says why Docker is unreachable: socket_missing, permission_denied, refused,
 	// timeout or error. It is null while Docker runs.
 	DockerReason *string   `json:"docker_reason"`
@@ -158,3 +163,6 @@ func RunningReport(list []ServiceInput) Report {
 func UnreachableReport(reason string) Report {
 	return Report{Docker: DockerUnreachable, DockerReason: reason}
 }
+
+// OffReport is a report that Docker is turned off on the machine. It carries no list and no reason.
+func OffReport() Report { return Report{Docker: DockerOff} }

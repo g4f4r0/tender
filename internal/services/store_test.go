@@ -406,3 +406,49 @@ func TestRemovedService(t *testing.T) {
 		t.Errorf("removed 7 days ago, still there: %v", err)
 	}
 }
+
+// Docker turned off forgets the machine's Docker: its engine row goes and every service is
+// removed, with its counts at 0 and its alert switch kept. Another off report changes nothing,
+// and a machine that never reported stays without a row.
+func TestOff(t *testing.T) {
+	s := NewStore(newDB(t))
+	ctx := context.Background()
+	down := running("web", "c1")
+	down.State, down.ExitCode = StateExited, ptr(int64(1))
+	for range 2 {
+		if err := s.Apply(ctx, 1, RunningReport([]ServiceInput{down, running("db", "c2")})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.SetAlerts(ctx, 1, "db", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Apply(ctx, 1, UnreachableReport(ReasonRefused)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Apply(ctx, 1, OffReport()); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := s.Machines(ctx, 1)
+	if err != nil || ms[0].Docker != nil || ms[0].DockerReason != nil || ms[0].UnreachableReports() != 0 || ms[0].ReportedAt() != nil || len(ms[0].Data) != 2 {
+		t.Fatalf("after off: %+v, %v", ms, err)
+	}
+	for _, sv := range ms[0].Data {
+		if sv.State != StateRemoved || sv.RemovedAt == nil || sv.DownReports != 0 || sv.ExitCode != nil || sv.AlertsEnabled != (sv.Name == "web") {
+			t.Errorf("%s after off: %+v", sv.Name, sv)
+		}
+	}
+	removedAt := ms[0].Data[0].RemovedAt
+	if err := s.Apply(ctx, 1, OffReport()); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.Machines(ctx, 1); err != nil || again[0].Docker != nil || !again[0].Data[0].RemovedAt.Equal(*removedAt) {
+		t.Errorf("after a second off: %+v, %v", again, err)
+	}
+	if err := s.Apply(ctx, 2, OffReport()); err != nil {
+		t.Fatal(err)
+	}
+	if all, err := s.Machines(ctx, 0); err != nil || len(all) != 1 || all[0].Machine != "a" {
+		t.Errorf("a machine whose only report is off is listed: %+v, %v", all, err)
+	}
+}

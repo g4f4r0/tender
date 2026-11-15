@@ -168,8 +168,32 @@ func (s *Store) Apply(ctx context.Context, machineID int64, r Report) error {
 			return server.Invalid("docker_reason must be socket_missing, permission_denied, refused, timeout or error when docker is unreachable.")
 		}
 		return s.Unreachable(ctx, machineID, r.DockerReason)
+	case DockerOff:
+		if r.Services != nil || r.DockerReason != "" {
+			return server.Invalid("Leave services and docker_reason out when docker is off: the hub forgets the machine's Docker.")
+		}
+		return s.Off(ctx, machineID)
 	}
-	return server.Invalid("docker must be running or unreachable.")
+	return server.Invalid("docker must be running, unreachable or off.")
+}
+
+// Off records a report that Docker is turned off on the machine, and forgets its Docker as for a
+// machine without it: the engine's row goes, so GET shows docker null and the rule for a daemon
+// that stops reporting Docker no longer applies, and every service is removed, as a container a
+// report lacks is, so its problems resolve. Another off report changes nothing.
+func (s *Store) Off(ctx context.Context, machineID int64) error {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM service_engines WHERE machine_id = ?`, machineID); err != nil {
+		return err
+	}
+	if err := removeGone(ctx, tx, machineID, "[]", time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Unreachable records a report that the machine's Docker doesn't answer: the hub keeps the last
@@ -324,23 +348,29 @@ func (s *Store) Replace(ctx context.Context, machineID int64, in []ServiceInput)
 			return nil, err
 		}
 	}
-	// A container the report lacks is removed: its row stays, with its settings, for a container
-	// back under the name, and its counts start again, so its alerts resolve. 7 days on it goes.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE services SET state = 'removed', removed_at = ?3, health = NULL, exit_code = NULL, started_at = NULL, memory_bytes = NULL, memory_limit_bytes = NULL,
-		   cpu_percent = NULL, stopped_by_tender = 0, down_reports = 0, restarting_reports = 0, unhealthy_reports = 0, memory_high_reports = 0,
-		   updated_at = ?3
-		 WHERE machine_id = ?1 AND state != 'removed' AND name NOT IN (SELECT value FROM json_each(?2))`, machineID, string(keep), now); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE machine_id = ? AND state = 'removed' AND removed_at < ?`,
-		machineID, now-int64(removedFor/time.Second)); err != nil {
+	if err := removeGone(ctx, tx, machineID, string(keep), now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.List(ctx, machineID)
+}
+
+// removeGone marks removed each of the machine's services whose name isn't in keep, a JSON array:
+// its row stays, with its settings, for a container back under the name, and its counts start
+// again, so its alerts resolve. It deletes the services removed 7 days ago.
+func removeGone(ctx context.Context, tx *sql.Tx, machineID int64, keep string, now int64) error {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE services SET state = 'removed', removed_at = ?3, health = NULL, exit_code = NULL, started_at = NULL, memory_bytes = NULL, memory_limit_bytes = NULL,
+		   cpu_percent = NULL, stopped_by_tender = 0, down_reports = 0, restarting_reports = 0, unhealthy_reports = 0, memory_high_reports = 0,
+		   updated_at = ?3
+		 WHERE machine_id = ?1 AND state != 'removed' AND name NOT IN (SELECT value FROM json_each(?2))`, machineID, keep, now); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM services WHERE machine_id = ? AND state = 'removed' AND removed_at < ?`,
+		machineID, now-int64(removedFor/time.Second))
+	return err
 }
 
 // SetAlerts turns a service's alerts on or off. Off, its open problems resolve on the next check.
