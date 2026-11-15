@@ -40,6 +40,8 @@ DNS and the provider's firewall are yours. Tender never changes either.
 4. Meanwhile the [security checks](security.md#security-checks) count 80/tcp and 443/tcp as allowed on that machine, so they raise no `security.port_exposed`.
 5. After the last public route it removes the container and deletes only the ufw rules with the comment `tender public`. The certificates stay in `data`, so a later route doesn't ask for them again. Delete the folder to forget them.
 
+A route with a bad host, or a host another route also has, fails on its own and stays out of the Caddyfile. Caddy serves the other routes.
+
 Caddy serves HTTP/1.1 and HTTP/2 only, so UDP 443 stays closed. Its admin API is a Unix socket inside the container, so no process on the machine can reconfigure it through a port. The image is `caddy:2.11.9`, pinned by digest in Tender, and a Tender update moves it.
 
 ## Cloudflare
@@ -109,9 +111,9 @@ The hub does this through the Cloudflare API after every deploy and remove:
 2. It replaces the tunnel's routes with every `cloudflare` route of the machine, each `<host>` to `http://127.0.0.1:<local_port>`, then a `404` for any other host.
 3. For each host it keeps a proxied `CNAME` to `<tunnel id>.cfargotunnel.com`, with the comment `managed by tender`, in the zone that is the host's longest matching suffix. For `api.shop.example.com`, that is the zone `shop.example.com` if the account has it, else `example.com`.
 4. It deletes only records with the comment `managed by tender` that point at that machine's tunnel. Your own records, and other machines' records, stay.
-5. It refuses a host that already has a record it didn't make, and the deploy fails with a sentence naming the host. Delete that record in the dashboard, or pick another host.
+5. It refuses a host that already has a record it didn't make. That route fails with a sentence naming the host and the route, and stays out of the tunnel's routes. Delete that record in the dashboard, or pick another host.
 
-A Cloudflare error that says the request is wrong, such as a `403` for a token without a permission, fails the deploy at once with Cloudflare's reason. A `5xx`, a `429` or no answer is tried 3 times, then fails the deploy; deploy again later.
+One route's failure never touches another's. A host in no zone of the account, a host with a record Tender didn't make, or a record Cloudflare refuses with a `4xx` fails that route alone, and every other route and record stays in place. A failing route's host also keeps its record of Tender's. A `5xx`, a `429` or no answer is tried 3 times, then fails the routes of every service on that machine; deploy again later.
 
 ### What Tender does on the machine
 
