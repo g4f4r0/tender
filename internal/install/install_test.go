@@ -658,3 +658,35 @@ func TestUnitsFollowTheDecisions(t *testing.T) {
 		t.Error("hub unit keeps stale settings")
 	}
 }
+
+// With a docker group, the daemon joins it to reach Docker's socket; without one the unit stays as
+// it is embedded, since systemd won't start a unit whose group doesn't exist.
+func TestDaemonJoinsTheDockerGroup(t *testing.T) {
+	e := newEnv(t)
+	if err := os.MkdirAll(e.path("/etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.path("/etc/group"), []byte("root:x:0:\ndockerish:x:998:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := e.in.Daemon(ctx, daemonOpts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(e.read(t, "/etc/systemd/system/tenderd.service"), "SupplementaryGroups") {
+		t.Error("the unit joins a docker group this machine doesn't have")
+	}
+
+	if err := os.WriteFile(e.path("/etc/group"), []byte("root:x:0:\ndocker:x:999:johan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.in.Refreshing = true // "tender install refresh", after Docker was installed
+	if err := e.in.Daemon(ctx, DaemonOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	unit := e.read(t, "/etc/systemd/system/tenderd.service")
+	if !strings.Contains(unit, "Group=tender\n# Docker's socket. The docker group is root-equivalent") ||
+		strings.Count(unit, "SupplementaryGroups=docker\n") != 1 {
+		t.Errorf("unit:\n%s", unit)
+	}
+}

@@ -300,7 +300,7 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 	if err := in.checkHub(ctx, o, cfg != nil, installedConfig); err != nil {
 		return err
 	}
-	unit, err := units.ReadFile("units/tenderd.service")
+	unit, err := in.daemonUnit()
 	if err != nil {
 		return err
 	}
@@ -347,6 +347,36 @@ func (in *Installer) Daemon(ctx context.Context, o DaemonOptions) error {
 		in.say("tenderd is already installed and up to date. Nothing to change.")
 	}
 	return nil
+}
+
+// daemonUnit is tenderd.service. When this machine has a docker group, the daemon joins it to
+// reach Docker's socket; without one, the unit leaves it out, since systemd won't start a unit
+// whose group doesn't exist. Installing Docker later needs "tender install refresh".
+func (in *Installer) daemonUnit() ([]byte, error) {
+	unit, err := units.ReadFile("units/tenderd.service")
+	if err != nil {
+		return nil, err
+	}
+	if !in.hasGroup("docker") {
+		return unit, nil
+	}
+	return bytes.Replace(unit, []byte("Group=tender\n"), []byte("Group=tender\n"+
+		"# Docker's socket. The docker group is root-equivalent: whoever is in it controls the machine.\n"+
+		"SupplementaryGroups=docker\n"), 1), nil
+}
+
+// hasGroup reports whether /etc/group has the group called name.
+func (in *Installer) hasGroup(name string) bool {
+	b, err := os.ReadFile(in.path("/etc/group"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, name+":") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkHub runs CheckHub when the config or the token is new: newConfig means o's hub and machine

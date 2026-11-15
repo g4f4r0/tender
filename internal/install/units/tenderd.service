@@ -28,7 +28,8 @@ Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
 # The hub token is the one file in /etc/tender/credentials (0750 root:tender, file 0640). The daemon gets
 # its destination and keys from the hub and keeps them in its state folder.
 
-# Read every file, write nothing outside the directories above.
+# Read every file, write nothing outside the directories above. Connecting to Docker's socket is not a
+# write, so it works on the read-only file system; the installer adds the docker group when there is one.
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 AmbientCapabilities=CAP_DAC_READ_SEARCH
 NoNewPrivileges=yes
