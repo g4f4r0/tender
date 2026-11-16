@@ -884,7 +884,9 @@ func TestHubSavesTheOwnerToken(t *testing.T) {
 
 	// Without SUDO_USER, the token is root's; a token that can't be made is said, and the install goes on.
 	e.in.SudoUser = ""
-	e.in.MakeToken = func(context.Context, string) (string, string, error) { return "", "", errors.New("the hub has no database yet") }
+	e.in.MakeToken = func(context.Context, string) (string, string, error) {
+		return "", "", errors.New("the hub has no database yet")
+	}
 	e.out.Reset()
 	if err := e.in.Hub(context.Background(), HubOptions{}); err != nil {
 		t.Fatal(err)
