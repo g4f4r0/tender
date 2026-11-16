@@ -205,13 +205,13 @@ The hub calls them only while a route of the machine has `access`. Without one, 
 
 A route with `access` fails on its own, and stays out of the tunnel's routes, when the hub can't set it. Its DNS record of Tender's stays, and every other route is set as before.
 
-1. No Access application protects the host:
+1. No Access application the API token can see protects the host. Cloudflare shows a token without the two permissions no applications at all, instead of refusing it, so this sentence names them too:
 
    ```text
-   the route to web in blog requires Cloudflare Access, but no Access application in the Cloudflare account protects blog.example.com. Add a self-hosted Access application for it, or deploy the route without access
+   the route to web in blog requires Cloudflare Access, but no Access application the API token can see protects blog.example.com. Add a self-hosted Access application for it, give the API token Access: Apps and Policies Read and Access: Organizations, Identity Providers, and Groups Read, or deploy the route without access
    ```
 
-2. The API token lacks the two permissions, and Cloudflare answers `401` or `403`. The sentence says the token also needs `Access: Apps and Policies Read` and `Access: Organizations, Identity Providers, and Groups Read`.
+2. Cloudflare refuses the token with `401` or `403`. The sentence says the token also needs `Access: Apps and Policies Read` and `Access: Organizations, Identity Providers, and Groups Read`.
 
 A `5xx`, a `429` or no answer from either endpoint is Cloudflare failing as a whole, as with the other calls.
 

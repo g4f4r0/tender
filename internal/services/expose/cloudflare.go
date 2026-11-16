@@ -407,8 +407,10 @@ func (c *Cloudflare) access(ctx context.Context, routes []Route) (map[string]*or
 			}
 		}
 		if len(tags) == 0 {
-			errs = append(errs, accessError(r, "no Access application in the Cloudflare account protects "+r.Host,
-				"Add a self-hosted Access application for it, or deploy the route without access"))
+			// Cloudflare lists no applications, rather than refusing, to a token without the Access
+			// permissions, so the fix names them too.
+			errs = append(errs, accessError(r, "no Access application the API token can see protects "+r.Host,
+				"Add a self-hosted Access application for it, give the API token "+CloudflareAccessPermissions+", or deploy the route without access"))
 			continue
 		}
 		auds[r.Host] = tags
