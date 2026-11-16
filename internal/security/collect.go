@@ -233,7 +233,7 @@ func (c *Collector) listeners(ctx context.Context) Listeners {
 	if err != nil {
 		return Listeners{Check: CheckError, Error: failed(err), Ports: []Listener{}}
 	}
-	l := Listeners{Check: CheckOK, Ports: parseSS(out)}
+	l := Listeners{Check: CheckOK, Ports: parseSS(out, c.ephemeral())}
 	if c.Published != nil {
 		if ports, err := c.Published(ctx); err == nil {
 			l.Ports = mergePublished(l.Ports, ports)
@@ -250,12 +250,40 @@ func (c *Collector) listeners(ctx context.Context) Listeners {
 // the DHCP server's answers, so they serve nothing.
 var dhcpClient = map[int]bool{68: true, 546: true}
 
+// portRange is the first and last port of a range.
+type portRange struct{ first, last int }
+
+// defaultEphemeral is Linux's default ip_local_port_range.
+var defaultEphemeral = portRange{32768, 60999}
+
+// ephemeral is the kernel's range of ports for outgoing connections, from
+// /proc/sys/net/ipv4/ip_local_port_range, or Linux's default when it can't be read.
+func (c *Collector) ephemeral() portRange {
+	b, err := os.ReadFile(c.path("/proc/sys/net/ipv4/ip_local_port_range"))
+	if err != nil {
+		return defaultEphemeral
+	}
+	f := strings.Fields(string(b))
+	if len(f) != 2 {
+		return defaultEphemeral
+	}
+	first, err1 := strconv.Atoi(f[0])
+	last, err2 := strconv.Atoi(f[1])
+	if err1 != nil || err2 != nil || first < 1 || last > 65535 || first > last {
+		return defaultEphemeral
+	}
+	return portRange{first, last}
+}
+
 var ssProcess = regexp.MustCompile(`users:\(\("([^"]+)"`)
 
 // parseSS reads "ss -H -l -n -t -u -p": Netid State Recv-Q Send-Q Local:Port Peer:Port [Process].
 // A socket on a loopback, link-local or tailnet address, or bound to the loopback device, is left
-// out, and so is a DHCP client's (see dhcpClient). Each port and protocol shows once.
-func parseSS(out []byte) []Listener {
+// out, and so is a DHCP client's (see dhcpClient). So is a UDP socket on a port in ephemeral: ss
+// lists a client's unconnected UDP socket, such as cloudflared's QUIC connection to Cloudflare, as
+// listening on 0.0.0.0 and the port the kernel picked, which changes on each reconnect. A TCP
+// socket is always listed, because one that listens is a server. Each port and protocol shows once.
+func parseSS(out []byte, ephemeral portRange) []Listener {
 	list := []Listener{}
 	seen := map[string]bool{}
 	sc := bufio.NewScanner(bytes.NewReader(out))
@@ -265,7 +293,7 @@ func parseSS(out []byte) []Listener {
 			continue
 		}
 		host, port, ok := splitAddress(f[4])
-		if !ok || (f[0] == "udp" && dhcpClient[port]) {
+		if !ok || (f[0] == "udp" && (dhcpClient[port] || port >= ephemeral.first && port <= ephemeral.last)) {
 			continue
 		}
 		if dev := strings.Index(host, "%"); dev >= 0 {
