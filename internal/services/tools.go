@@ -26,7 +26,7 @@ type alertsInput struct {
 
 type deployInput struct {
 	Machine string             `json:"machine" jsonschema:"machine name, as list_machines shows it"`
-	Name    string             `json:"name" jsonschema:"the service's name: lowercase letters and digits, starting with a letter, at most 32, no dashes. It is the compose project name"`
+	Name    string             `json:"name" jsonschema:"the service's name: lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most 32. It is the compose project name"`
 	Compose *string            `json:"compose,omitempty" jsonschema:"the text of the docker compose file; required for a new service, left out to keep the stored one"`
 	Files   map[string]*string `json:"files,omitempty" jsonschema:"config files the compose file mounts, by path relative to it (such as config/nginx.conf), each with its text; merged into the stored ones, null removes one. At most 64 files and 1 MiB"`
 	Env     map[string]*string `json:"env,omitempty" jsonschema:"values for the compose file's ${KEY} interpolation, written to the service's .env: keys in capitals, merged into the stored ones, null removes one. The hub stores them encrypted and shows them as ***"`

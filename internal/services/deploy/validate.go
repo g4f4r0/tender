@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	namePattern      = regexp.MustCompile(`^[a-z][a-z0-9]{0,31}$`)
+	namePattern      = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$`)
 	envKeyPattern    = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 	containerPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
 	segmentPattern   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -46,7 +46,7 @@ const manifestName = ".tender-files.json"
 const TenderProject = "tender"
 
 // ValidName reports whether s can be a managed service's name: the compose project name, lowercase
-// letters and digits, starting with a letter, at most 32.
+// letters, digits and dashes, starting with a letter and not ending with a dash, at most 32.
 func ValidName(s string) bool { return namePattern.MatchString(s) }
 
 // ValidContainer reports whether s can be a service in a compose file, which a route names.
@@ -58,7 +58,7 @@ func CheckName(name string) error {
 		return server.Invalid("name can't be %s: it is the compose project of Tender's own containers, Caddy and cloudflared. Give the service another name.", name)
 	}
 	if !ValidName(name) {
-		return server.Invalid("name must be lowercase letters and digits, starting with a letter, at most %d, with no dashes: "+
+		return server.Invalid("name must be lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most %d: "+
 			"it is the compose project name. Got %q.", MaxNameLength, name)
 	}
 	return nil

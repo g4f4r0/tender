@@ -162,7 +162,7 @@ func TestCheckFilesAndEnv(t *testing.T) {
 			}
 		}
 	}
-	for _, n := range []string{"notes", "a", "app2"} {
+	for _, n := range []string{"notes", "a", "app2", "cli-proxy-api", strings.Repeat("a", 32)} {
 		if CheckName(n) != nil {
 			t.Errorf("name %s refused", n)
 		}
@@ -170,7 +170,7 @@ func TestCheckFilesAndEnv(t *testing.T) {
 	if err := CheckName("tender"); err == nil || !strings.Contains(err.Error(), "the compose project of Tender's own containers") {
 		t.Errorf("the name tender: %v", err)
 	}
-	for _, n := range []string{"", "Notes", "my-app", "2app", strings.Repeat("a", 33)} {
+	for _, n := range []string{"", "Notes", "my_app", "2app", "-app", "app-", strings.Repeat("a", 33)} {
 		if CheckName(n) == nil {
 			t.Errorf("name %q taken", n)
 		}

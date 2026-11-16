@@ -1873,7 +1873,7 @@ It pulls images from their registries, which is why `openWorldHint` is `true`.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
-| `name` | string | Yes | The service's name, its compose project: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `name` | string | Yes | The service's name, its compose project: lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most 32. |
 | `compose` | string | For a new service | The text of the docker compose file. Leave it out to keep the stored one. |
 | `files` | object | No | Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. They merge into the stored ones, and `null` removes one. |
 | `env` | object | No | Values for the compose file's `${KEY}` interpolation. They merge into the stored ones, and `null` removes one. |
@@ -1979,7 +1979,7 @@ A service has at most 64 files and 1 MiB of them, 256 env keys, and 64 routes. T
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `compose is required for a new service: the text of its docker compose file.`
-3. `name must be lowercase letters and digits, starting with a letter, at most 32, with no dashes: it is the compose project name. Got "my-blog".`
+3. `name must be lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most 32: it is the compose project name. Got "My-Blog".`
 4. `Tender didn't deploy service "redis", so it can't change it: ...` for a service Tender found running.
 5. `Host notes.example.com already routes to service notes on apps. A host can route to one service only.`
 6. `Could not deploy blog: ...` when the deploy failed, with the rule the compose file broke, such as `service web in the compose file publishes ports, which Tender's routes do instead: remove ports from web and add a route to its port, such as --route web:80:tailscale`, or compose's reason and the end of its output.
