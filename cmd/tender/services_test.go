@@ -138,6 +138,15 @@ func (h *fakeHub) createService(w http.ResponseWriter, r *http.Request) {
 	}
 	sv := services.Service{ID: h.id(), Machine: m.Name, Name: in.Name, Managed: true, State: services.ServiceStopped, Compose: &in.Compose,
 		Files: in.Files, Env: hidden(in.Env), Routes: fakeRoutes(in.Routes), AlertsEnabled: true, Containers: []services.Container{}}
+	// Like the hub, a service it only watches gives its name to the new one once its containers are gone.
+	for _, old := range h.services[m.Name] {
+		if old.Name == in.Name && !old.Managed && slices.ContainsFunc(old.Containers, func(c services.Container) bool { return c.State != services.StateRemoved }) {
+			problem(w, http.StatusConflict, "Service %q already runs on this machine, and Tender didn't deploy it. Take its containers down "+
+				"(docker compose -p %s down) before Tender deploys it, or give the new service another name.", in.Name, in.Name)
+			return
+		}
+	}
+	h.services[m.Name] = slices.DeleteFunc(h.services[m.Name], func(old services.Service) bool { return old.Name == in.Name && !old.Managed })
 	h.services[m.Name] = append(h.services[m.Name], sv)
 	h.queue(w, m.Name, &h.services[m.Name][len(h.services[m.Name])-1], actions.TypeDeploy, nil)
 }
@@ -380,6 +389,28 @@ func TestServicesShow(t *testing.T) {
 	mustFail(t, h, a, `Service "nope" doesn't exist on this machine.`, "services", "show", "apps", "nope")
 }
 
+// A deploy under the name of a service Tender only watches creates it, which the hub allows once the
+// old containers are down, instead of changing it, which the hub refuses.
+func TestServicesDeployOverUnmanaged(t *testing.T) {
+	h := newFakeHub(t)
+	a := &answers{}
+	mustRun(t, h, a, "machines", "add", "apps")
+	actionCheck = time.Millisecond
+	t.Cleanup(func() { actionCheck = time.Second })
+	h.addServices(t, "apps", lone("cli-proxy-api", services.StateRemoved))
+	compose := filepath.Join(t.TempDir(), "compose.yaml")
+	if err := os.WriteFile(compose, []byte("services:\n  web:\n    image: nginx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.sent()
+	if out := mustRun(t, h, a, "services", "deploy", "apps", "cli-proxy-api", "-f", compose); !strings.HasPrefix(out, "Deployed cli-proxy-api on apps.") {
+		t.Errorf("deploy = %q", out)
+	}
+	if req := h.sent(); len(req) < 2 || req[1].Method != "POST" || req[1].Path != "/v1/machines/apps/services" {
+		t.Errorf("deploy sent %+v", req)
+	}
+}
+
 func TestServicesDeploy(t *testing.T) {
 	h := newFakeHub(t)
 	a := &answers{}
@@ -467,9 +498,10 @@ func TestServicesDeploy(t *testing.T) {
 		t.Errorf("redeploy sent %+v", req)
 	}
 
-	// An unmanaged service can't be deployed over.
+	// An unmanaged service can't be deployed over while its containers run.
 	h.addServices(t, "apps", lone("proxy", services.StateRunning))
-	mustFail(t, h, a, `Tender didn't deploy service "proxy", so it can't change it.`, "services", "deploy", "apps", "proxy", "-f", compose)
+	mustFail(t, h, a, `Service "proxy" already runs on this machine, and Tender didn't deploy it. Take its containers down (docker compose -p proxy down) before Tender deploys it, or give the new service another name.`,
+		"services", "deploy", "apps", "proxy", "-f", compose)
 }
 
 func TestServicesRemove(t *testing.T) {
