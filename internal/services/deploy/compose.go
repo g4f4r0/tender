@@ -71,8 +71,8 @@ type renderedService struct {
 // ipam is a network's address management. Compose renders "ipam": {} on every network; only a
 // driver other than the default, config with subnets, or options set anything.
 type ipam struct {
-	Driver  string            `json:"driver"`
-	Config  []json.RawMessage `json:"config"`
+	Driver  string                     `json:"driver"`
+	Config  []json.RawMessage          `json:"config"`
 	Options map[string]json.RawMessage `json:"options"`
 }
 
