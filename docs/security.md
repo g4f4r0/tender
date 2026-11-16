@@ -35,10 +35,10 @@ The hub sends a sink's whole config, secrets included, only to the daemons of th
 
 People, scripts and AI clients send an API token as `Authorization: Bearer <token>`. A token is `tender_` and 32 random bytes in base64url, shown once when it is made. The hub stores only its SHA-256 hash, and notes when it was last used.
 
-1. Make the first token on the hub machine, as root:
+1. `sudo tender install hub` makes the first token, `owner`, and saves it in `~/.config/tender/token` of the user who ran `sudo`, in a folder only that user can open and a file only that user can read. It never prints the token. The `tender` command refuses a token file that other users can read. For a hub updated from v0.3, make the first token on the hub machine, as root:
 
    ```sh
-   sudo tender tokens add laptop
+   sudo tender tokens add owner
    ```
 
    As root with no token, `tender tokens add` writes to the hub's database directly, so it works while the hub has no token. Anywhere else, it asks the hub with the token you have.
@@ -84,7 +84,7 @@ The daemon, `tenderd`, runs as root. It backs up every file, controls Docker and
 A systemd sandbox keeps a bug in the daemon from changing the system:
 
 1. It holds three capabilities only. `CAP_DAC_READ_SEARCH` reads every file, for backups. `CAP_NET_ADMIN` reads the firewall's rules, and `CAP_SYS_PTRACE` names the process behind each listening socket, for the security checks. Without `CAP_DAC_OVERRIDE` it can't write another user's files.
-2. With `ProtectSystem=strict`, it can write only its own folder, `/var/lib/tender/daemon`, and restic's cache, `/var/cache/tender`.
+2. With `ProtectSystem=strict`, it can write only its own folders, `/var/lib/tender/daemon` and `/var/lib/tender/services`, restic's cache, `/var/cache/tender`, and, for [public routes](exposure.md#public), ufw's rules in `/etc/ufw` and its locks `/run/ufw.lock` and `/run/xtables.lock`. ufw takes its lock for every command, `ufw status` too, so systemd makes the two lock files before the daemon starts. With `ProtectHome=read-only`, `docker` keeps its config in `/var/lib/tender/daemon/docker` rather than `~/.docker`.
 3. `NoNewPrivileges`, the `ProtectKernel` settings and a system call filter keep it from loading modules, changing the clock or gaining privileges.
 4. It may lower a process's CPU and IO priority, which it does for restic, but without `CAP_SYS_NICE` it can't raise one. [Backups](backups.md#destinations-settings-and-runs) explains why.
 

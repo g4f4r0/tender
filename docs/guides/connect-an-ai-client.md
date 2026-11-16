@@ -6,7 +6,7 @@ Give an AI client such as Claude Code the hub's MCP tools, so it can check on yo
 
 1. A running hub, reachable from the machine where the client runs.
 2. An MCP client that supports streamable HTTP, such as Claude Code.
-3. The `tender` command with your API token in `TENDER_TOKEN`, to make the client its own token.
+3. The `tender` command with your API token in `~/.config/tender/token` or `TENDER_TOKEN`, to make the client its own token.
 
 ## Connect Claude Code over HTTP
 

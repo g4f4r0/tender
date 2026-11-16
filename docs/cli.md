@@ -19,13 +19,20 @@ Commands that talk to the hub find it in this order:
 
 They send an API token, from the first of:
 
-1. The `--token TOKEN` option. It shows in your shell history and the process list, so prefer the variable.
+1. The `--token TOKEN` option. It shows in your shell history and the process list, so prefer the file.
 2. The `TENDER_TOKEN` environment variable, such as `export TENDER_TOKEN=tender_...`.
+3. The file `tender/token` in `XDG_CONFIG_HOME`, else `~/.config/tender/token`, with spaces and line breaks around the token left out. `sudo tender install hub` writes it on the hub machine, and [`tender tokens add`](#tender-tokens-add) prints a line that writes it on another.
 
-Make the first token on the hub machine with `sudo tender tokens add NAME`, as [`tender tokens add`](#tender-tokens-add) explains. Without a token, a command stops with:
+A token file that other users can read is refused, with the fix:
 
 ```text
-tender: the hub at https://apps.your-tailnet.ts.net needs an API token. Set TENDER_TOKEN to one, or pass --token TOKEN. Make the first one on the hub machine with: sudo tender tokens add NAME
+tender: the API token file /home/you/.config/tender/token can be read by other users (mode 0644), so the tender command won't use it. Make it yours alone with: chmod 600 /home/you/.config/tender/token
+```
+
+Without a token, a command stops with:
+
+```text
+tender: the hub at https://apps.your-tailnet.ts.net needs an API token. Save one in ~/.config/tender/token, set TENDER_TOKEN to one, or pass --token TOKEN. Make one on the hub machine with: sudo tender tokens add NAME
 ```
 
 Options and arguments can come in any order, so `tender machines add apps --hub URL` and `tender machines add --hub URL apps` are the same.
@@ -2044,7 +2051,7 @@ laptop        just now    2 hours ago
 
 Makes an API token and prints it once.
 
-As root without a token, such as `sudo tender tokens add laptop` on the hub machine, it writes to the hub's database directly, which is how you make the first token. `sudo` leaves out `TENDER_TOKEN`, so this works even when you have one. Otherwise it asks the hub, with the token you have.
+As root without a token, such as `sudo tender tokens add laptop` on the hub machine, it writes to the hub's database directly, which is how you make a token when you have none. `sudo` leaves out `TENDER_TOKEN` and your token file, so this works even when you have one. Otherwise it asks the hub, with the token you have.
 
 #### Usage
 
@@ -2075,7 +2082,12 @@ The token, shown only now. Save it before you go on:
 
 Use it from the tender command:
   export TENDER_TOKEN=tender_<43 characters>
+
+Or save it for the tender command on another machine:
+  mkdir -p ~/.config/tender && (umask 077; printf %s 'tender_<43 characters>' > ~/.config/tender/token)
 ```
+
+Run the last line as yourself, without `sudo`, on the machine you'll use the token from.
 
 #### Errors
 
@@ -2164,12 +2176,13 @@ sudo tender install hub --smtp-host smtp.example.com --smtp-from "Tender <alerts
 ```
 
 ```text
+Saved your API token owner in /home/you/.config/tender/token, where the tender command finds it.
 The hub is running at https://apps.your-tailnet.ts.net.
 The tender command on this machine finds it by itself.
 Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
 ```
 
-The output goes on with the next steps: make your API token with `sudo tender tokens add NAME`, then add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
+The install makes the API token `owner`, or `owner-2` and up when that name is taken, once the hub has made its database, and saves it in `~/.config/tender/token` of `SUDO_USER`, or root's without it: the folder mode `0700`, the file `0600`, both that user's. It never prints the token. A token file already there stays, and no token is made. When it can't make one, it says why and how to make it by hand, and the install goes on. The output goes on with the next steps: add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
 
 The host and the sender go together, so pass both empty to turn alert emails off:
 

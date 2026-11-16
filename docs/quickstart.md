@@ -41,20 +41,7 @@ This guide puts the hub and the daemon on the same machine, called `apps`, and b
 
 3. Save the file in your password manager. Its key decrypts the secrets the hub stores, and the hub won't start without it.
 
-4. Make your API token, which every `tender` command sends:
-
-   ```sh
-   sudo tender tokens add laptop
-   ```
-
-   It prints the token once, with the line to use it:
-
-   ```text
-   Use it from the tender command:
-     export TENDER_TOKEN=tender_<43 characters>
-   ```
-
-5. Run that `export` line, and save the token in your password manager.
+Every `tender` command sends an API token. The install made yours, `owner`, and saved it in `~/.config/tender/token`, where the `tender` command on this machine finds it.
 
 ## 2. Add a destination
 
