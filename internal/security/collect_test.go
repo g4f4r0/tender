@@ -57,8 +57,6 @@ const ubuntu = "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"
 const ssOut = `udp   UNCONN 0      0           127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=1,fd=3))
 udp   UNCONN 0      0                 0.0.0.0:41641      0.0.0.0:*    users:(("tailscaled",pid=2,fd=4))
 udp   UNCONN 0      0                    [::]:41641         [::]:*    users:(("tailscaled",pid=2,fd=5))
-udp   UNCONN 0      0                 0.0.0.0:54637      0.0.0.0:*    users:(("cloudflared",pid=11,fd=8))
-tcp   LISTEN 0      4096              0.0.0.0:50000      0.0.0.0:*    users:(("app",pid=12,fd=3))
 tcp   LISTEN 0      4096       100.123.64.92%tailscale0:35961   0.0.0.0:*
 tcp   LISTEN 0      4096            127.0.0.1:8080       0.0.0.0:*    users:(("tender",pid=3,fd=7))
 tcp   LISTEN 0      4096              0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=4,fd=3))
@@ -89,13 +87,6 @@ func TestCollectOnUbuntu(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "var/run"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A narrower ephemeral range than Linux's default, so 41641 is outside it and 54637 inside.
-	if err := os.MkdirAll(filepath.Join(root, "proc/sys/net/ipv4"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "proc/sys/net/ipv4/ip_local_port_range"), []byte("49152\t65535\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(root, "var/run/reboot-required"), []byte("*** System restart required ***\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +110,7 @@ func TestCollectOnUbuntu(t *testing.T) {
 	for _, l := range r.Listeners.Ports {
 		keys = append(keys, l.Key()+"@"+l.Address)
 	}
-	want := []string{"41641/udp@0.0.0.0", "50000/tcp@0.0.0.0", "22/tcp@0.0.0.0", "8443/tcp@0.0.0.0", "8080/tcp@0.0.0.0", "5432/tcp@0.0.0.0"}
+	want := []string{"41641/udp@0.0.0.0", "22/tcp@0.0.0.0", "8443/tcp@0.0.0.0", "8080/tcp@0.0.0.0", "5432/tcp@0.0.0.0"}
 	if !reflect.DeepEqual(keys, want) {
 		t.Errorf("listeners = %v, want %v", keys, want)
 	}
@@ -156,61 +147,11 @@ udp   UNCONN 0      0                 0.0.0.0:67         0.0.0.0:*    users:(("d
 tcp   LISTEN 0      4096              0.0.0.0:546        0.0.0.0:*    users:(("odd",pid=10,fd=3))
 `
 	var keys []string
-	for _, l := range parseSS([]byte(out), defaultEphemeral) {
+	for _, l := range parseSS([]byte(out)) {
 		keys = append(keys, l.Key())
 	}
 	if want := []string{"67/udp", "546/tcp"}; !reflect.DeepEqual(keys, want) {
 		t.Errorf("listeners = %v, want %v", keys, want)
-	}
-}
-
-// A client's UDP socket, as cloudflared's QUIC connections to Cloudflare, shows in ss as listening
-// on 0.0.0.0 and a port from the kernel's ephemeral range, which changes on each reconnect. Those
-// are left out; UDP outside the range, and TCP in it, are still listed.
-func TestParseSSLeavesOutEphemeralUDP(t *testing.T) {
-	out := `udp   UNCONN 0      0                 0.0.0.0:33295      0.0.0.0:*    users:(("cloudflared",pid=7,fd=9))
-udp   UNCONN 0      0                 0.0.0.0:54637      0.0.0.0:*    users:(("cloudflared",pid=7,fd=10))
-udp   UNCONN 0      0                    [::]:36392         [::]:*    users:(("cloudflared",pid=7,fd=11))
-udp   UNCONN 0      0                 0.0.0.0:50725      0.0.0.0:*    users:(("cloudflared",pid=7,fd=12))
-udp   UNCONN 0      0                 0.0.0.0:32768      0.0.0.0:*    users:(("client",pid=8,fd=3))
-udp   UNCONN 0      0                 0.0.0.0:60999      0.0.0.0:*    users:(("client",pid=8,fd=4))
-udp   UNCONN 0      0                 0.0.0.0:32767      0.0.0.0:*    users:(("server",pid=9,fd=3))
-udp   UNCONN 0      0                 0.0.0.0:61000      0.0.0.0:*    users:(("server",pid=9,fd=4))
-udp   UNCONN 0      0                 0.0.0.0:443        0.0.0.0:*    users:(("caddy",pid=10,fd=5))
-tcp   LISTEN 0      4096              0.0.0.0:33295      0.0.0.0:*    users:(("app",pid=11,fd=3))
-`
-	var keys []string
-	for _, l := range parseSS([]byte(out), defaultEphemeral) {
-		keys = append(keys, l.Key())
-	}
-	if want := []string{"32767/udp", "61000/udp", "443/udp", "33295/tcp"}; !reflect.DeepEqual(keys, want) {
-		t.Errorf("listeners = %v, want %v", keys, want)
-	}
-}
-
-// The ephemeral range is the kernel's, else Linux's default when the file is missing or unreadable.
-func TestEphemeralRange(t *testing.T) {
-	for content, want := range map[string]portRange{
-		"":                  defaultEphemeral,
-		"1024\t65000\n":     {1024, 65000},
-		"  40000   50000  ": {40000, 50000},
-		"garbage":           defaultEphemeral,
-		"50000\t40000\n":    defaultEphemeral,
-		"0\t65536\n":        defaultEphemeral,
-	} {
-		root := t.TempDir()
-		if content != "" {
-			dir := filepath.Join(root, "proc/sys/net/ipv4")
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "ip_local_port_range"), []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if got := (&Collector{Root: root}).ephemeral(); got != want {
-			t.Errorf("%q: ephemeral = %v, want %v", content, got, want)
-		}
 	}
 }
 

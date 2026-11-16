@@ -56,7 +56,6 @@ func TestSecurityFindings(t *testing.T) {
 		{"auto updates", secured(manual(clean()), manual(clean())), []string{"security.auto_updates_off:warning:"}},
 		{"ports, each its own, the allowed one and a new one left out", secured(ports("8080/tcp", "41641/udp", "5432/tcp")(clean()), ports("8080/tcp", "41641/udp")(clean())),
 			[]string{"security.port_exposed:warning:8080/tcp"}},
-		{"a port the latest report leaves out, as an ephemeral UDP port", secured(clean(), ports("54637/udp")(clean())), []string{}},
 		{"first report", secured(off(clean()), nil), []string{}},
 		{"notifications off", func() *machineSecurity { s := secured(off(clean()), off(clean())); s.Enabled = false; return s }(), []string{}},
 		{"no reports", nil, []string{}},

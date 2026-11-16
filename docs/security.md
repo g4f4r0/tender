@@ -111,7 +111,7 @@ The daemon checks its machine when it starts and every 15 minutes, and reports w
 | Check | What it reads | Alert |
 | --- | --- | --- |
 | Firewall | `ufw status verbose`, or without ufw, the input chains of `nft -j list chains`, or `iptables -S INPUT`. | `security.firewall_off` when no active firewall denies incoming traffic by default. |
-| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). A DHCP client's port (UDP 68, or 546 for DHCPv6) is left out: the client only takes the answers of the network's DHCP server. So is UDP on the kernel's ephemeral ports, `/proc/sys/net/ipv4/ip_local_port_range`, else 32768 to 60999: clients bind there, such as cloudflared's QUIC connections to Cloudflare, on a port that changes on each reconnect. That leaves out Tailscale's 41641 too, but not TCP, which listens only to serve. Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port is on the machine's allowlist. |
+| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). A DHCP client's port (UDP 68, or 546 for DHCPv6) is left out: the client only takes the answers of the network's DHCP server. Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port is on the machine's allowlist. |
 | SSH | `PasswordAuthentication` and `PermitRootLogin` from `sshd -T`. | `security.ssh_weak` when `PasswordAuthentication` is `yes`. |
 | Updates | A simulated `apt-get upgrade --with-new-pkgs`, what `tender machines upgrade --all-packages` would install, counting the updates from a security repository, and whether unattended-upgrades is on. | `security.updates_pending` after 3 days, `security.auto_updates_off`. |
 | Reboot | `/var/run/reboot-required` and its age. | `security.reboot_required` after 7 days. |
@@ -133,20 +133,20 @@ Reboot: not needed
 
 Listening on a public address:
 PORT        ADDRESS   PROCESS     NOTE
-443/udp     0.0.0.0   caddy       allowed
+41641/udp   0.0.0.0   tailscaled  allowed
 8080/tcp    0.0.0.0   -           published by Docker for web, around ufw
 
 Allow an expected port with: tender machines set apps --allow-port PORT
 ```
 
-Allow the ports that should be reachable, such as HTTP/3's:
+Allow the ports that should be reachable, such as Tailscale's:
 
 ```sh
-tender machines set apps --allow-port 443/udp
+tender machines set apps --allow-port 41641/udp
 ```
 
 ```text
-apps: updates inherit, allowed ports 443/udp, security alerts on.
+apps: updates inherit, allowed ports 41641/udp, security alerts on.
 ```
 
 Take one off with `--deny-port`, and turn a machine's security notifications off with `--security-alerts off`. [Notifications](notifications.md#security-events) explains when each event fires.
