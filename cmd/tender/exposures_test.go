@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // The Cloudflare settings can be set, shown and removed from the command line and over MCP,

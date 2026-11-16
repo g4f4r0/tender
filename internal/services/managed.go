@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/secret"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services/deploy"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // Actions is what the store needs from the actions domain: it queues a service's actions and reads

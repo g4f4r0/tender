@@ -773,7 +773,7 @@ apps      redis     running    1/1       200 MiB   12.5%   -          on
 The columns are:
 
 1. `STATE` is `running`, `degraded`, `stopped` or `unknown`, as [Services](services.md#what-a-service-is) explains.
-2. `RUNNING` is how many of its containers run, of those Docker still has. A service whose containers are all gone shows `removed`, as [Removed containers](services.md#removed-containers) explains.
+2. `RUNNING` is how many of its containers run, of those Docker still has, leaving out one-shot containers that finished: they exited 0 with restart `no` or `on-failure`, such as a seed or migration step. A service whose containers are all gone shows `removed`, as [Removed containers](services.md#removed-containers) explains.
 3. `MEM` and `CPU` are its running containers' together, where 100% is one whole CPU. They show `-` while no container says, as [What the daemon reports](services.md#what-the-daemon-reports) explains.
 4. `DEPLOY` is how the last deploy of a service Tender deployed went: `deploying`, `deployed`, `failed` or `removing`, and `-` for one it didn't.
 5. `ALERTS` says whether the service alerts.

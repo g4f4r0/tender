@@ -4,7 +4,7 @@
 // expose). The hub checks a service's input with the same rules for names, files and env.
 package deploy
 
-import "github.com/g4f4r0/tender/internal/apps/expose"
+import "github.com/g4f4r0/tender/internal/services/expose"
 
 // Ways a route is exposed.
 const (

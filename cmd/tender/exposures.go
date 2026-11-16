@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // newCloudflareStore returns the Cloudflare settings store, which calls the Cloudflare API, or the

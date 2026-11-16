@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/client"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // The daemon's limits on compose: how long up waits for the services to be healthy, and how much of

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/server"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // errCloudflareNotSet is how a cloudflare route says the hub has no Cloudflare settings, and how to
