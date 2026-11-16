@@ -896,3 +896,38 @@ func TestHubSavesTheOwnerToken(t *testing.T) {
 		t.Errorf("a token file without a token: %v", err)
 	}
 }
+
+// What the deploy path runs works under the daemon's sandbox: ufw takes /run/ufw.lock for every
+// command and writes /etc/ufw, and iptables's legacy backend takes /run/xtables.lock, so those are
+// the only writable paths outside the daemon's own, and the lock files exist before the sandbox
+// binds them; docker keeps its config in the state folder, since ~/.docker is read-only.
+func TestDaemonUnitLetsTheDeployRun(t *testing.T) {
+	e := newEnv(t)
+	b, err := e.in.daemonUnit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(b)
+	values := map[string][]string{}
+	for _, line := range strings.Split(unit, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(line, "#") {
+			values[k] = append(values[k], v)
+		}
+	}
+	for k, want := range map[string]string{"ProtectSystem": "strict", "ProtectHome": "read-only", "PrivateTmp": "yes",
+		"ExecStartPre": "-+touch /run/ufw.lock /run/xtables.lock", "ReadWritePaths": "-/etc/ufw -/run/ufw.lock -/run/xtables.lock"} {
+		if got := values[k]; len(got) != 1 || got[0] != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	// A writable path under /run must be one the touch makes, since systemd binds only paths that exist.
+	touched := strings.Fields(strings.TrimPrefix(values["ExecStartPre"][0], "-+touch"))
+	for _, p := range strings.Fields(values["ReadWritePaths"][0]) {
+		if p = strings.TrimPrefix(p, "-"); strings.HasPrefix(p, "/run/") && !slices.Contains(touched, p) {
+			t.Errorf("%s is writable, but nothing makes it before the daemon starts", p)
+		}
+	}
+	if !slices.Contains(values["Environment"], "DOCKER_CONFIG=%S/tender/daemon/docker") || !strings.Contains(unit, "\nStateDirectory=tender/daemon ") {
+		t.Errorf("docker's config isn't in the daemon's state folder: %q", values["Environment"])
+	}
+}
