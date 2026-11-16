@@ -50,7 +50,7 @@ func TestCheckRules(t *testing.T) {
 		"secrets":[{"source":"key"}],"configs":["c"],
 		"volumes":[{"type":"bind","source":"` + dir + `/data","target":"/data","bind":{"create_host_path":true}},
 			{"type":"volume","source":"db","target":"/db","volume":{"nocopy":true}},{"type":"tmpfs","target":"/run","tmpfs":{"size":1}}]}`
-	commonRest := `"name":"notes","x-common":{},"volumes":{"db":{"name":"notes_db"}},"networks":{"default":{"name":"notes_default","ipam":{}},
+	commonRest := `"name":"notes","x-common":{},"volumes":{"db":{"name":"notes_db"}},"networks":{"default":{"name":"notes_default"},
 		"back":{"name":"notes_back","internal":true}},"secrets":{"key":{"name":"notes_key","file":"` + dir + `/key.txt"}},
 		"configs":{"c":{"name":"notes_c","content":"x"}}`
 	if err := CheckRules(rendered(t, common, commonRest), dir); err != nil {
@@ -75,6 +75,17 @@ func TestCheckRules(t *testing.T) {
 		{"uts host", `{"image":"x","mem_limit":"1","uts":"host"}`, "", "sets uts, which Tender's rules don't allow: remove uts from web"},
 		{"userns host", `{"image":"x","mem_limit":"1","userns_mode":"host"}`, "", "sets userns_mode, which Tender's rules don't allow: remove userns_mode from web"},
 		{"unconfined", `{"image":"x","mem_limit":"1","security_opt":["seccomp:unconfined"]}`, "", "has security_opt seccomp:unconfined"},
+		// security_opt and cap_add are allowlists: anything else could turn a protection off.
+		{"seccomp profile", `{"image":"x","mem_limit":"1","security_opt":["seccomp=` + dir + `/allow-all.json"]}`, "",
+			"service web in the compose file has security_opt seccomp=" + dir + "/allow-all.json, and Tender allows only no-new-privileges, because another could turn its protection off: remove it from web"},
+		{"apparmor", `{"image":"x","mem_limit":"1","security_opt":["apparmor=other"]}`, "", "has security_opt apparmor=other, and Tender allows only no-new-privileges"},
+		{"no-new-privileges false", `{"image":"x","mem_limit":"1","security_opt":["no-new-privileges:false"]}`, "", "has security_opt no-new-privileges:false"},
+		{"cap audit_control", `{"image":"x","mem_limit":"1","cap_add":["AUDIT_CONTROL"]}`, "",
+			"adds the capability AUDIT_CONTROL, and Tender allows only NET_BIND_SERVICE, CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE, KILL, SETPCAP, NET_RAW, which Docker gives every container anyway"},
+		{"cap syslog", `{"image":"x","mem_limit":"1","cap_add":["CAP_SYSLOG"]}`, "", "adds the capability SYSLOG"},
+		{"cap sys_resource", `{"image":"x","mem_limit":"1","cap_add":["sys_resource"]}`, "", "adds the capability SYS_RESOURCE"},
+		{"network ipam", `{"image":"x","mem_limit":"1"}`, `"networks":{"lan":{"ipam":{"config":[{"subnet":"100.64.0.0/10"}]}}}`,
+			"network lan sets ipam, which Tender's rules don't allow: remove ipam from it"},
 		{"cap_add", `{"image":"x","mem_limit":"1","cap_add":["CAP_SYS_ADMIN"]}`, "", "adds the capability SYS_ADMIN"},
 		{"cap_add all", `{"image":"x","mem_limit":"1","cap_add":["all"]}`, "", "adds the capability ALL"},
 		{"docker socket", `{"image":"x","mem_limit":"1","volumes":[{"type":"bind","source":"` + dir + `/docker.sock","target":"/var/run/docker.sock"}]}`, "",

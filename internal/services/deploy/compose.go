@@ -97,9 +97,13 @@ func ParseRendered(b []byte) (Rendered, error) {
 	return r, nil
 }
 
-// The capabilities a service may not add: each is enough to take over the machine.
-var deniedCaps = []string{"ALL", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_RAWIO", "DAC_READ_SEARCH", "NET_ADMIN", "BPF", "PERFMON",
-	"MAC_ADMIN", "MAC_OVERRIDE", "SYS_BOOT", "SYS_TIME"}
+// The capabilities a service may add: some of those Docker gives every container anyway, which
+// are harmless to add back after cap_drop: ALL. Any other is refused.
+var allowedCaps = []string{"NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "KILL", "SETPCAP", "NET_RAW"}
+
+// The security_opt values a service may set: they only take privileges away. Any other could turn
+// a protection off, such as seccomp=<file> with a profile that allows everything.
+var allowedSecurityOpts = []string{"no-new-privileges", "no-new-privileges:true"}
 
 // The keys Tender allows, at each level of the rendered config. Keys starting x- are allowed
 // everywhere: compose ignores them. A key that isn't here is refused, so a key compose learns later
@@ -121,7 +125,7 @@ var (
 	tmpfsMountKeys   = keys("size", "mode")
 	serviceNetKeys   = keys("aliases", "ipv4_address", "ipv6_address", "priority", "gw_priority")
 	volumeKeys       = keys("name", "labels", "external", "driver", "driver_opts")
-	networkKeys      = keys("name", "driver", "ipam", "internal", "attachable", "enable_ipv4", "enable_ipv6", "labels", "external")
+	networkKeys      = keys("name", "driver", "internal", "attachable", "enable_ipv4", "enable_ipv6", "labels", "external")
 	fileRefKeys      = keys("name", "file", "environment", "content", "external")
 	logDrivers       = keys("", "json-file", "local", "journald", "none")
 )
@@ -347,14 +351,14 @@ func checkService(r Rendered, name, dir string) error {
 		}
 	}
 	for _, opt := range sv.SecurityOpt {
-		o := strings.ReplaceAll(strings.ToLower(opt), "=", ":")
-		if strings.Contains(o, "unconfined") || o == "label:disable" {
-			return fail("has security_opt %s, which turns its protection off: remove it from %s", opt, name)
+		if !slices.Contains(allowedSecurityOpts, opt) {
+			return fail("has security_opt %s, and Tender allows only no-new-privileges, because another could turn its protection off: remove it from %s", opt, name)
 		}
 	}
 	for _, c := range sv.CapAdd {
-		if cp := strings.TrimPrefix(strings.ToUpper(c), "CAP_"); slices.Contains(deniedCaps, cp) {
-			return fail("adds the capability %s, which is enough to take over the machine: remove it from cap_add", cp)
+		if cp := strings.TrimPrefix(strings.ToUpper(c), "CAP_"); !slices.Contains(allowedCaps, cp) {
+			return fail("adds the capability %s, and Tender allows only %s, which Docker gives every container anyway: remove it from cap_add",
+				cp, strings.Join(allowedCaps, ", "))
 		}
 	}
 	if err := checkMounts(sv, raw, name, dir, fail); err != nil {
@@ -546,13 +550,9 @@ func envFilePath(raw json.RawMessage) string {
 	return o.Path
 }
 
-// CheckLinks walks each path in dir that compose will read or bind for r, a part at a time, and
-// refuses one that goes through a symbolic link or isn't a plain folder or file: a container that
-// can write in a bound folder could have made one point anywhere on the machine. A path that isn't
-// there yet is fine: compose makes it. The daemon calls it right before up; a running container
-// can still race it, so the main guard is that a bind stays off what Tender owns.
-func CheckLinks(r Rendered, dir string) error {
-	type use struct{ what, path string }
+// readPaths returns each path on the machine that compose binds or reads for r, what uses it first.
+func readPaths(r Rendered) []struct{ what, path string } {
+	type use = struct{ what, path string }
 	var uses []use
 	for _, name := range SortedKeys(r.Services) {
 		sv := r.Services[name]
@@ -573,8 +573,36 @@ func CheckLinks(r Rendered, dir string) error {
 	for _, name := range SortedKeys(r.Configs) {
 		uses = append(uses, use{"config " + name + " reads", r.Configs[name].File})
 	}
-	for _, u := range uses {
-		p := strings.ReplaceAll(u.path, "$$", "$")
+	for i := range uses {
+		uses[i].path = strings.ReplaceAll(uses[i].path, "$$", "$")
+	}
+	return uses
+}
+
+// reachedBy returns the first of writable, folders that running containers can write in, that a
+// path r binds or reads is in or is, or "" when none is.
+func reachedBy(r Rendered, writable []string) string {
+	for _, u := range readPaths(r) {
+		if u.path == "" {
+			continue
+		}
+		for _, w := range writable {
+			if inside(w, u.path) {
+				return w
+			}
+		}
+	}
+	return ""
+}
+
+// CheckLinks walks each path in dir that compose will read or bind for r, a part at a time, and
+// refuses one that goes through a symbolic link or isn't a plain folder or file: a container that
+// can write in a bound folder could have made one point anywhere on the machine. A path that isn't
+// there yet is fine: compose makes it. The daemon calls it right before up, after it stopped the
+// containers that could write where one of these paths goes, so none can race it.
+func CheckLinks(r Rendered, dir string) error {
+	for _, u := range readPaths(r) {
+		p := u.path
 		if p == "" || !inside(dir, p) {
 			continue
 		}
