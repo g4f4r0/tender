@@ -748,6 +748,11 @@ func deref(p *int64) int64 {
 
 // Update applies a change to one of the machine's managed services and queues its deploy.
 func (s *Store) Update(ctx context.Context, machineID int64, name string, c Change) (Queued, error) {
+	// The name's rules come first, so tender, the project of Tender's own containers, says why it
+	// is refused rather than that Tender didn't deploy it.
+	if err := deploy.CheckName(name); err != nil {
+		return Queued{}, err
+	}
 	sv, err := s.changeable(ctx, machineID, name, "change")
 	if err != nil {
 		return Queued{}, err
@@ -834,6 +839,9 @@ func (s *Store) Update(ctx context.Context, machineID int64, name string, c Chan
 
 // Redeploy queues a deploy of the managed service as stored, which pulls its images again.
 func (s *Store) Redeploy(ctx context.Context, machineID int64, name string) (Queued, error) {
+	if err := deploy.CheckName(name); err != nil {
+		return Queued{}, err
+	}
 	if _, err := s.changeable(ctx, machineID, name, "deploy"); err != nil {
 		return Queued{}, err
 	}

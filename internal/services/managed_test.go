@@ -424,3 +424,20 @@ func TestLocalPortsAreNotReusedRightAway(t *testing.T) {
 		t.Errorf("wiki has %d; want 20003, the next free after shop's", p)
 	}
 }
+
+// tender, the project of Tender's own containers, shows as a service Tender didn't deploy once
+// Caddy runs; changing or redeploying it says the name is Tender's, not that Tender didn't deploy it.
+func TestTheTenderProjectCantBeDeployed(t *testing.T) {
+	s, _ := managedStore(t)
+	ctx := context.Background()
+	if _, err := s.db.Write.Exec(`INSERT INTO services (machine_id, name, created_at, updated_at) VALUES (1, 'tender', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	compose := notesCompose
+	if _, err := s.Update(ctx, 1, "tender", Change{Compose: &compose}); err == nil || !strings.Contains(err.Error(), "the compose project of Tender") {
+		t.Errorf("update: %v", err)
+	}
+	if _, err := s.Redeploy(ctx, 1, "tender"); err == nil || !strings.Contains(err.Error(), "the compose project of Tender") {
+		t.Errorf("redeploy: %v", err)
+	}
+}
