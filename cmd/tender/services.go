@@ -477,7 +477,9 @@ func servicesDeploy(args []string, s session) error {
 	err = hub.do(http.MethodGet, servicePath(machine, name, ""), nil, &current)
 	var q queued
 	switch {
-	case answered(err, http.StatusNotFound):
+	// A service Tender only watches is created too: the hub takes its name over once its containers
+	// are down, and otherwise says how to take them down.
+	case answered(err, http.StatusNotFound), err == nil && !current.Managed:
 		in := services.Input{Name: name, Compose: string(text), Files: fileSet, Env: envSet, Routes: routeList}
 		if err := hub.do(http.MethodPost, machinePath(machine, "/services"), in, &q); err != nil {
 			return err

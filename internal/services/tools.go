@@ -112,9 +112,11 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 				return Queued{}, err
 			}
 			var q Queued
-			_, err = s.row(ctx, id, in.Name)
+			current, err := s.row(ctx, id, in.Name)
 			switch {
-			case isNotFound(err):
+			// A service Tender only watches is created too: Create takes its name over once its
+			// containers are down, and otherwise says how to take them down.
+			case isNotFound(err), err == nil && !current.Managed:
 				if in.Compose == nil {
 					return Queued{}, server.Invalid("compose is required for a new service: the text of its docker compose file.")
 				}
