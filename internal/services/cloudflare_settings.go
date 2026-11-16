@@ -271,7 +271,7 @@ func (s *CloudflareStore) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "set_cloudflare_settings", "Set the Cloudflare settings",
 		"Set the Cloudflare account and API token that services' cloudflare routes use. The token needs "+expose.CloudflarePermissions+
-			". The hub first asks Cloudflare whether the token reaches the account's tunnels and zones, and stores nothing if it "+
+			", and a route with access also "+expose.CloudflareAccessPermissions+". The hub first asks Cloudflare whether the token reaches the account's tunnels and zones, and stores nothing if it "+
 			"doesn't. The result is the settings. "+cloudflareFields,
 		mcp.WriteOptions{Idempotent: true, OpenWorld: true},
 		func(ctx context.Context, in setCloudflareInput) (CloudflareSettings, error) {
