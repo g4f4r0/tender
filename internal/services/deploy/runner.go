@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -194,7 +195,13 @@ func (t *tail) String() string {
 // compose runs docker compose in dir with args, step naming its command in an error. It writes what
 // compose prints to out; stdout, when given, takes compose's standard output instead.
 func (d *Runner) compose(ctx context.Context, dir, config, step string, out io.Writer, stdout io.Writer, args ...string) error {
-	cmd := exec.CommandContext(ctx, d.Docker, append([]string{"compose"}, args...)...)
+	return d.docker(ctx, dir, config, "compose "+step, out, stdout, append([]string{"compose"}, args...)...)
+}
+
+// docker runs the docker program in dir with args, step naming its command in an error, as compose
+// does.
+func (d *Runner) docker(ctx context.Context, dir, config, step string, out io.Writer, stdout io.Writer, args ...string) error {
+	cmd := exec.CommandContext(ctx, d.Docker, args...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = out, out
 	if stdout != nil {
@@ -212,7 +219,7 @@ func (d *Runner) compose(ctx context.Context, dir, config, step string, out io.W
 	case errors.Is(err, exec.ErrNotFound):
 		return fmt.Errorf("docker isn't installed on this machine, or not on the daemon's PATH. Install Docker with its compose plugin")
 	case errors.As(err, &exit):
-		return fmt.Errorf("docker compose %s exited with status %d", step, exit.ExitCode())
+		return fmt.Errorf("docker %s exited with status %d", step, exit.ExitCode())
 	}
 	return err
 }
@@ -328,6 +335,19 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 	if err := d.compose(ctx, dir, config, "pull", out, nil, append(files, "pull")...); err != nil {
 		return out.String(), fmt.Errorf("%v: it could not pull the images. The end of its output:\n%s", err, out.String())
 	}
+	// A running container of the service that can write where the new config binds or reads could
+	// swap a symbolic link in between the check and up: those containers stop first. Otherwise the
+	// containers keep running until up recreates them.
+	writable, err := d.writableBinds(ctx, dir, config, files)
+	if err != nil {
+		return out.String(), err
+	}
+	if under := reachedBy(r, writable); under != "" {
+		_, _ = fmt.Fprintf(out, "Stopping the service's containers before up: one of them can write in %s, which this deploy binds or reads.\n", under)
+		if err := d.compose(ctx, dir, config, "stop", out, nil, append(files, "stop")...); err != nil {
+			return out.String(), fmt.Errorf("%v: the containers could not be stopped before up. The end of its output:\n%s", err, out.String())
+		}
+	}
 	if err := CheckLinks(r, dir); err != nil {
 		return out.String(), err
 	}
@@ -339,6 +359,43 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 		return out.String(), fmt.Errorf("the service runs, but its routes could not all be exposed: %w", err)
 	}
 	return out.String(), nil
+}
+
+// writableBinds returns the host paths that the service's running containers have bound
+// read-write. files are compose's options for the checked config.
+func (d *Runner) writableBinds(ctx context.Context, dir, config string, files []string) ([]string, error) {
+	var ids bytes.Buffer
+	errOut := &tail{}
+	if err := d.compose(ctx, dir, config, "ps", errOut, &ids, append(files, "ps", "--quiet", "--status", "running")...); err != nil {
+		return nil, fmt.Errorf("%v: could not list the service's running containers before up:\n%s", err, errOut.String())
+	}
+	list := strings.Fields(ids.String())
+	if len(list) == 0 {
+		return nil, nil
+	}
+	var inspected bytes.Buffer
+	if err := d.docker(ctx, dir, config, "inspect", errOut, &inspected, append([]string{"inspect"}, list...)...); err != nil {
+		return nil, fmt.Errorf("%v: could not read the mounts of the service's containers before up:\n%s", err, errOut.String())
+	}
+	var containers []struct {
+		Mounts []struct {
+			Type   string `json:"Type"`
+			Source string `json:"Source"`
+			RW     bool   `json:"RW"`
+		} `json:"Mounts"`
+	}
+	if err := json.Unmarshal(inspected.Bytes(), &containers); err != nil {
+		return nil, fmt.Errorf("docker inspect printed something that isn't its JSON: %w", err)
+	}
+	var out []string
+	for _, c := range containers {
+		for _, m := range c.Mounts {
+			if m.Type == "bind" && m.RW && m.Source != "" {
+				out = append(out, filepath.Clean(m.Source))
+			}
+		}
+	}
+	return out, nil
 }
 
 func writeOverride(dir string, content []byte) error {

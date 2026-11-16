@@ -31,9 +31,12 @@ func fakeDocker(t *testing.T, rendered, fail string) (bin, log string) {
 	script := `#!/bin/sh
 echo "$(pwd) | $* | $(cat "$DOCKER_CONFIG/config.json" 2>/dev/null) | checked=$(tr -d '\n\t' < "$DOCKER_CONFIG/compose.checked.json" 2>/dev/null)" >> ` + log + `
 for a in "$@"; do last="$a"; done
+d=$(dirname "$0")
+if [ "$1" = inspect ]; then cat "$d/inspect.json"; exit 0; fi
 for a in "$@"; do
   case "$a" in
     config) cat ` + out + `; exit 0 ;;
+    ps) cat "$d/ps.out" 2>/dev/null; exit 0 ;;
     ` + fail + `) echo "Error response from daemon: it broke" >&2; exit 1 ;;
   esac
 done
@@ -125,9 +128,14 @@ func TestDeploy(t *testing.T) {
 	}
 	folder := filepath.Join(r.Dir, "notes")
 	got := calls(t, log)
-	if len(got) != 3 {
+	if len(got) != 4 {
 		t.Fatalf("calls = %q", got)
 	}
+	// With no container running, nothing stops before up.
+	if !strings.Contains(got[2], "compose.tender.yaml ps --quiet --status running | ") {
+		t.Errorf("call 2 = %q, want ps", got[2])
+	}
+	got = append(got[:2], got[3])
 	for i, want := range []string{
 		folder + " | compose -p notes -f compose.yaml config --format json | ",
 		folder + " | compose -p notes --project-directory " + folder + " -f ",
@@ -216,7 +224,7 @@ func TestDeployRefused(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "service web in the compose file mounts "+folder+"/data/x/etc, and "+folder+"/data/x in its folder is a symbolic link") {
 		t.Errorf("a bind through a link: %v", err)
 	}
-	if got := calls(t, log); len(got) != 2 || !strings.Contains(got[1], " pull | ") {
+	if got := calls(t, log); len(got) != 3 || !strings.Contains(got[1], " pull | ") || !strings.Contains(got[2], " ps --quiet") {
 		t.Errorf("a bind through a link reached up: %q", got)
 	}
 	if err := os.Remove(filepath.Join(folder, "data", "x")); err != nil {
@@ -382,6 +390,62 @@ func TestOneRouteFailsOnlyItsService(t *testing.T) {
 	plain.Name, plain.Routes = "plain", nil
 	if out, err := r.Deploy(context.Background(), deployment(t, plain)); err != nil {
 		t.Errorf("a service without tailscale routes failed for tailscale: %v\n%s", err, out)
+	}
+}
+
+// A running container that can write in a folder the new config binds stops before the link check
+// and up, so it can't swap a link in between; one that can't, or a read-only bind, keeps running
+// until up recreates it.
+func TestDeployStopsContainersThatReachItsBinds(t *testing.T) {
+	r, _ := newRunner(t, "", nil)
+	folder := filepath.Join(r.Dir, "notes")
+	rendered := `{"services":{"web":{"image":"nginx","mem_limit":"1","volumes":[{"type":"bind","source":"` + folder + `/data/uploads","target":"/u"}]}}}`
+	for _, c := range []struct {
+		name, mounts string
+		stops        bool
+	}{
+		{"a read-write bind above the new one", `[{"Type":"bind","Source":"` + folder + `/data","RW":true}]`, true},
+		{"the same read-write bind", `[{"Type":"bind","Source":"` + folder + `/data/uploads","RW":true}]`, true},
+		{"a read-only bind above it", `[{"Type":"bind","Source":"` + folder + `/data","RW":false}]`, false},
+		{"a read-write bind beside it", `[{"Type":"bind","Source":"` + folder + `/cache","RW":true},{"Type":"volume","Source":"/var/lib/docker/volumes/x","RW":true}]`, false},
+	} {
+		docker, log := fakeDocker(t, rendered, "never")
+		r.Docker = docker
+		dir := filepath.Dir(docker)
+		if err := os.WriteFile(filepath.Join(dir, "ps.out"), []byte("c0ffee01\nc0ffee02\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "inspect.json"), []byte(`[{"Id":"c0ffee01","Mounts":`+c.mounts+`},{"Id":"c0ffee02","Mounts":[]}]`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := r.Deploy(context.Background(), deployment(t, Deployment{Name: "notes", Compose: "x"}))
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", c.name, err, out)
+		}
+		got := calls(t, log)
+		var steps []string
+		for _, line := range got {
+			f := strings.Split(line, " | ")[1]
+			switch {
+			case strings.HasPrefix(f, "inspect "):
+				steps = append(steps, f)
+			case strings.Contains(f, " stop"):
+				steps = append(steps, "stop")
+			case strings.Contains(f, " up "):
+				steps = append(steps, "up")
+			}
+		}
+		want := "inspect c0ffee01 c0ffee02,up"
+		if c.stops {
+			want = "inspect c0ffee01 c0ffee02,stop,up"
+		}
+		if strings.Join(steps, ",") != want {
+			t.Errorf("%s: steps %q, want %s", c.name, steps, want)
+		}
+		said := strings.Contains(out, "Stopping the service's containers before up: one of them can write in ")
+		if said != c.stops {
+			t.Errorf("%s: output %q", c.name, out)
+		}
 	}
 }
 
