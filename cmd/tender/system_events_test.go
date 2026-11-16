@@ -121,6 +121,7 @@ func TestDomainEventsRegistered(t *testing.T) {
 	want := map[string]string{
 		eventLogsShippingFailing: "warning", eventFirewallOff: "critical", eventPortExposed: "warning", eventSSHWeak: "warning",
 		eventSecurityUpdatesPending: "warning", eventAutoUpdatesOff: "warning", eventRebootRequired: "warning", eventUpdateFailed: "warning",
+		eventServiceDeployFailed: "warning",
 	}
 	if len(domainEvents) != len(want) {
 		t.Errorf("domainEvents has %d events, want %d", len(domainEvents), len(want))

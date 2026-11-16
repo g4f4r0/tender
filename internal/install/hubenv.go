@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/g4f4r0/tender/internal/config"
 )
 
 const (
@@ -164,4 +168,16 @@ func envVars(text []byte) map[string]string {
 		}
 	}
 	return out
+}
+
+// HubDatabase is the database of the hub installed under root: TENDER_DATABASE in its hub.env, else
+// the default, under root.
+func HubDatabase(root string) string {
+	database := config.DefaultDatabase
+	if env, err := os.ReadFile(filepath.Join(root, hubEnvPath)); err == nil {
+		if v := envValue(env, config.EnvDatabase); v != "" {
+			database = v
+		}
+	}
+	return filepath.Join(root, database)
 }

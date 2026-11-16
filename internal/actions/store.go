@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -16,10 +17,16 @@ import (
 
 // Services is what the queue needs from the services domain on the hub. cmd/tender wires it.
 type Services interface {
-	// Check returns nil when the machine has the service, else a 404 server.Error.
-	Check(ctx context.Context, machineID int64, service string) error
-	// Finished tells the services domain that a start, stop or restart of the service completed.
-	Finished(ctx context.Context, machineID int64, service, typ string) error
+	// Check returns nil when the machine has the service, and container in it unless container is
+	// empty, else a 404 server.Error.
+	Check(ctx context.Context, machineID int64, service, container string) error
+	// Finished tells the services domain that a start, stop or restart of the service, or of its
+	// one container, completed.
+	Finished(ctx context.Context, machineID int64, service, container, typ string) error
+	// Deployment returns the managed service with its env, the registries' logins and the
+	// machine's exposures, as JSON, for the daemon that deploys or removes it. A server.Error fails
+	// the action with its detail instead of handing it out.
+	Deployment(ctx context.Context, machineID int64, service string) (json.RawMessage, error)
 }
 
 // Destinations is what the queue needs from the backups domain on the hub, for test actions.
@@ -54,7 +61,8 @@ func NewStore(d *db.DB, services Services) *Store {
 const (
 	// lifetime is how long an action may wait for the daemon, or run without an answer.
 	lifetime = 15 * time.Minute
-	// upgradeLifetime is how long an upgrade may run without an answer: it can take a while.
+	// upgradeLifetime is how long an upgrade, a deploy or a remove may run without an answer: an
+	// upgrade can take a while, and a deploy pulls images and waits up to 5 minutes for health checks.
 	upgradeLifetime = 45 * time.Minute
 	// updateLifetime is how long an update may run without an answer. Its job waits for a running
 	// backup as long as it takes, since a busy machine isn't a failed update.
@@ -75,7 +83,7 @@ const (
 // The machine's name comes from the machines table, which the schema already ties this domain to.
 // selectSummaries leaves out the output, which can be 256 KiB an action, for the list.
 const (
-	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.destination, a.version, a.packages, a.status, a.output_cleared, a.created_at, a.updated_at`
+	summaryColumns  = `a.id, m.name, a.type, a.service, a.unit, a.priority, a.since, a.lines, a.destination, a.version, a.packages, a.container, a.delete_data, a.status, a.output_cleared, a.created_at, a.updated_at`
 	selectSummaries = `SELECT ` + summaryColumns + ` FROM actions a JOIN machines m ON m.id = a.machine_id`
 	selectActions   = `SELECT ` + summaryColumns + `, a.output FROM actions a JOIN machines m ON m.id = a.machine_id`
 )
@@ -85,7 +93,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scan(row scanner) (Action, error) {
 	var a Action
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Destination, &a.Version, &a.Packages, &a.Status, &a.OutputCleared,
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Destination, &a.Version, &a.Packages, &a.Container, &a.DeleteData, &a.Status, &a.OutputCleared,
 		&created, &updated, &a.Output)
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return a, err
@@ -94,7 +102,7 @@ func scan(row scanner) (Action, error) {
 func scanSummary(row scanner) (Summary, error) {
 	var a Summary
 	var created, updated int64
-	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Destination, &a.Version, &a.Packages, &a.Status, &a.OutputCleared,
+	err := row.Scan(&a.ID, &a.Machine, &a.Type, &a.Service, &a.Unit, &a.Priority, &a.Since, &a.Lines, &a.Destination, &a.Version, &a.Packages, &a.Container, &a.DeleteData, &a.Status, &a.OutputCleared,
 		&created, &updated)
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return a, err
@@ -107,7 +115,7 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, 
 		return Action{}, err
 	}
 	if in.Service != nil {
-		if err := s.services.Check(ctx, machineID, *in.Service); err != nil {
+		if err := s.services.Check(ctx, machineID, *in.Service, deref(in.Container)); err != nil {
 			return Action{}, err
 		}
 	}
@@ -119,22 +127,37 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Action, 
 			return Action{}, err
 		}
 	}
-	return s.insert(ctx, machineID, in, nil)
+	return s.insert(ctx, machineID, in, nil, nil)
+}
+
+// CreateDeploy queues a deploy or remove of a managed service, and for a remove whether the daemon
+// deletes its folder and data. Only the services domain calls it, once it has stored the service.
+func (s *Store) CreateDeploy(ctx context.Context, machineID int64, typ, service string, deleteData bool) (Action, error) {
+	in := Input{Type: typ, Service: &service}
+	switch typ {
+	case TypeDeploy:
+		return s.insert(ctx, machineID, in, nil, nil)
+	case TypeRemove:
+		return s.insert(ctx, machineID, in, nil, &deleteData)
+	}
+	return Action{}, fmt.Errorf("%s is not a deploy or remove", typ)
 }
 
 // CreateUpdate queues the update of a machine to a Tender release, such as 0.3.1. Only an update
 // rollout calls it, so the machines update one at a time.
 func (s *Store) CreateUpdate(ctx context.Context, machineID int64, version string) (Action, error) {
-	return s.insert(ctx, machineID, Input{Type: TypeUpdate}, &version)
+	return s.insert(ctx, machineID, Input{Type: TypeUpdate}, &version, nil)
 }
 
-func (s *Store) insert(ctx context.Context, machineID int64, in Input, version *string) (Action, error) {
+func (s *Store) insert(ctx context.Context, machineID int64, in Input, version *string, deleteData *bool) (Action, error) {
 	now := time.Now().Unix()
 	var id int64
 	err := s.db.Write.QueryRowContext(ctx,
-		`INSERT INTO actions (machine_id, type, service, unit, priority, since, lines, destination, version, packages, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id`,
-		machineID, in.Type, in.Service, in.Unit, in.Priority, in.Since, in.Lines, in.Destination, version, in.Packages, now, now).Scan(&id)
+		`INSERT INTO actions (machine_id, type, service, container, unit, priority, since, lines, destination, version, packages, delete_data, status,
+		   created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id`,
+		machineID, in.Type, in.Service, in.Container, in.Unit, in.Priority, in.Since, in.Lines, in.Destination, version, in.Packages, deleteData,
+		now, now).Scan(&id)
 	if err != nil {
 		return Action{}, err
 	}
@@ -184,12 +207,12 @@ func (s *Store) List(ctx context.Context, machineID int64) ([]Summary, error) {
 // It only reads when there is nothing to do, so a wait doesn't take the write lock.
 func (s *Store) tidy(ctx context.Context, machineID int64, now time.Time) error {
 	// Every statement numbers its arguments the same way: ?1 the machine, ?2 when a pending or a
-	// running action is stale, ?3 when a logs action's output is old, ?4 when a running upgrade and
-	// ?5 a running update is stale, ?6 and ?7 the failures, ?8 now.
+	// running action is stale, ?3 when a logs action's output is old, ?4 when a running upgrade,
+	// deploy or remove and ?5 a running update is stale, ?6 and ?7 the failures, ?8 now.
 	args := []any{machineID, now.Add(-lifetime).Unix(), now.Add(-s.Keep).Unix(), now.Add(-upgradeLifetime).Unix(),
 		now.Add(-updateLifetime).Unix(), notPickedUp, notAnswered, now.Unix()}
 	const expired = `(status = 'pending' AND created_at < ?2) OR
-		(status = 'in_progress' AND updated_at < CASE type WHEN 'upgrade' THEN ?4 WHEN 'update' THEN ?5 ELSE ?2 END)`
+		(status = 'in_progress' AND updated_at < CASE WHEN type IN ('upgrade', 'deploy', 'remove') THEN ?4 WHEN type = 'update' THEN ?5 ELSE ?2 END)`
 	// A failed logs action holds why it failed, not logs, so only a completed one is cleared.
 	const clearable = `type = 'logs' AND status = 'completed' AND output_cleared = 0 AND updated_at < ?3`
 	var any bool
@@ -326,7 +349,26 @@ func (s *Store) takeOne(ctx context.Context, machineID int64) ([]Handout, error)
 			return nil, err
 		}
 	}
+	// A deploy or remove gets its service. When the hub can't make it ready, such as when Cloudflare
+	// refuses the tunnel's routes, the action fails at once with why, and the daemon gets nothing.
+	if a.Service != nil && (a.Type == TypeDeploy || a.Type == TypeRemove) {
+		a.Deployment, err = s.services.Deployment(ctx, machineID, *a.Service)
+		var e *server.Error
+		if errors.As(err, &e) {
+			return []Handout{}, s.failNow(ctx, a.ID, e.Detail)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 	return []Handout{a}, nil
+}
+
+// failNow fails a pending action with output before the daemon gets it.
+func (s *Store) failNow(ctx context.Context, id int64, output string) error {
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE actions SET status = 'failed', output = ?, updated_at = ? WHERE id = ? AND status = 'pending'`,
+		output, time.Now().Unix(), id)
+	return err
 }
 
 func isNotFound(err error) bool {
@@ -408,7 +450,7 @@ func (s *Store) Finish(ctx context.Context, machineID, id int64, p Patch) error 
 		return server.Conflict("Action %d is %s, not in_progress, so it can't finish now.", id, a.Status)
 	}
 	if a.Type != TypeLogs && a.Service != nil && p.Status == StatusCompleted {
-		if err := s.services.Finished(ctx, machineID, *a.Service, a.Type); err != nil {
+		if err := s.services.Finished(ctx, machineID, *a.Service, deref(a.Container), a.Type); err != nil {
 			return err
 		}
 	}

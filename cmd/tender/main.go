@@ -18,6 +18,7 @@ import (
 	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/tokens"
 	"github.com/g4f4r0/tender/internal/updates"
 )
 
@@ -25,7 +26,7 @@ import (
 var version = "dev"
 
 var usage = `Tender backs up whole servers on a schedule and reports every run to a hub.
-It also watches and controls each machine's Docker services.
+It also watches and controls each machine's Docker services, and deploys them from compose files.
 AI clients can check on it and manage it over MCP.
 
 Usage: tender COMMAND [options]
@@ -36,7 +37,8 @@ Work with the hub, from any machine that can reach it:
 	{"machines COMMAND", "list, add, remove, rotate-token, set, upgrade"},
 	{"destinations COMMAND", "list, add, update, test, remove"},
 	{"backups COMMAND", "status, set, unset"},
-	{"services COMMAND", "list, start, stop, restart, logs, alerts"},
+	{"services COMMAND", "list, show, deploy, remove, start, stop, restart, logs, and more"},
+	{"registries COMMAND", "list, add, update, remove"},
 	{"logs MACHINE [--unit U ...]", "Print a machine's journal"},
 	{"actions COMMAND", "list, show"},
 	{"sinks COMMAND", "list, add, show, update, remove"},
@@ -45,6 +47,8 @@ Work with the hub, from any machine that can reach it:
 	{"security [MACHINE]", "Show the machines' security checks"},
 	{"update MACHINE ...|--all", "Update Tender on machines, through the hub"},
 	{"updates COMMAND", "show, set"},
+	{"tokens COMMAND", "list, add, remove: the API tokens people and AI clients send"},
+	{"exposures cloudflare COMMAND", "show, set, remove"},
 }) + `
 Set up this machine (run as root):
 ` + table([]row{
@@ -64,7 +68,9 @@ Other:
 	{"version", "Print the version"},
 	{"help", "Print this help"},
 }) + `
-Commands that talk to the hub take --hub URL, or read TENDER_HUB (default ` + defaultHub + `).
+Commands that talk to the hub take --hub URL, or read TENDER_HUB (default ` + defaultHub + `),
+and send the API token in TENDER_TOKEN, or --token. Make the first one on the hub machine
+with: sudo tender tokens add NAME
 Run "tender COMMAND --help" for a command's options.
 Docs: ` + docsURL + `
 `
@@ -76,6 +82,7 @@ var hubCommands = map[string]func([]string, session) error{
 	"destinations":  runDestinations,
 	"backups":       runBackups,
 	"services":      runServices,
+	"registries":    runRegistries,
 	"logs":          runLogs,
 	"actions":       runActions,
 	"sinks":         runSinks,
@@ -83,12 +90,14 @@ var hubCommands = map[string]func([]string, session) error{
 	"notifications": runNotifications,
 	"updates":       runUpdates,
 	"security":      runSecurity,
+	"tokens":        runTokens,
+	"exposures":     runExposures,
 }
 
 // migrations lists every domain's migrations in dependency order: machines first.
 func migrations() []db.Migrations {
 	return []db.Migrations{machines.Migrations, backups.Migrations, notifications.Migrations, services.Migrations, actions.Migrations,
-		logs.Migrations, security.Migrations, updates.Migrations, server.Migrations}
+		logs.Migrations, security.Migrations, updates.Migrations, tokens.Migrations, server.Migrations}
 }
 
 func main() {

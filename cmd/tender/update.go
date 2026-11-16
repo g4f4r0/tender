@@ -68,6 +68,7 @@ func localInstaller(version string, s session) (*install.Installer, error) {
 		return nil, err
 	}
 	in.Version = version
+	in.HubTokens = hubHasTokens
 	return in, nil
 }
 

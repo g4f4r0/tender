@@ -66,6 +66,10 @@ type Installer struct {
 	// changes anything, whenever the hub address or the token is new. Nil skips the check.
 	CheckHub func(ctx context.Context, hub, machine, token string) error
 
+	// HubTokens reports whether the hub's database has an API token. After an update of a hub with
+	// none, or when it can't tell, the update says how to make the first. Nil can't tell.
+	HubTokens func(ctx context.Context, database string) (bool, error)
+
 	changed bool // some file changed during this run
 }
 
@@ -473,6 +477,9 @@ The hub is running at ` + hub + `.
 ` + where + `
 
 Next:
+  0. Make your API token, which every tender command and AI client sends, and keep it:
+       sudo tender tokens add NAME
+       export TENDER_TOKEN=THE_TOKEN
   1. Add a destination for the backups; it asks for the S3 keys and makes the repository password:
        tender destinations add NAME --endpoint URL --bucket BUCKET
   2. Add a machine and keep the token it prints once:

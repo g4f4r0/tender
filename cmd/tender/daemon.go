@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/actions"
+	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/backups"
 	"github.com/g4f4r0/tender/internal/client"
 	"github.com/g4f4r0/tender/internal/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/services/deploy"
 	"github.com/g4f4r0/tender/internal/updates"
 )
 
@@ -29,7 +31,7 @@ func runDaemon(args []string, log *slog.Logger) error {
 		"Run the daemon: it backs up this machine on the schedule the hub sets and reports every run to the hub, "+
 			"reports this machine's Docker services and security checks, and runs the actions the hub queues: service starts, "+
 			"stops, restarts and logs, reads of this machine's journal with journalctl, tests of backup destinations, upgrades "+
-			"of its packages and updates of Tender. It sends the journal and the containers' logs to the log sinks the hub sets. "+
+			"of its packages, updates of Tender, and deploys and removes of services with docker compose, in "+servicesDir+". It sends the journal and the containers' logs to the log sinks the hub sets. "+
 			"It runs as root. It reaches Docker at "+
 			services.DefaultSocket+", or at the socket in TENDER_DOCKER_SOCKET. "+
 			"Run it as a service; \"sudo tender install daemon\" sets that up.")
@@ -94,8 +96,16 @@ func runDaemon(args []string, log *slog.Logger) error {
 	ad := actions.NewDaemon(hub, cfg.Machine, log)
 	ad.Services, ad.Backups, ad.StateDir, ad.Busy = sd, a, *state, busy(*state)
 	ad.System = systemActions{Job: updates.Job{Binary: filepath.Join(root, "/usr/local/bin/tender"), StateDir: *state}, collect: sec.Collect}
+	dep := deploy.NewRunner(hub, cfg.Machine, filepath.Join(root, servicesDir), log)
+	dep.Socket = socket
+	dep.Exposers, dep.TailnetName = daemonExposers(*state, socket)
+	ad.Deployer, sd.Compose = dep, dep
 	ld := logs.NewDaemon(hub, cfg.Machine, *state, socket, log)
-	wg.Add(4)
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		dep.Run(ctx)
+	}()
 	go func() {
 		defer wg.Done()
 		ld.Run(ctx)
@@ -119,6 +129,10 @@ func runDaemon(args []string, log *slog.Logger) error {
 	wg.Wait()
 	return nil
 }
+
+// servicesDir holds a folder per managed service, outside /var/lib/docker, so the whole-server
+// backup has their data.
+const servicesDir = "/var/lib/tender/services"
 
 // The folders a destination reads on the daemon's machine, for tests and unusual installs: the SSH
 // key folder of sftp destinations and rclone's config file.
@@ -172,4 +186,15 @@ func postUsage(ctx context.Context, hub *client.Client, machine, state string, l
 			send()
 		}
 	}
+}
+
+// daemonExposers returns the daemon's three exposure adapters, which keep their state in state and
+// run Tender's own containers through the Docker socket, and the tailnet name's reader.
+func daemonExposers(state, socket string) ([]expose.Exposer, func(context.Context) (string, error)) {
+	ts := &expose.Tailscale{StateDir: state}
+	return []expose.Exposer{
+		ts,
+		&expose.Public{Dir: filepath.Join(state, "caddy"), Socket: socket},
+		&expose.Cloudflared{Dir: filepath.Join(state, "cloudflared"), Socket: socket},
+	}, ts.DNSName
 }

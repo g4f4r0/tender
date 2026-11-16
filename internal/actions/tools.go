@@ -14,15 +14,17 @@ import (
 var Wait = 60 * time.Second
 
 type serviceInput struct {
-	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
-	Service string `json:"service" jsonschema:"service name, the container name, as list_services shows it"`
+	Machine   string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
+	Service   string `json:"service" jsonschema:"service name, as list_services shows it"`
+	Container string `json:"container,omitempty" jsonschema:"only this container of the service, by its name in the service, such as web; leave out for every container"`
 }
 
 type serviceLogsInput struct {
-	Machine string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
-	Service string `json:"service" jsonschema:"service name, the container name, as list_services shows it"`
-	Lines   *int   `json:"lines,omitempty" jsonschema:"how many of the newest lines, 1 to 2000, default 200"`
-	Since   string `json:"since,omitempty" jsonschema:"only lines from this far back, such as 30m, 1h or 7d, at most 7d; leave out for no limit"`
+	Machine   string `json:"machine" jsonschema:"machine name, as list_machines shows it"`
+	Service   string `json:"service" jsonschema:"service name, as list_services shows it"`
+	Container string `json:"container,omitempty" jsonschema:"only this container of the service, by its name in the service, such as web; leave out for every container"`
+	Lines     *int   `json:"lines,omitempty" jsonschema:"how many of the newest lines, 1 to 2000, default 200"`
+	Since     string `json:"since,omitempty" jsonschema:"only lines from this far back, such as 30m, 1h or 7d, at most 7d; leave out for no limit"`
 }
 
 type machineLogsInput struct {
@@ -56,9 +58,10 @@ const waitText = "It waits up to 60 seconds for the machine's daemon. If the dae
 	"pending or in_progress. A pending action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. " +
 	"An in_progress one is running, and fails if the daemon doesn't say how it ended within 15 minutes. Check it later with get_action."
 
-const actionFields = "The result is the action: id, machine, type (start, stop, restart, logs, test, upgrade, or update from a rollout), service " +
-	"(null for the machine's logs, test, upgrade and update), unit, priority, since and lines (logs only), destination (test only), packages " +
-	"(upgrade only), version (update only), status (pending, in_progress, completed or failed), output, output_cleared, " +
+const actionFields = "The result is the action: id, machine, type (start, stop, restart, logs, test, upgrade, update from a rollout, or deploy " +
+	"and remove of a managed service), service (null for the machine's logs, test, upgrade and update), container (the one container of " +
+	"the service it is for, or null for all), unit, priority, since and lines (logs only), destination (test only), packages (upgrade " +
+	"only), version (update only), delete_data (remove only), status (pending, in_progress, completed or failed), output, output_cleared, " +
 	"created_at and updated_at (RFC 3339 UTC). "
 
 const logsLimits = "At most 2000 lines and 256 KiB, the newest kept, in output. Logs can hold secrets: the hub clears a completed logs action's " +
@@ -69,28 +72,32 @@ const logsLimits = "At most 2000 lines and 256 KiB, the newest kept, in output. 
 func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 	act := func(typ string) func(context.Context, serviceInput) (Action, error) {
 		return func(ctx context.Context, in serviceInput) (Action, error) {
-			return s.toolAction(ctx, lookup, in.Machine, Input{Type: typ, Service: &in.Service})
+			return s.toolAction(ctx, lookup, in.Machine, Input{Type: typ, Service: &in.Service, Container: opt(in.Container)})
 		}
 	}
 	mcp.AddWrite(m, "start_service", "Start a service",
-		"Start a stopped service, through the daemon on its machine. Starting a running service changes nothing. "+actionFields+
+		"Start a stopped service, or one of its containers, through the daemon on its machine: a service Tender deployed with docker "+
+			"compose start, any other container by container. Starting a running one changes nothing. "+actionFields+
 			"A failed start is the tool's error, with Docker's reason. "+waitText,
 		mcp.WriteOptions{Idempotent: true}, act(TypeStart))
 	mcp.AddWrite(m, "stop_service", "Stop a service",
-		"Stop a running service, through the daemon on its machine, with the container's own stop timeout. Whatever it serves goes "+
-			"offline until it is started again. A service Tender stopped doesn't alert as down. "+actionFields+
+		"Stop a running service, or one of its containers, through the daemon on its machine, with each container's own stop timeout. "+
+			"Whatever it serves goes offline until it is started again. A container Tender stopped doesn't alert as down. "+actionFields+
 			"A failed stop is the tool's error, with Docker's reason. "+waitText,
 		mcp.WriteOptions{Destructive: true, Idempotent: true}, act(TypeStop))
 	mcp.AddWrite(m, "restart_service", "Restart a service",
-		"Restart a service, through the daemon on its machine. Whatever it serves is offline while it restarts. "+actionFields+
+		"Restart a service, or one of its containers, through the daemon on its machine. Whatever it serves is offline while it "+
+			"restarts. "+actionFields+
 			"A failed restart is the tool's error, with Docker's reason. "+waitText,
 		mcp.WriteOptions{Destructive: true}, act(TypeRestart))
 
-	mcp.AddReadOnly(m, "get_service_logs", "Get service logs",
-		"Get a service's newest lines of output, stdout and stderr together, each line starting with Docker's timestamp. "+logsLimits+
-			actionFields+waitText,
+	mcp.AddReadOnly(m, "service_logs", "Get service logs",
+		"Get the newest lines of output of a service's containers, or of one of them, stdout and stderr together, each line starting "+
+			"with Docker's timestamp. With several containers, their lines are merged by time, each with its container's name and | after "+
+			"the timestamp. "+logsLimits+actionFields+waitText,
 		func(ctx context.Context, in serviceLogsInput) (Action, error) {
-			return s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeLogs, Service: &in.Service, Lines: in.Lines, Since: opt(in.Since)})
+			return s.toolAction(ctx, lookup, in.Machine, Input{Type: TypeLogs, Service: &in.Service, Container: opt(in.Container), Lines: in.Lines,
+				Since: opt(in.Since)})
 		})
 	mcp.AddReadOnly(m, "get_machine_logs", "Get machine logs",
 		"Get the newest entries of a machine's systemd journal, read by the daemon with journalctl, one per line: the time in UTC, "+
@@ -142,7 +149,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 		})
 	mcp.AddReadOnly(m, "list_actions", "List actions",
 		"List a machine's last 100 actions, newest first, without their output (get_action has it): id, machine, type, service, unit, "+
-			"priority, since, lines, destination, packages, version, status, output_cleared, created_at and updated_at.",
+			"priority, since, lines, destination, packages, version, container, delete_data, status, output_cleared, created_at and updated_at.",
 		func(ctx context.Context, in listInput) (server.List[Summary], error) {
 			id, err := mcp.Machine(ctx, lookup, in.Machine)
 			if err != nil {
@@ -172,7 +179,7 @@ func (s *Store) toolAction(ctx context.Context, lookup mcp.MachineLookup, machin
 	}
 	a, err := s.Create(ctx, id, in)
 	var e *server.Error
-	if errors.As(err, &e) && e.Status == http.StatusNotFound && in.Service != nil {
+	if errors.As(err, &e) && e.Status == http.StatusNotFound && in.Service != nil && in.Container == nil {
 		return a, server.NotFound("Service %q doesn't exist on %s. Call list_services to see the names.", *in.Service, machine)
 	}
 	if err != nil {

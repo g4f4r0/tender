@@ -40,9 +40,10 @@ func backoff(attempts int) time.Duration {
 }
 
 // sameProblem matches notifications o and n of one problem: the same base event, machine,
-// service and channel. The notifications_problem index serves it.
+// service, container and channel. The notifications_problem index serves it.
 const sameProblem = `o.base = n.base AND coalesce(o.machine_id, 0) = coalesce(n.machine_id, 0)
-	AND coalesce(o.service, '') = coalesce(n.service, '') AND coalesce(o.channel, '') = coalesce(n.channel, '')`
+	AND coalesce(o.service, '') = coalesce(n.service, '') AND coalesce(o.container, '') = coalesce(n.container, '')
+	AND coalesce(o.channel, '') = coalesce(n.channel, '')`
 
 const deliveryColumns = `d.id, d.notification_id, c.name, d.status, d.attempts, d.error, d.created_at, d.updated_at`
 
@@ -209,7 +210,7 @@ type pending struct {
 // finishes itself.
 func (s *Store) pendingOf(ctx context.Context, channelID int64) ([]pending, error) {
 	rows, err := s.db.Read.QueryContext(ctx, `SELECT d.id, d.attempts, d.created_at, d.updated_at,
-		n.id, m.name, n.service, n.channel, n.event, n.severity, n.message, n.status, n.sent_at, n.created_at, n.updated_at
+		n.id, m.name, n.service, n.container, n.channel, n.event, n.severity, n.message, n.status, n.sent_at, n.created_at, n.updated_at
 		FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id LEFT JOIN machines m ON m.id = n.machine_id
 		WHERE d.channel_id = ? AND d.status = 'pending' AND n.event != ? ORDER BY d.id`, channelID, EventTest)
 	if err != nil {
@@ -361,7 +362,7 @@ func (s *Store) prune(ctx context.Context, now time.Time) error {
 // event is the contract's event about n.
 func event(n Notification, hubURL string) channels.Event {
 	return channels.Event{Version: channels.Version, Event: n.Event, Hub: hubURL, Notification: channels.Notification{
-		ID: n.ID, Event: n.Event, Severity: n.Severity, Machine: n.Machine, Service: n.Service, Channel: n.Channel,
+		ID: n.ID, Event: n.Event, Severity: n.Severity, Machine: n.Machine, Service: n.Service, Container: n.Container, Channel: n.Channel,
 		Message: n.Message, CreatedAt: n.CreatedAt,
 	}}
 }
@@ -399,7 +400,7 @@ func (s *Store) SendTest(ctx context.Context, name string) (server.List[Delivery
 		return server.List[Delivery]{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	n, err := add(ctx, tx, 0, "", "", EventTest, SeverityInfo,
+	n, err := add(ctx, tx, 0, "", "", "", EventTest, SeverityInfo,
 		"This is a test from the Tender hub at "+s.hub.URL+". If you can read it, notifications reach this channel.", now)
 	if err != nil {
 		return server.List[Delivery]{}, err

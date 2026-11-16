@@ -18,10 +18,11 @@ const (
 // <event>.escalated or <event>.resolved.
 type Notification struct {
 	ID        int64      `json:"id"`
-	Machine   *string    `json:"machine"` // the name of the machine it is about
-	Service   *string    `json:"service"` // the Docker service's name; null for one about something else
-	Channel   *string    `json:"channel"` // the channel a channel.failing notification is about; else null
-	Event     string     `json:"event"`   // such as service.down, service.down.escalated or service.down.resolved
+	Machine   *string    `json:"machine"`   // the name of the machine it is about
+	Service   *string    `json:"service"`   // the service's name; null for one about something else
+	Container *string    `json:"container"` // the container in the service; null for one about the whole service or something else
+	Channel   *string    `json:"channel"`   // the channel a channel.failing notification is about; else null
+	Event     string     `json:"event"`     // such as service.down, service.down.escalated or service.down.resolved
 	Severity  string     `json:"severity"`
 	Message   string     `json:"message"`
 	Status    string     `json:"status"`  // pending, sent (a channel delivered it) or failed (every channel failed)

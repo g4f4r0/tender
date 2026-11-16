@@ -16,8 +16,12 @@ import (
 )
 
 // The tests' fake receivers listen on loopback, and stand in for Slack, which only tests may do.
+// Every command sends testToken, the API token schema puts in each test database.
 func TestMain(m *testing.M) {
 	channels.AllowLocalForTests(true)
+	if err := os.Setenv(envToken, testToken); err != nil {
+		panic(err)
+	}
 	os.Exit(m.Run())
 }
 

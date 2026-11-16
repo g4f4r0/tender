@@ -214,6 +214,69 @@ func TestAuth(t *testing.T) {
 	}
 }
 
+// fakeTokens knows one API token, api-1.
+type fakeTokens struct{}
+
+func (fakeTokens) Authenticate(_ context.Context, token string) (string, error) {
+	if token == "api-1" {
+		return "laptop", nil
+	}
+	return "", NotFound("no such token")
+}
+
+// With RequireTokens, people routes need an API token, a machine token never passes as one, an
+// API token never passes as a daemon, and health stays open.
+func TestAuthWithAPITokens(t *testing.T) {
+	s, srv, _ := routes(t)
+	s.RequireTokens(fakeTokens{})
+	daemonA := []string{"Authorization", "Bearer tok-a"}
+	person := []string{"Authorization", "Bearer api-1"}
+	for _, c := range []struct {
+		name, method, path string
+		headers            []string
+		want               int
+	}{
+		{"health without a token", "GET", "/v1/health", nil, 200},
+		{"people without a token", "GET", "/v1/machines/a/read", nil, 401},
+		{"people with only the Tailscale header", "GET", "/v1/machines/a/read", []string{"Tailscale-User-Login", "johan@example.com"}, 401},
+		{"people with a wrong token", "GET", "/v1/everything", []string{"Authorization", "Bearer api-2"}, 401},
+		{"people with a non-bearer scheme", "GET", "/v1/everything", []string{"Authorization", "Basic api-1"}, 401},
+		{"people with a machine token", "GET", "/v1/machines/a/read", daemonA, 401},
+		{"people with an API token", "GET", "/v1/machines/a/read", person, 200},
+		{"people write with an API token", "POST", "/v1/everything", person, 201},
+		{"people without a token on an unknown machine", "GET", "/v1/machines/zzz/read", nil, 401},
+		{"people with an API token on an unknown machine", "GET", "/v1/machines/zzz/read", person, 404},
+		{"daemon with an API token", "POST", "/v1/machines/a/things", person, 401},
+		{"daemon with its own token", "POST", "/v1/machines/a/things", daemonA, 201},
+		{"either without a token", "GET", "/v1/machines/a/either", nil, 401},
+		{"either with a wrong token", "GET", "/v1/machines/a/either", []string{"Authorization", "Bearer nope"}, 401},
+		{"either as daemon", "GET", "/v1/machines/a/either", daemonA, 200},
+		{"either with an API token", "GET", "/v1/machines/a/either", person, 200},
+		{"either with another machine's token", "GET", "/v1/machines/b/either", daemonA, 403},
+	} {
+		res, body := send(t, srv, c.method, c.path, "{}", c.headers...)
+		if res.StatusCode != c.want {
+			t.Errorf("%s: got %d, want %d (%s)", c.name, res.StatusCode, c.want, body)
+		}
+		// People are told how to get an API token; a daemon route keeps its own sentence.
+		if c.want == 401 && (res.Header.Get("Content-Type") != "application/problem+json" ||
+			!strings.HasSuffix(c.path, "/things") && !strings.Contains(body, "sudo tender tokens add NAME")) {
+			t.Errorf("%s: %q %s, want problem+json saying how to get a token", c.name, res.Header.Get("Content-Type"), body)
+		}
+	}
+	// The handler tells the daemon from people by the token they sent.
+	if _, body := send(t, srv, "GET", "/v1/machines/a/either", "", daemonA...); body != "{\"daemon\":true,\"machine\":1}\n" {
+		t.Errorf("machine token: %q", body)
+	}
+	if _, body := send(t, srv, "GET", "/v1/machines/a/either", "", person...); body != "{\"daemon\":false,\"machine\":1}\n" {
+		t.Errorf("API token: %q", body)
+	}
+	// A people 401 says how to make the first token.
+	if _, body := send(t, srv, "GET", "/v1/everything", ""); !strings.Contains(body, "sudo tender tokens add NAME") || !strings.Contains(body, "TENDER_TOKEN") {
+		t.Errorf("401 = %s", body)
+	}
+}
+
 func TestPeopleRoutesIgnoreIdempotencyKeys(t *testing.T) {
 	_, srv, calls := routes(t)
 	for range 2 {

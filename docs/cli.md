@@ -6,7 +6,8 @@ The `tender` command manages the hub, its machines, backups, services, log sinks
 
 1. The `tender` binary at `/usr/local/bin/tender`. The installer puts it there on every machine with a hub or a daemon. See [Install](install.md).
 2. Network access to the hub, for every command that talks to it.
-3. Root, only for `tender install` and `tender update`. The `hub` and `daemon` commands run as their systemd services.
+3. An API token in `TENDER_TOKEN`, for every command that talks to the hub. See [Global behavior](#global-behavior).
+4. Root, only for `tender install`, `tender update` and the first `tender tokens add`. The `hub` and `daemon` commands run as their systemd services.
 
 ## Global behavior
 
@@ -16,7 +17,16 @@ Commands that talk to the hub find it in this order:
 2. The `TENDER_HUB` environment variable.
 3. `http://127.0.0.1:8080`, where the hub listens on its own machine. On the hub machine you need neither.
 
-They need no token, because the hub has no login in this version. See [Security](security.md).
+They send an API token, from the first of:
+
+1. The `--token TOKEN` option. It shows in your shell history and the process list, so prefer the variable.
+2. The `TENDER_TOKEN` environment variable, such as `export TENDER_TOKEN=tender_...`.
+
+Make the first token on the hub machine with `sudo tender tokens add NAME`, as [`tender tokens add`](#tender-tokens-add) explains. Without a token, a command stops with:
+
+```text
+tender: the hub at https://apps.your-tailnet.ts.net needs an API token. Set TENDER_TOKEN to one, or pass --token TOKEN. Make the first one on the hub machine with: sudo tender tokens add NAME
+```
 
 Options and arguments can come in any order, so `tender machines add apps --hub URL` and `tender machines add --hub URL apps` are the same.
 
@@ -74,14 +84,14 @@ tender status
 
 ```text
 MACHINE   LAST SEEN      LAST BACKUP   STATUS      SERVICES
-apps      1 minute ago   just now      completed   1/2 running
+apps      1 minute ago   just now      completed   1/2 running, 3 containers
 
 Open problems: 1
 SEVERITY   SINCE      EVENT                 PROBLEM
-warning    just now   service.memory_high   The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.
+warning    just now   service.memory_high   web in notes on apps uses 950 MiB, 92% of its 1 GiB memory limit.
 ```
 
-`SERVICES` says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed services. A machine whose Docker is turned off shows `-`, as one without Docker does. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. Each open problem shows its latest notification, as [Notifications](notifications.md#how-a-notification-works) explains. A message longer than 100 characters, or longer than one line, ends in `...`; the notification has the whole text. With no open problems, the list ends with `No open problems.`
+`SERVICES` is how many of the machine's services are `running`, of all of them, and how many containers they have. It says `Docker unreachable` while the machine's Docker doesn't answer, and doesn't count removed containers, or a service Tender didn't deploy once they are all removed. A machine whose Docker is turned off shows `-`, as one without Docker does. Against an older hub without `GET /v1/services`, the table leaves out the `SERVICES` column. Each open problem shows its latest notification, as [Notifications](notifications.md#how-a-notification-works) explains. A message longer than 100 characters, or longer than one line, ends in `...`; the notification has the whole text. With no open problems, the list ends with `No open problems.`
 
 #### Errors
 
@@ -720,11 +730,13 @@ apps no longer backs up. Its backups stay in the destination.
 
 ## `tender services`
 
-See and control each machine's Docker services, one per container, by its container name. Start, stop, restart and logs go to the machine's daemon, and the command waits up to 60 seconds for it. If the daemon hasn't finished by then, the command says what happens next from the action's status, and you check it with `tender actions show`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one fails if the daemon doesn't say how it ended within 15 minutes.
+See, deploy and control each machine's services. A service is a compose project, or a container without one, and its containers are named by their compose service, such as `web`. See [Services](services.md#what-a-service-is).
+
+Start, stop, restart and logs go to the machine's daemon, and the command waits up to 60 seconds for it. Deploy, redeploy and remove wait up to 45 minutes, because compose may pull large images and wait for health checks; `--no-wait` returns at once. If the daemon hasn't finished in time, the command says what happens next from the action's status, and you check it with `tender actions show`. A `pending` action runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. An `in_progress` one fails if the daemon doesn't say how it ended within 15 minutes, or 45 for a deploy or remove.
 
 ### `tender services list`
 
-Lists every machine's Docker services, or one machine's, from the latest report.
+Lists every machine's services, or one machine's, from the latest report.
 
 #### Usage
 
@@ -746,18 +758,18 @@ tender services list apps
 ```
 
 ```text
-MACHINE   SERVICE   STATE                 HEALTH    MEM               CPU     RESTARTS   STARTED       ALERTS
-apps      migrate   exited (0)            -         -                 -       0          -             on
-apps      old-web   removed 2 hours ago   -         -                 -       0          3 hours ago   on
-apps      web       running               healthy   200 MiB / 1 GiB   12.5%   0          1 hour ago    on
+MACHINE   SERVICE   STATE      RUNNING   MEM       CPU     DEPLOY     ALERTS
+apps      notes     degraded   1/2       1.5 GiB   2.5%    deployed   off
+apps      redis     running    1/1       200 MiB   12.5%   -          on
 ```
 
 The columns are:
 
-1. `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped. While Docker is unreachable it is `unknown` alone. A service whose container is gone shows `removed` and when, until the hub deletes it 7 days later, as [Removed services](services.md#removed-services) explains.
-2. `MEM` is the memory it uses, with its limit when it has one.
-3. `CPU` is its use since the previous report, where 100% is one whole CPU. It shows `-` while there is no previous reading, as [Services](services.md#what-a-service-is) explains.
-4. `ALERTS` says whether the service alerts.
+1. `STATE` is `running`, `degraded`, `stopped` or `unknown`, as [Services](services.md#what-a-service-is) explains.
+2. `RUNNING` is how many of its containers run, of those Docker still has. A service whose containers are all gone shows `removed`, as [Removed containers](services.md#removed-containers) explains.
+3. `MEM` and `CPU` are its running containers' together, where 100% is one whole CPU. They show `-` while no container says, as [What the daemon reports](services.md#what-the-daemon-reports) explains.
+4. `DEPLOY` is how the last deploy of a service Tender deployed went: `deploying`, `deployed`, `failed` or `removing`, and `-` for one it didn't.
+5. `ALERTS` says whether the service alerts.
 
 While Docker is unreachable, the list ends with `Docker is unreachable on apps, so the states of its services are unknown.` Once Docker is turned off, as [Services](services.md#when-docker-is-turned-off) explains, its services show `removed`, and the list says nothing about Docker. With no services, it prints `apps has no services. Its daemon reports the Docker containers once a minute; a machine without Docker has none.` and exits 0.
 
@@ -771,14 +783,14 @@ While Docker is unreachable, the list ends with `Docker is unreachable on apps, 
 | --- | --- |
 | `GET /v1/services` and `GET /v1/machines/{machine}/services` | `list_services` |
 
-### `tender services start`
+### `tender services show`
 
-Starts a service. Starting a running service changes nothing.
+Shows one service: its state, how its last deploy went and why it failed, its routes with where they answer, its env keys and files, and each container.
 
 #### Usage
 
 ```sh
-tender services start MACHINE SERVICE [--hub URL]
+tender services show MACHINE SERVICE [--hub URL]
 ```
 
 #### Options
@@ -786,44 +798,147 @@ tender services start MACHINE SERVICE [--hub URL]
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine the service runs on. |
-| `SERVICE` | string | Yes | The service's container name. |
+| `SERVICE` | string | Yes | The service's name. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender services start apps web
+tender services show apps notes
 ```
 
 ```text
-Started web on apps.
+Service notes on apps: degraded.
+Deploy: deployed, last succeeded 2 hours ago (action 7).
+Its alerts are off.
+
+CONTAINER   PORT   EXPOSE      LOCAL             URL
+web         8080   tailscale   127.0.0.1:20000   https://apps.tail1234.ts.net:8443
+
+Env: DB_URL, SECRET_KEY.
+Files: config/app.toml.
+
+CONTAINER   IMAGE                STATE                     HEALTH    MEM               CPU    RESTARTS   STARTED
+web         ghcr.io/me/notes:1   running                   healthy   1.5 GiB / 2 GiB   2.5%   0          3 hours ago
+worker      ghcr.io/me/notes:1   exited (137), by Tender   -         -                 -      4          -
 ```
+
+It never shows the env values. After a failed deploy, `Why the last one failed:` follows the deploy line, with the reason and the end of compose's output. A container's `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped; while Docker is unreachable it is `unknown` alone, and a removed container shows `removed` and when. A route on the tailnet before the daemon has sent the machine's tailnet name shows `the tailnet name isn't known yet`. A service Tender didn't deploy says `Tender found it running and didn't deploy it, so it can start, stop and watch it, but not deploy it.` instead of the deploy line.
 
 #### Errors
 
-1. `Service "web" doesn't exist on this machine.`
-2. `Service "web" was removed: Docker on this machine no longer has its container.`
-3. `the daemon on apps hasn't finished within 60 seconds. Action 3 is still pending: the daemon hasn't picked it up. It runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. Check it with: tender actions show apps 3`
-4. `the daemon on apps hasn't finished within 60 seconds. Action 3 is in progress: the daemon started it. The hub fails it if the daemon doesn't say how it ended within 15 minutes. Check it with: tender actions show apps 3`
-5. `Could not start web: ...` with Docker's reason, when the action failed.
+1. `Service "notes" doesn't exist on this machine. Run tender services list to see the names.`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `start_service` |
+| `GET /v1/machines/{machine}/services/{service}` | `get_service` |
 
-### `tender services stop`
+### `tender services deploy`
 
-Stops a service, with the container's own stop timeout. A service Tender stopped doesn't alert as down until it runs again.
+Deploys a service from a docker compose file, through the daemon on the machine, and waits for it. A service Tender deployed already changes: the file replaces its compose file, and its files, env and routes are replaced when their options are given and kept when not. [Deploy a service](services.md#deploy-a-service) explains what the daemon does and the rules the compose file must follow.
+
+#### Usage
+
+```sh
+tender services deploy MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] [--env KEY=VALUE ...] [--route CONTAINER:PORT:EXPOSE[:HOST] ...] [--no-wait] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MACHINE` | string | Yes | The machine to deploy it on. |
+| `NAME` | string | Yes | The service's name, its compose project: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `-f` | path | Yes | The docker compose file. |
+| `--file` | path | No | A config file the compose file mounts, in the compose file's folder; repeat for each. It goes to the same path relative to the compose file on the machine. |
+| `--env-file` | path | No | A file of `KEY=VALUE` lines for the env. Blank lines and `#` comments are skipped, `export ` is taken off, and so is one pair of quotes around a value. |
+| `--env` | `KEY=VALUE` | No | One env value, over the env file's; repeat for each. |
+| `--route` | string | No | A route, such as `web:8080:tailscale`, `web:8080:tailscale:443` for HTTPS port 443, or `web:8080:public:notes.example.com`; repeat for each. See [Routes](exposure.md#routes). |
+| `--no-wait` | flag | No | Queue the deploy and return, without waiting for it. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender services deploy apps notes -f compose.yaml --file config/app.toml --env-file .env --route web:8080:tailscale
+```
+
+```text
+Deployed notes on apps.
+web answers at https://apps.tail1234.ts.net:10000
+```
+
+With `--no-wait`, it prints `Queued action 13. Follow it with: tender actions show apps 13`.
+
+#### Errors
+
+1. `services deploy needs the compose file: -f compose.yaml. Run "tender services deploy --help" for usage.`
+2. `--route "web:80" must be CONTAINER:PORT:EXPOSE or CONTAINER:PORT:EXPOSE:HOST, such as web:80:tailscale or web:80:public:app.example.com. Run "tender services deploy --help" for usage.`
+3. `--file /etc/app.toml is outside the compose file's folder, .; a service's files are relative to its compose file. Run "tender services deploy --help" for usage.`
+4. `Tender didn't deploy service "redis", so it can't change it: ...` for a service Tender found running.
+5. `Could not deploy notes: ...` when the deploy failed, with the rule the compose file broke, such as `service web in the compose file publishes ports, which Tender's routes do instead: remove ports from web and add a route to its port, such as --route web:80:tailscale`, or compose's reason and the end of its output.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/services`, or `PATCH /v1/machines/{machine}/services/{service}` for a service that exists | `deploy_service` |
+
+### `tender services redeploy`
+
+Deploys a service Tender deployed again, as the hub stores it, and waits for it. Compose pulls the images again, so a new image under the same tag runs, and recreates the containers that changed.
+
+#### Usage
+
+```sh
+tender services redeploy MACHINE SERVICE [--no-wait] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MACHINE` | string | Yes | The machine the service runs on. |
+| `SERVICE` | string | Yes | The service's name. |
+| `--no-wait` | flag | No | Queue the deploy and return, without waiting for it. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender services redeploy apps notes
+```
+
+```text
+Deployed notes on apps again.
+web answers at https://apps.tail1234.ts.net:10000
+```
+
+#### Errors
+
+1. `Service "notes" doesn't exist on this machine. Run tender services list to see the names.`
+2. `Tender didn't deploy service "redis", so it can't deploy it: ...`
+3. `Could not deploy notes: ...` with compose's reason, when the deploy failed.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/machines/{machine}/services/{service}/deploy` | `redeploy_service` |
+
+### `tender services remove`
+
+Removes a service Tender deployed, through the daemon on the machine. `docker compose down` stops and removes its containers, its routes stop answering, and the hub forgets it. Its folder, with its named volumes' data, is kept in `/var/lib/tender/services/.removed/` on the machine, unless `--delete-data` deletes it.
 
 > [!WARNING]
-> The service stays offline until something starts it again.
+> `--delete-data` deletes the service's data, and can't be undone.
 
 #### Usage
 
 ```sh
-tender services stop MACHINE SERVICE [--hub URL]
+tender services remove MACHINE SERVICE [--delete-data] --yes [--no-wait] [--hub URL]
 ```
 
 #### Options
@@ -831,40 +946,50 @@ tender services stop MACHINE SERVICE [--hub URL]
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine the service runs on. |
-| `SERVICE` | string | Yes | The service's container name. |
+| `SERVICE` | string | Yes | The service's name. |
+| `--delete-data` | flag | No | Delete the service's folder and its data too. |
+| `--yes` | flag | Yes | Confirm the removal. |
+| `--no-wait` | flag | No | Queue the remove and return, without waiting for it. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender services stop apps web
+tender services remove apps notes --yes
 ```
 
 ```text
-Stopped web on apps.
+Removed notes from apps.
+ Container notes-web-1  Removed
+ Container notes-worker-1  Removed
+Kept the service's folder, data and all, in /var/lib/tender/services/.removed/notes-1794657600. Delete it when you no longer need it: sudo rm -rf /var/lib/tender/services/.removed/notes-1794657600
 ```
 
 #### Errors
 
-1. `Service "web" doesn't exist on this machine.`
-2. `Service "web" was removed: Docker on this machine no longer has its container.`
-3. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id and status, as for `start`.
-4. `Could not stop web: ...` with Docker's reason, when the action failed.
+1. `this removes notes from apps, keeping its data on the machine. Run "tender services remove apps notes --yes" to confirm` without `--yes`.
+2. `Tender didn't deploy service "redis", so it can't remove it: ...`
+3. `Could not remove notes: ...` with compose's reason, when the remove failed. The hub keeps the service, and you can remove it again.
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `stop_service` |
+| `DELETE /v1/machines/{machine}/services/{service}` | `remove_service` |
 
-### `tender services restart`
+### `tender services start`
 
-Restarts a service.
+Starts every container of a service, or one with `--container`. Starting a running container changes nothing. A service Tender deployed starts through `docker compose start`, and one container or any other service through Docker.
+
+`tender services stop` and `tender services restart` take the same options. A stop uses each container's own stop timeout, and a container Tender stopped doesn't alert as down until it runs again.
+
+> [!WARNING]
+> `tender services stop` takes the service offline until something starts it again.
 
 #### Usage
 
 ```sh
-tender services restart MACHINE SERVICE [--hub URL]
+tender services start|stop|restart MACHINE SERVICE [--container C] [--hub URL]
 ```
 
 #### Options
@@ -872,40 +997,45 @@ tender services restart MACHINE SERVICE [--hub URL]
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine the service runs on. |
-| `SERVICE` | string | Yes | The service's container name. |
+| `SERVICE` | string | Yes | The service's name. |
+| `--container` | string | No | Only this container of the service, such as `web`. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender services restart apps web
+tender services restart apps notes --container web
 ```
 
 ```text
-Restarted web on apps.
+Restarted web in notes on apps.
 ```
+
+Without `--container`, it prints `Restarted notes on apps.`
 
 #### Errors
 
-1. `Service "web" doesn't exist on this machine.`
-2. `Service "web" was removed: Docker on this machine no longer has its container.`
-3. `the daemon on apps hasn't finished within 60 seconds. ...` with the action's id and status, as for `start`.
-4. `Could not restart web: ...` with Docker's reason, when the action failed.
+1. `Service "notes" doesn't exist on this machine. Run tender services list to see the names.`
+2. `Container "nope" isn't in service notes. Its containers are: web, worker.`
+3. `Container worker in notes was removed: Docker on this machine no longer has it.`
+4. `the daemon on apps hasn't finished within 60 seconds. Action 3 is still pending: the daemon hasn't picked it up. It runs if the daemon picks it up within 15 minutes of being asked, and fails otherwise. Check it with: tender actions show apps 3`
+5. `the daemon on apps hasn't finished within 60 seconds. Action 3 is in progress: the daemon started it. The hub fails it if the daemon doesn't say how it ended within 15 minutes. Check it with: tender actions show apps 3`
+6. `Could not restart web in notes: ...` with Docker's or compose's reason, when the action failed.
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `restart_service` |
+| `POST /v1/machines/{machine}/services/{service}/start`, `.../stop` or `.../restart`, and `GET /v1/machines/{machine}/actions/{id}` | `start_service`, `stop_service` or `restart_service` |
 
 ### `tender services logs`
 
-Prints a service's newest lines of output, stdout and stderr together, each starting with Docker's timestamp.
+Prints a service's newest lines of output, stdout and stderr together, each starting with Docker's timestamp. The lines of several containers are merged by time, each with its container's name after the timestamp.
 
 #### Usage
 
 ```sh
-tender services logs MACHINE SERVICE [--lines N] [--since D] [--hub URL]
+tender services logs MACHINE SERVICE [--container C] [--lines N] [--since D] [--hub URL]
 ```
 
 #### Options
@@ -913,7 +1043,8 @@ tender services logs MACHINE SERVICE [--lines N] [--since D] [--hub URL]
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine the service runs on. |
-| `SERVICE` | string | Yes | The service's container name. |
+| `SERVICE` | string | Yes | The service's name. |
+| `--container` | string | No | Only this container of the service, such as `web`. |
 | `--lines` | integer | No | How many of the newest lines, from 1 to 2000. The default is 200. |
 | `--since` | duration | No | Only lines from this far back, such as `30m`, `1h` or `7d`. At most `7d`. |
 | `--hub` | URL | No | The hub's address. |
@@ -926,31 +1057,33 @@ The output stops at 256 KiB and drops the oldest lines past it.
 #### Example
 
 ```sh
-tender services logs apps web --since 10m --lines 3
+tender services logs apps notes --since 10m --lines 3
 ```
 
 ```text
-2026-11-15T11:28:14.373342396Z web listening on :3000
+2026-11-15T11:28:12.120541873Z worker | job 41 done
+2026-11-15T11:28:14.373342396Z web | listening on :8080
+2026-11-15T11:28:15.002114220Z web | GET /healthz 200
 ```
 
-With no lines, it prints `web on apps has no logs.` and exits 0.
+With no lines, it prints `notes on apps has no logs.` and exits 0.
 
 #### Errors
 
 1. `--lines must be from 1 to 2000. Run "tender services logs --help" for usage.`
 2. `--since must be a duration such as 30m, 1h or 7d, at most 7d. Run "tender services logs --help" for usage.`
-3. `Service "web" doesn't exist on this machine.`
-4. `Service "web" was removed: Docker on this machine no longer has its container.`
+3. `Service "notes" doesn't exist on this machine. Run tender services list to see the names.`
+4. `Container worker in notes was removed: Docker on this machine no longer has it.`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
-| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `get_service_logs` |
+| `POST /v1/machines/{machine}/actions` and `GET /v1/machines/{machine}/actions/{id}` | `service_logs` |
 
 ### `tender services alerts`
 
-Turns a service's alerts on or off. They are on for every new service. The switch follows the service's name, as [Services](services.md#what-a-service-is) explains.
+Turns a service's alerts on or off, for all its containers. They are on for every new service: an alert when a container stops, keeps restarting, turns unhealthy or uses more than 90% of its memory limit, and when a deploy fails. The switch stays when the service's containers are made again.
 
 #### Usage
 
@@ -963,30 +1096,197 @@ tender services alerts MACHINE SERVICE on|off [--hub URL]
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine the service runs on. |
-| `SERVICE` | string | Yes | The service's container name. |
+| `SERVICE` | string | Yes | The service's name. |
 | `on` or `off` | string | Yes | Whether the service alerts. |
 | `--hub` | URL | No | The hub's address. |
 
 #### Example
 
 ```sh
-tender services alerts apps web off
+tender services alerts apps notes off
 ```
 
 ```text
-Alerts for web on apps are off. Its open problems resolve within a minute.
+Alerts for notes on apps are off. Its open problems resolve within a minute.
 ```
 
 #### Errors
 
 1. `services alerts needs a machine, a service and on or off. Run "tender services alerts --help" for usage.`
-2. `Service "web" doesn't exist on this machine.`
+2. `Service "notes" doesn't exist on this machine. Run tender services list to see the names.`
 
 #### Equivalents
 
 | REST route | MCP tool |
 | --- | --- |
 | `PATCH /v1/machines/{machine}/services/{service}` | `set_service_alerts` |
+
+## `tender registries`
+
+Keep the logins of the container registries that services Tender deploys pull private images from. A deploy uses the login of the registry whose host an image is on. The hub keeps the passwords encrypted and never shows them. See [Registries](services.md#registries).
+
+### `tender registries list`
+
+Lists the registries: name, host and username.
+
+#### Usage
+
+```sh
+tender registries list [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender registries list
+```
+
+```text
+NAME   HOST      USERNAME
+ghcr   ghcr.io   me
+```
+
+With none, it prints `No registries yet. Add one with: tender registries add NAME --host ghcr.io --username USER`.
+
+#### Errors
+
+1. `cannot reach the hub at URL. ...` when the hub doesn't answer.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/registries` | `list_registries` |
+
+### `tender registries add`
+
+Adds the login of a container registry. It asks for the password or access token, with typing hidden, unless `--password-file` has it.
+
+#### Usage
+
+```sh
+tender registries add NAME --host HOST --username USER [--password-file PATH] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The registry's name: lowercase letters, digits and dashes. |
+| `--host` | string | Yes | The registry's host, as image names start with it, such as `ghcr.io` or `registry.example.com:5000`; `docker.io` for Docker Hub. |
+| `--username` | string | Yes | The login name. |
+| `--password-file` | path | No | A file whose first line is the password or access token. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender registries add ghcr --host ghcr.io --username me
+```
+
+```text
+Password (typing is hidden):
+Added registry ghcr for ghcr.io.
+```
+
+#### Errors
+
+1. `registries add needs --host and --username. Run "tender registries add --help" for usage.`
+2. `Registry "ghcr" already exists. Change it with tender registries update.`
+3. `Registry "ghcr" already has the host ghcr.io; a host has one login.`
+4. `This process has no TENDER_ENCRYPTION_KEY, ...` when the hub can't store the password.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/registries` | `add_registry` |
+
+### `tender registries update`
+
+Changes a registry's host, username or password. What isn't given stays.
+
+#### Usage
+
+```sh
+tender registries update NAME [--host HOST] [--username USER] [--password] [--password-file PATH] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The registry's name. |
+| `--host` | string | No | A new host. |
+| `--username` | string | No | A new login name. |
+| `--password` | flag | No | Ask for a new password or access token, with typing hidden. |
+| `--password-file` | path | No | A file whose first line is a new password or access token. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender registries update ghcr --password
+```
+
+```text
+Password (typing is hidden):
+Updated registry ghcr.
+```
+
+#### Errors
+
+1. `registries update needs --host, --username, --password or --password-file. Run "tender registries update --help" for usage.`
+2. `Registry "ghcr" doesn't exist. Run tender registries list to see the names.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PATCH /v1/registries/{registry}` | `update_registry` |
+
+### `tender registries remove`
+
+Removes a registry's login. Services whose images are on it can no longer pull them, unless they are public.
+
+#### Usage
+
+```sh
+tender registries remove NAME [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The registry's name. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender registries remove ghcr
+```
+
+```text
+Removed registry ghcr.
+```
+
+#### Errors
+
+1. `Registry "ghcr" doesn't exist. Run tender registries list to see the names.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/registries/{registry}` | `remove_registry` |
 
 ## `tender logs`
 
@@ -1680,9 +1980,9 @@ tender notifications list apps
 ```
 
 ```text
-ID   ADDED           EVENT                   SEVERITY   ABOUT      STATUS   MESSAGE
-14   just now        service.down.resolved   critical   apps/web   sent     Resolved: The service web on apps stopped with exit code 1.
-12   5 minutes ago   service.down            critical   apps/web   sent     The service web on apps stopped with exit code 1.
+ID   ADDED           EVENT                   SEVERITY   ABOUT        STATUS   MESSAGE
+14   just now        service.down.resolved   critical   apps/notes   sent     Resolved: web in notes on apps stopped with exit code 1.
+12   5 minutes ago   service.down            critical   apps/notes   sent     web in notes on apps stopped with exit code 1.
 ```
 
 `ABOUT` is the machine, the machine and service, or `channel NAME` for `channel.failing`. With none, it prints `No notifications.`, or `No open problems.` with `--open`. When there are more than `--limit`, it ends with `These are the newest 50. Raise --limit to see more.`
@@ -1697,6 +1997,141 @@ ID   ADDED           EVENT                   SEVERITY   ABOUT      STATUS   MESS
 | REST route | MCP tool |
 | --- | --- |
 | `GET /v1/notifications` and `GET /v1/machines/{machine}/notifications` | `list_notifications` |
+
+## `tender tokens`
+
+Make, list and delete the API tokens that people and AI clients send to the hub.
+
+### `tender tokens list`
+
+Lists the API tokens, when each was last used and when it was made. The tokens themselves are never shown again.
+
+#### Usage
+
+```sh
+tender tokens list [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender tokens list
+```
+
+```text
+NAME          LAST USED   CREATED
+claude-code   never       just now
+laptop        just now    2 hours ago
+```
+
+#### Errors
+
+1. `the hub at URL needs an API token. ...` without one.
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/tokens` | `list_tokens` |
+
+### `tender tokens add`
+
+Makes an API token and prints it once.
+
+As root without a token, such as `sudo tender tokens add laptop` on the hub machine, it writes to the hub's database directly, which is how you make the first token. `sudo` leaves out `TENDER_TOKEN`, so this works even when you have one. Otherwise it asks the hub, with the token you have.
+
+#### Usage
+
+```sh
+tender tokens add NAME [--hub URL]
+sudo tender tokens add NAME [--database PATH]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The token's name: lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters, such as `laptop` or `claude-code`. |
+| `--hub` | URL | No | The hub's address, when it asks the hub. |
+| `--database` | path | No | The hub's database, when it writes to it directly. The default is `TENDER_DATABASE`, else the one in `/etc/tender/hub.env`, else `/var/lib/tender/hub/hub.db`. |
+
+#### Example
+
+```sh
+sudo tender tokens add laptop
+```
+
+```text
+Made API token laptop.
+
+The token, shown only now. Save it before you go on:
+  tender_<43 characters>
+
+Use it from the tender command:
+  export TENDER_TOKEN=tender_<43 characters>
+```
+
+#### Errors
+
+1. `Token names are lowercase letters, digits and hyphens, up to 63 characters, such as laptop or claude-code.`
+2. `Token "laptop" already exists. Choose another name, or remove it first with: tender tokens remove laptop`
+3. `there is no hub database at /var/lib/tender/hub/hub.db, so this is not the hub machine, or the hub has not run yet. ...` as root on another machine. Set `TENDER_TOKEN` there instead.
+4. `the database at PATH has no current schema. Start the hub once on this version, with "sudo systemctl restart tenderhub", then run this again: ...`
+5. `--database works only as root, without a token, on the hub machine. ...`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `POST /v1/tokens` | None, so an AI client can't make itself more access. |
+
+### `tender tokens remove`
+
+Deletes an API token. Every client that sends it is refused from its next request on.
+
+> [!WARNING]
+> Deleting the last token locks everyone out until you make a new one with `sudo tender tokens add NAME` on the hub machine. The daemons keep working.
+
+#### Usage
+
+```sh
+tender tokens remove NAME --yes [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NAME` | string | Yes | The token to delete. |
+| `--yes` | flag | Yes | Confirms the removal. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender tokens remove claude-code --yes
+```
+
+```text
+Deleted API token claude-code. Clients that send it are refused.
+```
+
+#### Errors
+
+1. `this deletes the API token claude-code, and every client that uses it is refused. Run "tender tokens remove claude-code --yes" to confirm` without `--yes`.
+2. `Token "claude-code" doesn't exist. List the tokens with: tender tokens list`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/tokens/{token}` | `delete_token` |
 
 ## `tender install`
 
@@ -1734,7 +2169,7 @@ The tender command on this machine finds it by itself.
 Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
 ```
 
-The output goes on with the next steps: add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
+The output goes on with the next steps: make your API token with `sudo tender tokens add NAME`, then add a destination, a machine, its schedule and a channel. A run that changes nothing prints `tenderhub is already installed and up to date. Nothing to change.`
 
 The host and the sender go together, so pass both empty to turn alert emails off:
 
@@ -1887,6 +2322,8 @@ Restarted tenderd
 Updated to Tender v0.3.1.
 ```
 
+On the hub's machine, an update to v0.4 or later of a hub with no API token ends with one more line: `From v0.4 the hub refuses every request from people and AI clients until it has an API token; make the first one on this machine with: sudo tender tokens add NAME.`
+
 #### Errors
 
 1. `updating this machine needs root. Run it again with sudo, or update it through the hub, which needs no sudo: tender update MACHINE, or tender update --all`
@@ -1992,6 +2429,125 @@ Updates are auto, window: 02:00-05:00 UTC.
 | REST route | MCP tool |
 | --- | --- |
 | `PUT /v1/updates/settings` | `set_update_settings` |
+
+## `tender exposures`
+
+Sets up how services' routes reach people. Only `cloudflare` routes need settings: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains them.
+
+### `tender exposures cloudflare show`
+
+Shows the Cloudflare account that services' `cloudflare` routes use. The API token is never shown.
+
+#### Usage
+
+```sh
+tender exposures cloudflare show [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender exposures cloudflare show
+```
+
+```text
+Cloudflare account: 0123456789abcdef0123456789abcdef
+API token: set, hidden
+Updated 2 hours ago.
+```
+
+#### Errors
+
+1. `Cloudflare isn't set up on this hub. Set it up with: tender exposures cloudflare set --account-id ID --api-token-file PATH`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `GET /v1/exposures/cloudflare` | `get_cloudflare_settings` |
+
+### `tender exposures cloudflare set`
+
+Sets the Cloudflare account and API token. It asks for the token with typing hidden, or reads it from `--api-token-file`. The hub checks the token with Cloudflare before it stores it, and replaces the stored settings.
+
+#### Usage
+
+```sh
+tender exposures cloudflare set --account-id ID [--api-token-file PATH] [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--account-id` | string | Yes | The Cloudflare account ID, 32 lowercase hex digits, from the dashboard's Account home. |
+| `--api-token-file` | path | No | A file whose first line is the API token. Without it, the command asks for the token. |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender exposures cloudflare set --account-id 0123456789abcdef0123456789abcdef --api-token-file cloudflare-token
+```
+
+```text
+Saved the Cloudflare settings. Cloudflare accepted the API token for account 0123456789abcdef0123456789abcdef.
+```
+
+#### Errors
+
+1. `exposures cloudflare set needs --account-id. Run "tender exposures cloudflare set --help" for usage.`
+2. `there is no terminal to ask for the Cloudflare API token. Save it in a file and add --api-token-file PATH.`
+3. `Cloudflare refused GET /accounts/.../cfd_tunnel: 403 Forbidden, Authentication error (10000). Check the account ID, and that the API token has Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `PUT /v1/exposures/cloudflare` | `set_cloudflare_settings` |
+
+### `tender exposures cloudflare remove`
+
+Removes the hub's Cloudflare settings. It refuses while a service has a `cloudflare` route. The tunnels and DNS records already in Cloudflare stay.
+
+#### Usage
+
+```sh
+tender exposures cloudflare remove [--hub URL]
+```
+
+#### Options
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `--hub` | URL | No | The hub's address. |
+
+#### Example
+
+```sh
+tender exposures cloudflare remove
+```
+
+```text
+Removed the Cloudflare settings. The tunnels and DNS records in Cloudflare stay.
+```
+
+#### Errors
+
+1. `Cloudflare isn't set up on this hub. There is nothing to remove.`
+2. `2 cloudflare routes need these settings. Take the routes off their services first, or redeploy them with another expose.`
+
+#### Equivalents
+
+| REST route | MCP tool |
+| --- | --- |
+| `DELETE /v1/exposures/cloudflare` | `remove_cloudflare_settings` |
 
 ## `tender security`
 

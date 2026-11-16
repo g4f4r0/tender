@@ -6,17 +6,38 @@ The hub's REST API does everything the `tender` command and the MCP tools do, ov
 
 1. A running hub. See [Install](install.md).
 2. The hub's address. The examples use `https://apps.your-tailnet.ts.net`, the hub's name on a tailnet. On the hub machine itself, use `http://127.0.0.1:8080`.
-3. `curl`, or any HTTP client.
+3. An API token in `TENDER_TOKEN`. Make the first one on the hub machine with `sudo tender tokens add NAME`, as [Tokens](#tokens) explains.
+4. `curl`, or any HTTP client.
 
 ## Conventions
 
 ### Authentication
 
-People and their tools send no token in this version. Anyone who can reach the hub can call every route below, so keep the hub on your tailnet or behind your own access control. See [Security](security.md).
+Every route below needs an API token, as `Authorization: Bearer <token>`, except `GET /v1/health`. `POST /mcp` needs it too. An API token starts with `tender_`, and [Tokens](#tokens) makes, lists and deletes them. The examples send it from `TENDER_TOKEN`:
 
-The hub refuses a browser request from another website that would change something, and a request for a host name it doesn't answer to. Both get `403`. [Security](security.md#the-hub-has-no-login) lists the names it answers to.
+```sh
+export TENDER_TOKEN=tender_...
+```
 
-Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, another machine's token gets `403`, and a machine that doesn't exist gets `404`. People never need a token, and should send no `Authorization` header: on a route both may call, the hub treats a request with one as a daemon's.
+A request without a token, or with a wrong one, gets `401`:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/problem+json
+
+{
+  "detail": "Send an API token as \"Authorization: Bearer <token>\"; the tender command sends TENDER_TOKEN. Make the first one on the hub machine with: sudo tender tokens add NAME",
+  "status": 401,
+  "title": "Unauthorized",
+  "type": "about:blank"
+}
+```
+
+A hub updated to v0.4 has no API token until you make one, so until then it refuses every request but health and its daemons'.
+
+The hub refuses a browser request from another website that would change something, and a request for a host name it doesn't answer to. Both get `403`. [Security](security.md#who-can-reach-the-hub) lists the names it answers to.
+
+Daemons sign in with their machine's token, as `Authorization: Bearer <token>`, and a token works only for its own machine. A wrong token gets `401`, another machine's token gets `403`, and a machine that doesn't exist gets `404`. A machine token never works as an API token, and an API token never works as a machine's: on a route both may call, the hub tells them apart by looking the token up.
 
 ### Requests and responses
 
@@ -55,6 +76,153 @@ Daemons retry their reports, so a daemon's `POST` and `PATCH` with an `Idempoten
 
 Starting, stopping and restarting a service, reading logs and testing a destination happen on the machine, so `POST /v1/machines/{machine}/actions` and `POST /v1/backups/destinations/{destination}/test` answer `202 Accepted` at once with the action as `pending`. Poll `GET /v1/machines/{machine}/actions/{id}`, about once a second, until its `status` is `completed` or `failed`. The daemon usually picks an action up within a second. [Services](services.md#how-actions-reach-a-machine) explains the steps, and when an action fails because the daemon didn't pick it up or didn't say how it ended.
 
+## Tokens
+
+An API token lets a person, a script or an AI client use the REST API and `POST /mcp`. The hub stores only its SHA-256 hash, and shows the token once, when it is made.
+
+### `GET /v1/tokens`
+
+Lists the API tokens by name, with when each was last used. The tokens themselves are never shown.
+
+`last_used_at` is the last request with the token, to the minute, and `null` before the first.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/tokens
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 2,
+      "name": "claude-code",
+      "last_used_at": null,
+      "created_at": "2026-11-15T12:04:10Z",
+      "updated_at": "2026-11-15T12:04:10Z"
+    },
+    {
+      "id": 1,
+      "name": "laptop",
+      "last_used_at": "2026-11-15T12:05:00Z",
+      "created_at": "2026-11-15T12:00:00Z",
+      "updated_at": "2026-11-15T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `401` | The request has no valid API token. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_tokens` | `tender tokens list` |
+
+### `POST /v1/tokens`
+
+Makes an API token and returns it, shown only this once.
+
+The token is `tender_` and 32 random bytes in base64url. This route needs a token itself, so the first one comes from `sudo tender tokens add NAME` on the hub machine, which writes to the hub's database directly. No MCP tool makes a token, so an AI client can't give itself more access.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters, such as `laptop` or `claude-code`. |
+
+#### Example request
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/tokens/claude-code
+
+{
+  "id": 2,
+  "name": "claude-code",
+  "last_used_at": null,
+  "created_at": "2026-11-15T12:04:10Z",
+  "updated_at": "2026-11-15T12:04:10Z",
+  "token": "tender_<43 characters>"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `401` | The request has no valid API token. |
+| `409` | A token has this name. Choose another, or delete it first. |
+| `422` | The name breaks the naming rule. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| None, so an AI client can't make itself more access. | `tender tokens add claude-code` |
+
+### `DELETE /v1/tokens/{token}`
+
+Deletes an API token by name. Every client that sends it is refused from its next request on.
+
+> [!WARNING]
+> Deleting the last token locks everyone out of the REST API and `POST /mcp` until you make a new one with `sudo tender tokens add NAME` on the hub machine. The daemons keep working.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token` | string | Yes | Path. The token's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/tokens/claude-code
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `401` | The request has no valid API token. |
+| `404` | No token has this name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `delete_token` | `tender tokens remove claude-code --yes` |
+
 ## Machines
 
 A machine is a server with a daemon that reports to the hub.
@@ -72,7 +240,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines
 ```
 
 #### Example response
@@ -130,7 +298,7 @@ Install the daemon on the machine with this token. The hub stores only its SHA-2
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines \
   -H 'Content-Type: application/json' \
   -d '{"name": "apps"}'
 ```
@@ -178,7 +346,7 @@ Returns one machine with its latest reading.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps
 ```
 
 #### Example response
@@ -237,7 +405,7 @@ Removes a machine with its usage, backup settings, snapshots, history, services,
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/machines/apps
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps
 ```
 
 #### Example response
@@ -274,7 +442,7 @@ Replaces a machine's token and returns the new one, shown only this once.
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/token
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/token
 ```
 
 #### Example response
@@ -317,7 +485,7 @@ Lists a machine's readings of CPU load, memory, disk and uptime, newest first. T
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/usage?limit=2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/usage?limit=2
 ```
 
 #### Example response
@@ -380,7 +548,7 @@ Changes a machine's settings: its own update mode, the ports that may listen on 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"security_allowed_ports": ["41641/udp"]}'
 ```
@@ -436,7 +604,7 @@ Each check has `check`, which is `ok`, `error` (with the reason in `error`) or `
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/security
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/security
 ```
 
 #### Example response
@@ -496,7 +664,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/backups
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups
 ```
 
 #### Example response
@@ -591,7 +759,7 @@ Returns one machine's backup state.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups
 ```
 
 #### Example response
@@ -684,7 +852,7 @@ The response never holds keys or passwords. Only the machine's own daemon, with 
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
 ```
 
 #### Example response
@@ -749,7 +917,7 @@ A daemon without settings picks them up within 30 seconds. A daemon that has set
 #### Example request
 
 ```sh
-curl -s -X PUT https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings \
+curl -s -X PUT -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings \
   -H 'Content-Type: application/json' \
   -d '{"destination": "r2", "schedule": "30 3 * * *", "retention_days": 30}'
 ```
@@ -814,7 +982,7 @@ The daemon deletes its saved copy of the settings and the repository password. T
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/settings
 ```
 
 #### Example response
@@ -852,7 +1020,7 @@ Lists a machine's snapshots, newest first, as its daemon last read them from the
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots?limit=2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots?limit=2
 ```
 
 #### Example response
@@ -915,7 +1083,7 @@ Returns one snapshot.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots/10
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/snapshots/10
 ```
 
 #### Example response
@@ -967,7 +1135,7 @@ A failed run has the reason in `error`. A completed backup has the snapshot it m
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history?limit=2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history?limit=2
 ```
 
 #### Example response
@@ -1029,7 +1197,7 @@ Returns one run.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history/20
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/backups/history/20
 ```
 
 #### Example response
@@ -1088,7 +1256,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/backups/destinations
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations
 ```
 
 #### Example response
@@ -1150,7 +1318,7 @@ Adds a destination. Without a password, the hub makes one and returns it this on
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations \
   -H 'Content-Type: application/json' \
   -d '{"name": "r2", "config": {"endpoint": "https://<account-id>.r2.cloudflarestorage.com", "bucket": "my-backups", "path": "tender", "access_key_id": "<access key ID>", "secret_access_key": "<secret access key>"}}'
 ```
@@ -1158,7 +1326,7 @@ curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
 An SFTP destination:
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations \
   -H 'Content-Type: application/json' \
   -d '{"name": "nas", "type": "sftp", "config": {"host": "nas.example.com", "user": "tender", "path": "/srv/restic"}}'
 ```
@@ -1217,7 +1385,7 @@ Returns one destination, with its secrets shown as `"***"` and without its passw
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
 ```
 
 #### Example response
@@ -1273,7 +1441,7 @@ Move the data yourself before you point a destination at another place. Daemons 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/backups/destinations/r2 \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/r2 \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"config": {"access_key_id": "<new access key ID>", "secret_access_key": "<new secret access key>"}}'
 ```
@@ -1334,7 +1502,7 @@ The hub hands the destination's config, with its secrets, to that daemon with th
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/backups/destinations/nas/test \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/nas/test \
   -H 'Content-Type: application/json' \
   -d '{"machine": "apps"}'
 ```
@@ -1351,11 +1519,15 @@ Location: /v1/machines/apps/actions/12
   "machine": "apps",
   "type": "test",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": null,
   "since": null,
   "lines": null,
   "destination": "nas",
+  "version": null,
+  "packages": null,
+  "delete_data": null,
   "status": "pending",
   "output_cleared": false,
   "created_at": "2026-11-15T12:02:11Z",
@@ -1396,7 +1568,7 @@ Removes a destination that no machine backs up to.
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/backups/destinations/r2
 ```
 
 #### Example response
@@ -1441,7 +1613,7 @@ A notification has an `event`, a `severity` and a `message`. Its `status` is `pe
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications?limit=1
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications?limit=1
 ```
 
 #### Example response
@@ -1455,11 +1627,12 @@ Content-Type: application/json
     {
       "id": 4,
       "machine": "apps",
-      "service": "web",
+      "service": "notes",
+      "container": "web",
       "channel": null,
       "event": "service.memory_high.resolved",
       "severity": "warning",
-      "message": "Resolved: The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+      "message": "Resolved: web in notes on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
       "status": "sent",
       "sent_at": "2026-11-15T11:36:36Z",
       "created_at": "2026-11-15T11:36:35Z",
@@ -1513,7 +1686,7 @@ Lists one machine's notifications, newest first, in the same shape as [`GET /v1/
 #### Example request
 
 ```sh
-curl -s 'https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?open=true&limit=1'
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" 'https://apps.your-tailnet.ts.net/v1/machines/apps/notifications?open=true&limit=1'
 ```
 
 #### Example response
@@ -1528,6 +1701,7 @@ Content-Type: application/json
       "id": 2,
       "machine": "apps",
       "service": null,
+      "container": null,
       "channel": null,
       "event": "docker.unreachable",
       "severity": "critical",
@@ -1592,7 +1766,7 @@ Returns one of a machine's notifications, with its deliveries.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/notifications/3
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/notifications/3
 ```
 
 #### Example response
@@ -1604,11 +1778,12 @@ Content-Type: application/json
 {
   "id": 3,
   "machine": "apps",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "channel": null,
   "event": "service.memory_high",
   "severity": "warning",
-  "message": "The service web on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
+  "message": "web in notes on apps uses 950 MiB, 92% of its 1 GiB memory limit.",
   "status": "sent",
   "sent_at": "2026-11-15T11:35:36Z",
   "created_at": "2026-11-15T11:35:35Z",
@@ -1653,7 +1828,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications/channels
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels
 ```
 
 #### Example response
@@ -1731,7 +1906,7 @@ For a `webhook` channel the hub makes the signing secret. This answer is the onl
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/channels \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels \
   -H 'Content-Type: application/json' \
   -d '{"name": "pager", "type": "webhook", "config": {"url": "https://pager.example.com/tender"}}'
 ```
@@ -1789,7 +1964,7 @@ Returns one channel, with its secrets hidden.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/notifications/channels/pager
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels/pager
 ```
 
 #### Example response
@@ -1848,7 +2023,7 @@ Turning a channel off fails what it still owed, with the error `The channel was 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/notifications/channels/chat \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels/chat \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"config": {"webhook_url": "<new Slack webhook URL>"}, "min_severity": "warning"}'
 ```
@@ -1904,7 +2079,7 @@ Removes a channel and its record of deliveries. Notifications are still recorded
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/notifications/channels/chat
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/channels/chat
 ```
 
 #### Example response
@@ -1940,7 +2115,7 @@ The test is one notification, with one delivery per channel, and `GET /v1/notifi
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/notifications/test
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/notifications/test
 ```
 
 #### Example response
@@ -1991,13 +2166,31 @@ Content-Type: application/json
 
 ## Services
 
-A service is a Docker container on a machine, as the machine's daemon reported it in its latest report. See [Services](services.md).
+A service is a compose project on a machine, made of containers, or a container without a compose project. A managed service is one Tender deployed from a compose file; an unmanaged one is one Tender found running. See [Services](services.md), and [Exposure](exposure.md) for routes.
+
+A service has these fields:
+
+| Field | What it holds |
+| --- | --- |
+| `name` | The compose project name, or the lone container's name. |
+| `managed` | `true` when Tender deployed it. |
+| `state` | `running`, `degraded`, `stopped` or `unknown`, from its containers. See [What a service is](services.md#what-a-service-is). |
+| `deploy_status` | `deploying`, `deployed`, `failed` or `removing`, or `null` when unmanaged. |
+| `last_error` | Why the last deploy or remove failed: its first line, then the end of compose's output. |
+| `deployed_at` | When a deploy last succeeded. |
+| `action_id` | The service's latest deploy or remove, in the machine's actions. |
+| `compose`, `files` and `env` | The compose file, its files by path, and every env key with its value as `"***"`. `compose` is `null` and the others `{}` when unmanaged. |
+| `routes` | Each route with its `url`. See [Routes](exposure.md#routes). |
+| `alerts_enabled` | One switch for every container of the service. |
+| `containers` | Each container by name, with the fields in [What the daemon reports](services.md#what-the-daemon-reports). |
+
+The routes that queue work for the machine answer `202 Accepted` with `{"service": ..., "action": ...}` and the action's `Location`. Follow the action with [`GET /v1/machines/{machine}/actions/{id}`](#get-v1machinesmachineactionsid).
 
 ### `GET /v1/services`
 
 Lists every machine's services, by machine, with whether its Docker answers.
 
-`docker` is `running` or `unreachable`, from the latest report, or `null` before the first and once Docker is turned off on the machine. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each service, and [When Docker is turned off](services.md#when-docker-is-turned-off) explains `null` after a report of `off`.
+`docker` is `running` or `unreachable`, from the latest report, or `null` before the first and once Docker is turned off on the machine. `docker_reason` says why Docker is unreachable, and is `null` while it runs. [Services](services.md#when-docker-cant-be-reached) lists the reasons and what an unreachable Docker does to each container, and [When Docker is turned off](services.md#when-docker-is-turned-off) explains `null` after a report of `off`.
 
 #### Parameters
 
@@ -2006,7 +2199,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/services
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/services
 ```
 
 #### Example response
@@ -2023,27 +2216,44 @@ Content-Type: application/json
       "docker_reason": null,
       "data": [
         {
-          "id": 3,
+          "id": 2,
           "machine": "apps",
-          "name": "web",
-          "runtime": "docker",
-          "project": "apps",
-          "container_id": "c0ffee04",
-          "image": "ghcr.io/example/web:2.4",
+          "name": "redis",
+          "managed": false,
           "state": "running",
-          "health": "healthy",
-          "exit_code": null,
-          "restart_count": 0,
-          "restart_policy": "unless-stopped",
-          "started_at": "2026-11-15T10:32:35Z",
-          "memory_bytes": 209715200,
-          "memory_limit_bytes": 1073741824,
-          "cpu_percent": 12.5,
+          "deploy_status": null,
+          "last_error": null,
+          "deployed_at": null,
+          "action_id": null,
+          "compose": null,
+          "files": {},
+          "env": {},
+          "routes": [],
           "alerts_enabled": true,
-          "stopped_by_tender": false,
-          "removed_at": null,
-          "created_at": "2026-11-15T11:27:27Z",
-          "updated_at": "2026-11-15T11:36:35Z"
+          "containers": [
+            {
+              "id": 2,
+              "name": "redis",
+              "runtime": "docker",
+              "container_id": "c0ffee05",
+              "image": "redis:7",
+              "state": "running",
+              "health": null,
+              "exit_code": null,
+              "restart_count": 0,
+              "restart_policy": "always",
+              "started_at": "2026-11-15T10:32:35Z",
+              "memory_bytes": 8388608,
+              "memory_limit_bytes": null,
+              "cpu_percent": 0.4,
+              "stopped_by_tender": false,
+              "removed_at": null,
+              "created_at": "2026-11-15T10:33:00Z",
+              "updated_at": "2026-11-15T11:36:35Z"
+            }
+          ],
+          "created_at": "2026-11-15T10:33:00Z",
+          "updated_at": "2026-11-15T10:33:00Z"
         }
       ]
     }
@@ -2067,8 +2277,6 @@ Content-Type: application/json
 
 Lists one machine's services, by name.
 
-`cpu_percent` is where 100 is one whole CPU. [Services](services.md#what-a-service-is) explains each field and when usage is `null`.
-
 #### Parameters
 
 | Name | Type | Required | Description |
@@ -2078,7 +2286,7 @@ Lists one machine's services, by name.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services
 ```
 
 #### Example response
@@ -2093,50 +2301,79 @@ Content-Type: application/json
   "docker_reason": null,
   "data": [
     {
-      "id": 4,
+      "id": 1,
       "machine": "apps",
-      "name": "migrate",
-      "runtime": "docker",
-      "project": null,
-      "container_id": "c0ffee03",
-      "image": "migrate:1",
-      "state": "exited",
-      "health": null,
-      "exit_code": 0,
-      "restart_count": 0,
-      "restart_policy": "no",
-      "started_at": null,
-      "memory_bytes": null,
-      "memory_limit_bytes": null,
-      "cpu_percent": null,
-      "alerts_enabled": true,
-      "stopped_by_tender": false,
-      "removed_at": null,
-      "created_at": "2026-11-15T11:27:27Z",
-      "updated_at": "2026-11-15T11:36:35Z"
-    },
-    {
-      "id": 3,
-      "machine": "apps",
-      "name": "web",
-      "runtime": "docker",
-      "project": "apps",
-      "container_id": "c0ffee04",
-      "image": "ghcr.io/example/web:2.4",
+      "name": "notes",
+      "managed": true,
       "state": "running",
-      "health": "healthy",
-      "exit_code": null,
-      "restart_count": 0,
-      "restart_policy": "unless-stopped",
-      "started_at": "2026-11-15T10:32:35Z",
-      "memory_bytes": 209715200,
-      "memory_limit_bytes": 1073741824,
-      "cpu_percent": 12.5,
+      "deploy_status": "deployed",
+      "last_error": null,
+      "deployed_at": "2026-11-15T10:32:40Z",
+      "action_id": 12,
+      "compose": "services:\n  web:\n    image: ghcr.io/me/notes:1.4\n    mem_limit: 512m\n  migrate:\n    image: ghcr.io/me/notes:1.4\n    command: migrate\n    restart: \"no\"\n    mem_limit: 256m\n",
+      "files": {},
+      "env": {
+        "SECRET_KEY": "***"
+      },
+      "routes": [
+        {
+          "id": 1,
+          "container": "web",
+          "port": 8080,
+          "expose": "tailscale",
+          "host": null,
+          "https_port": 443,
+          "local_port": 20000,
+          "url": "https://apps.tail1234.ts.net",
+          "created_at": "2026-11-15T10:31:49Z",
+          "updated_at": "2026-11-15T10:31:49Z"
+        }
+      ],
       "alerts_enabled": true,
-      "stopped_by_tender": false,
-      "removed_at": null,
-      "created_at": "2026-11-15T11:27:27Z",
-      "updated_at": "2026-11-15T11:36:35Z"
+      "containers": [
+        {
+          "id": 3,
+          "name": "migrate",
+          "runtime": "docker",
+          "container_id": "c0ffee03",
+          "image": "ghcr.io/me/notes:1.4",
+          "state": "exited",
+          "health": null,
+          "exit_code": 0,
+          "restart_count": 0,
+          "restart_policy": "no",
+          "started_at": null,
+          "memory_bytes": null,
+          "memory_limit_bytes": null,
+          "cpu_percent": null,
+          "stopped_by_tender": false,
+          "removed_at": null,
+          "created_at": "2026-11-15T10:33:00Z",
+          "updated_at": "2026-11-15T11:36:35Z"
+        },
+        {
+          "id": 1,
+          "name": "web",
+          "runtime": "docker",
+          "container_id": "c0ffee04",
+          "image": "ghcr.io/me/notes:1.4",
+          "state": "running",
+          "health": "healthy",
+          "exit_code": null,
+          "restart_count": 0,
+          "restart_policy": "unless-stopped",
+          "started_at": "2026-11-15T10:32:35Z",
+          "memory_bytes": 209715200,
+          "memory_limit_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "stopped_by_tender": false,
+          "removed_at": null,
+          "created_at": "2026-11-15T10:33:00Z",
+          "updated_at": "2026-11-15T11:36:35Z"
+        }
+      ],
+      "created_at": "2026-11-15T10:31:49Z",
+      "updated_at": "2026-11-15T10:32:40Z"
     }
   ]
 }
@@ -2154,116 +2391,92 @@ Content-Type: application/json
 | --- | --- |
 | `list_services` | `tender services list apps` |
 
-### `GET /v1/machines/{machine}/services/{service}`
+### `POST /v1/machines/{machine}/services`
 
-Returns one service.
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `machine` | string | Yes | Path. The machine's name. |
-| `service` | string | Yes | Path. The container's name. |
-
-#### Example request
-
-```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/services/web
-```
-
-#### Example response
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "id": 3,
-  "machine": "apps",
-  "name": "web",
-  "runtime": "docker",
-  "project": "apps",
-  "container_id": "c0ffee04",
-  "image": "ghcr.io/example/web:2.4",
-  "state": "running",
-  "health": "healthy",
-  "exit_code": null,
-  "restart_count": 0,
-  "restart_policy": "unless-stopped",
-  "started_at": "2026-11-15T10:32:35Z",
-  "memory_bytes": 209715200,
-  "memory_limit_bytes": 1073741824,
-  "cpu_percent": 12.5,
-  "alerts_enabled": true,
-  "stopped_by_tender": false,
-  "removed_at": null,
-  "created_at": "2026-11-15T11:27:27Z",
-  "updated_at": "2026-11-15T11:36:35Z"
-}
-```
-
-#### Errors
-
-| Status | When |
-| --- | --- |
-| `404` | The machine doesn't exist, or it has no service with this name. |
-
-#### Equivalents
-
-| MCP tool | CLI command |
-| --- | --- |
-| `list_services` | `tender services list apps` |
-
-### `PATCH /v1/machines/{machine}/services/{service}`
-
-Turns a service's alerts off or on. Turning them off resolves its open problems.
-
-The setting follows the service's name, as [Services](services.md#what-a-service-is) explains.
+Stores a new managed service and queues its deploy. The daemon checks the compose file against [the rules](services.md#the-rules), and the deploy fails with the rule's sentence when one fails. The body may be up to 4 MiB.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
-| `service` | string | Yes | Path. The container's name. |
-| `alerts_enabled` | boolean | No | Body. `false` to stop the service's alerts, `true` to start them again. |
+| `name` | string | Yes | Body. The compose project name: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `compose` | string | Yes | Body. The text of the docker compose file, at most 256 KiB. |
+| `files` | object | No | Body. Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. At most 64 files and 1 MiB in all. |
+| `env` | object | No | Body. Values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores, not starting with `COMPOSE_` or `DOCKER_`; a value can't hold a single quote or a line break. |
+| `routes` | array | No | Body. Each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` for `cloudflare` and `public` or an optional `https_port` for `tailscale`. See [Routes](exposure.md#routes). |
 
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/machines/apps/services/web \
-  -H 'Content-Type: application/merge-patch+json' \
-  -d '{"alerts_enabled": false}'
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "blog", "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+       "env": {"SECRET_KEY": "s3cret"}, "routes": [{"container": "web", "port": 8080, "expose": "tailscale"}]}'
 ```
 
 #### Example response
 
 ```http
-HTTP/1.1 200 OK
+HTTP/1.1 202 Accepted
 Content-Type: application/json
+Location: /v1/machines/apps/actions/13
 
 {
-  "id": 3,
-  "machine": "apps",
-  "name": "web",
-  "runtime": "docker",
-  "project": "apps",
-  "container_id": "c0ffee04",
-  "image": "ghcr.io/example/web:2.4",
-  "state": "running",
-  "health": "healthy",
-  "exit_code": null,
-  "restart_count": 0,
-  "restart_policy": "unless-stopped",
-  "started_at": "2026-11-15T10:32:35Z",
-  "memory_bytes": 209715200,
-  "memory_limit_bytes": 1073741824,
-  "cpu_percent": 12.5,
-  "alerts_enabled": false,
-  "stopped_by_tender": false,
-  "removed_at": null,
-  "created_at": "2026-11-15T11:27:27Z",
-  "updated_at": "2026-11-15T11:36:35Z"
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "stopped",
+    "deploy_status": "deploying",
+    "last_error": null,
+    "deployed_at": null,
+    "action_id": 13,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:40:20Z"
+  },
+  "action": {
+    "id": 13,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:40:20Z",
+    "output": null
+  }
 }
 ```
 
@@ -2272,22 +2485,796 @@ Content-Type: application/json
 | Status | When |
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
-| `404` | The machine doesn't exist, or it has no service with this name. |
-| `422` | `alerts_enabled` isn't a boolean. |
+| `404` | The machine doesn't exist. |
+| `409` | The machine has a service with this name: a managed one, which `PATCH` changes, or one Tender didn't deploy, whose containers you take down first with `docker compose -p NAME down`. Or a route's host or `https_port` is taken. |
+| `413` | The body is larger than 4 MiB. |
+| `422` | A field isn't valid, such as a name with a dash, a file outside the folder, an env value of `"***"`, or a `public` route without a host. A `cloudflare` route on a hub without the Cloudflare settings. |
+| `503` | The hub has no `TENDER_ENCRYPTION_KEY` to store the env with. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `set_service_alerts` | `tender services alerts apps web off` |
+| `deploy_service` | `tender services deploy apps blog -f compose.yaml --env-file .env --route web:8080:tailscale` |
+
+### `GET /v1/machines/{machine}/services/{service}`
+
+Returns one service, with its routes and containers.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+
+#### Example request
+
+```sh
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services/redis
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 2,
+  "machine": "apps",
+  "name": "redis",
+  "managed": false,
+  "state": "running",
+  "deploy_status": null,
+  "last_error": null,
+  "deployed_at": null,
+  "action_id": null,
+  "compose": null,
+  "files": {},
+  "env": {},
+  "routes": [],
+  "alerts_enabled": true,
+  "containers": [
+    {
+      "id": 2,
+      "name": "redis",
+      "runtime": "docker",
+      "container_id": "c0ffee05",
+      "image": "redis:7",
+      "state": "running",
+      "health": null,
+      "exit_code": null,
+      "restart_count": 0,
+      "restart_policy": "always",
+      "started_at": "2026-11-15T10:32:35Z",
+      "memory_bytes": 8388608,
+      "memory_limit_bytes": null,
+      "cpu_percent": 0.4,
+      "stopped_by_tender": false,
+      "removed_at": null,
+      "created_at": "2026-11-15T10:33:00Z",
+      "updated_at": "2026-11-15T11:36:35Z"
+    }
+  ],
+  "created_at": "2026-11-15T10:33:00Z",
+  "updated_at": "2026-11-15T10:33:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_service` | `tender services show apps redis` |
+
+### `PATCH /v1/machines/{machine}/services/{service}`
+
+Changes a service, as a JSON merge patch. `alerts_enabled` turns its alerts off or on, for any service, and answers `200` with the service; turning them off resolves its open problems. A change of `compose`, `files`, `env` or `routes`, for a managed service only, is stored and queues a deploy, and answers `202`.
+
+`files` and `env` merge into the stored ones: a key with `null` removes it, and `null` for the whole object removes every key. An env value of `"***"` keeps the stored one. `routes` replaces every route; a route the service keeps keeps its ports.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+| `alerts_enabled` | boolean | No | Body. `false` to stop the service's alerts, `true` to start them again. |
+| `compose` | string | No | Body. A new compose file. It can't be `null`. |
+| `files` | object | No | Body. Files to add, change or, with `null`, remove. |
+| `env` | object | No | Body. Env values to add, change or, with `null`, remove. |
+| `routes` | array | No | Body. Every route of the service, replacing the stored ones. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"env": {"MODE": "prod"}}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/14
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deploying",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 14,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:45:10Z"
+  },
+  "action": {
+    "id": 14,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:45:10Z",
+    "updated_at": "2026-11-15T11:45:10Z",
+    "output": null
+  }
+}
+```
+
+With only `alerts_enabled`, the answer is `200 OK` with the service, as `GET` returns it.
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | A change of a service Tender didn't deploy, which only `alerts_enabled` can change. Or the service is being removed, or a route's host or `https_port` is taken. |
+| `413` | The body is larger than 4 MiB. |
+| `422` | A field isn't valid, as for `POST`, or `compose` is `null`. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_service_alerts`, or `deploy_service` for a change | `tender services alerts apps blog off`, or `tender services deploy apps blog -f compose.yaml --env MODE=prod` |
+
+### `DELETE /v1/machines/{machine}/services/{service}`
+
+Queues the remove of a managed service. The daemon runs `docker compose down`, takes the service's routes out of the exposures, and keeps its folder in `/var/lib/tender/services/.removed/` on the machine, or deletes it with `delete_data=true`. The hub forgets the service once the remove succeeded. See [Change, redeploy and remove](services.md#change-redeploy-and-remove).
+
+> [!WARNING]
+> `delete_data=true` deletes the data of the service's named volumes, and can't be undone.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+| `delete_data` | boolean | No | Query. `true` deletes the service's folder and its data. The default, `false`, keeps it aside. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" 'https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog?delete_data=true'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/15
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "removing",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 15,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:50:00Z"
+  },
+  "action": {
+    "id": 15,
+    "machine": "apps",
+    "type": "remove",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": true,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:50:00Z",
+    "updated_at": "2026-11-15T11:50:00Z",
+    "output": null
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | `delete_data` isn't `true` or `false`. |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | The service isn't managed, or it is being removed already. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_service` | `tender services remove apps blog --delete-data --yes` |
+
+### `POST /v1/machines/{machine}/services/{service}/deploy`
+
+Queues a deploy of a managed service as it is stored. Compose pulls the images again, so a new image under the same tag runs, and recreates the containers that changed.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+
+#### Example request
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog/deploy
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/16
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deploying",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 16,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:48:00Z"
+  },
+  "action": {
+    "id": 16,
+    "machine": "apps",
+    "type": "deploy",
+    "service": "blog",
+    "container": null,
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:48:00Z",
+    "updated_at": "2026-11-15T11:48:00Z",
+    "output": null
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | The machine doesn't exist, or it has no service with this name. |
+| `409` | The service isn't managed, or it is being removed. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `redeploy_service` | `tender services redeploy apps blog` |
+
+### `POST /v1/machines/{machine}/services/{service}/start`
+
+Queues a start of every container of the service, or of one. A managed service as a whole starts with `docker compose start` in its folder; one container, or an unmanaged service, through Docker's API. Starting a running container changes nothing.
+
+`POST /v1/machines/{machine}/services/{service}/stop` and `POST /v1/machines/{machine}/services/{service}/restart` work the same, and so does `POST /v1/machines/{machine}/actions` with the type and the service. A container Tender stopped is marked `stopped_by_tender` and doesn't alert as down until it runs again.
+
+> [!WARNING]
+> A `stop` takes the service offline until something starts it again.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `machine` | string | Yes | Path. The machine's name. |
+| `service` | string | Yes | Path. The service's name. |
+| `container` | string | No | Body. Only this container of the service, such as `web`. Leave the body out for every container. |
+
+#### Example request
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/services/blog/restart \
+  -H 'Content-Type: application/json' \
+  -d '{"container": "web"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+Location: /v1/machines/apps/actions/17
+
+{
+  "service": {
+    "id": 3,
+    "machine": "apps",
+    "name": "blog",
+    "managed": true,
+    "state": "running",
+    "deploy_status": "deployed",
+    "last_error": null,
+    "deployed_at": "2026-11-15T11:41:02Z",
+    "action_id": 16,
+    "compose": "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n",
+    "files": {},
+    "env": {
+      "MODE": "***",
+      "SECRET_KEY": "***"
+    },
+    "routes": [
+      {
+        "id": 2,
+        "container": "web",
+        "port": 8080,
+        "expose": "tailscale",
+        "host": null,
+        "https_port": 10000,
+        "local_port": 20001,
+        "url": "https://apps.tail1234.ts.net:10000",
+        "created_at": "2026-11-15T11:40:20Z",
+        "updated_at": "2026-11-15T11:40:20Z"
+      }
+    ],
+    "alerts_enabled": true,
+    "containers": [
+      {
+        "id": 4,
+        "name": "web",
+        "runtime": "docker",
+        "container_id": "c0ffee06",
+        "image": "ghcr.io/me/blog:2",
+        "state": "running",
+        "health": null,
+        "exit_code": null,
+        "restart_count": 0,
+        "restart_policy": "unless-stopped",
+        "started_at": "2026-11-15T11:40:58Z",
+        "memory_bytes": 104857600,
+        "memory_limit_bytes": 536870912,
+        "cpu_percent": 1.5,
+        "stopped_by_tender": false,
+        "removed_at": null,
+        "created_at": "2026-11-15T11:41:05Z",
+        "updated_at": "2026-11-15T11:50:00Z"
+      }
+    ],
+    "created_at": "2026-11-15T11:40:20Z",
+    "updated_at": "2026-11-15T11:49:10Z"
+  },
+  "action": {
+    "id": 17,
+    "machine": "apps",
+    "type": "restart",
+    "service": "blog",
+    "container": "web",
+    "unit": null,
+    "priority": null,
+    "since": null,
+    "lines": null,
+    "destination": null,
+    "version": null,
+    "packages": null,
+    "delete_data": null,
+    "status": "pending",
+    "output_cleared": false,
+    "created_at": "2026-11-15T11:55:00Z",
+    "updated_at": "2026-11-15T11:55:00Z",
+    "output": null
+  }
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | The machine doesn't exist, it has no service with this name, or the service has no container with this name. |
+| `409` | The container was removed, or the service has no containers left: Docker on the machine no longer has them. |
+| `422` | `container` is empty. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `start_service`, `stop_service` or `restart_service` | `tender services restart apps blog --container web` |
+
+## Registries
+
+A registry is the login of a container registry, such as `ghcr.io`, that managed services pull private images from. A deploy uses the login of the registry whose host an image is on. The hub stores the password encrypted and shows it as `"***"` with `password_set`.
+
+### `GET /v1/registries`
+
+Lists the registries, by name.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/registries
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "ghcr",
+      "host": "ghcr.io",
+      "username": "me",
+      "password": "***",
+      "password_set": true,
+      "created_at": "2026-11-15T09:00:00Z",
+      "updated_at": "2026-11-15T09:00:00Z"
+    }
+  ]
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `500` | The hub failed to read its database. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `list_registries` | `tender registries list` |
+
+### `POST /v1/registries`
+
+Adds a registry's login. It answers `201 Created` with the registry and its `Location`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Body. Lowercase letters, digits and dashes, starting with a letter or digit, at most 63. |
+| `host` | string | Yes | Body. The registry's host, as image names start with it, such as `ghcr.io` or `registry.example.com:5000`; `docker.io` for Docker Hub. |
+| `username` | string | Yes | Body. The login name. |
+| `password` | string | Yes | Body. The password or access token. |
+
+#### Example request
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/registries \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "ghcr", "host": "ghcr.io", "username": "me", "password": "ghp_example"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /v1/registries/ghcr
+
+{
+  "id": 1,
+  "name": "ghcr",
+  "host": "ghcr.io",
+  "username": "me",
+  "password": "***",
+  "password_set": true,
+  "created_at": "2026-11-15T09:00:00Z",
+  "updated_at": "2026-11-15T09:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `409` | A registry has this name, or this host already has a login. |
+| `422` | A field isn't valid, or the password is `"***"`. |
+| `503` | The hub has no `TENDER_ENCRYPTION_KEY` to store the password with. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `add_registry` | `tender registries add ghcr --host ghcr.io --username me` |
+
+### `PATCH /v1/registries/{registry}`
+
+Changes a registry's host, username or password. The fields left out stay.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `registry` | string | Yes | Path. The registry's name. |
+| `host` | string | No | Body. A new host. |
+| `username` | string | No | Body. A new login name. |
+| `password` | string | No | Body. A new password or access token. |
+
+#### Example request
+
+```sh
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/registries/ghcr \
+  -H 'Content-Type: application/merge-patch+json' \
+  -d '{"password": "ghp_new"}'
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 1,
+  "name": "ghcr",
+  "host": "ghcr.io",
+  "username": "me",
+  "password": "***",
+  "password_set": true,
+  "created_at": "2026-11-15T09:00:00Z",
+  "updated_at": "2026-11-15T12:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `404` | No registry has this name. |
+| `409` | Another registry has the new host. |
+| `422` | A field isn't valid. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `update_registry` | `tender registries update ghcr --password` |
+
+### `DELETE /v1/registries/{registry}`
+
+Removes a registry's login. Services whose images are on it can no longer pull them, unless they are public. It answers `204 No Content`.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `registry` | string | Yes | Path. The registry's name. |
+
+#### Example request
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/registries/ghcr
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | No registry has this name. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_registry` | `tender registries remove ghcr` |
 
 ## Actions
 
-An action is work for a machine's daemon: starting, stopping or restarting a service, reading a service's logs or the machine's journal, trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)), upgrading the machine's packages, or updating Tender, which only a rollout queues. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
+An action is work for a machine's daemon: deploying or removing a managed service, which only [its routes](#services) queue, starting, stopping or restarting a service or one of its containers, reading a service's logs or the machine's journal, trying a backup destination (`test`, queued with [`POST /v1/backups/destinations/{destination}/test`](#post-v1backupsdestinationsdestinationtest)), upgrading the machine's packages, or updating Tender, which only a rollout queues. The hub keeps each machine's newest 100 finished actions, and every `pending` or `in_progress` one.
 
 ### `POST /v1/machines/{machine}/actions`
 
 Queues an action for the machine's daemon and answers at once with the action as `pending`.
+
+To restart one container of a service, send `{"type": "restart", "service": "notes", "container": "web"}`; leave `container` out for every container. A service's logs are its containers' lines merged in time order, each with its container's name, or one container's lines with `container`.
 
 To read the machine's journal, send `{"type": "logs", "unit": "tenderd", "priority": "warning", "since": "1h", "lines": 200}`. Logs output is at most 256 KiB, dropping the oldest lines past it.
 
@@ -2302,7 +3289,8 @@ To upgrade a Debian or Ubuntu machine's packages, send `{"type": "upgrade", "pac
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
 | `type` | string | Yes | Body. `start`, `stop`, `restart`, `logs` or `upgrade`. An `update` comes only from `POST /v1/updates/rollouts`. |
-| `service` | string | For `start`, `stop` and `restart` | Body. The container's name. With `logs`, read this service's logs; leave it out to read the machine's journal. |
+| `service` | string | For `start`, `stop` and `restart` | Body. The service's name. With `logs`, read this service's logs; leave it out to read the machine's journal. |
+| `container` | string | No | Body. With `service`, only this container of the service, such as `web`. |
 | `unit` | string | No | Body. Machine logs only. Only this systemd unit, such as `tenderd` or `nginx.service`. |
 | `priority` | string | No | Body. Machine logs only. Only this priority and the more severe ones: `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug`. |
 | `since` | string | No | Body. Logs only. Only entries from this far back, such as `30m`, `1h` or `7d`, at most `7d`. |
@@ -2312,9 +3300,9 @@ To upgrade a Debian or Ubuntu machine's packages, send `{"type": "upgrade", "pac
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/machines/apps/actions \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/actions \
   -H 'Content-Type: application/json' \
-  -d '{"type": "restart", "service": "web"}'
+  -d '{"type": "restart", "service": "notes", "container": "web"}'
 ```
 
 #### Example response
@@ -2328,7 +3316,8 @@ Location: /v1/machines/apps/actions/14
   "id": 14,
   "machine": "apps",
   "type": "restart",
-  "service": "web",
+  "service": "notes",
+  "container": "web",
   "unit": null,
   "priority": null,
   "since": null,
@@ -2336,6 +3325,7 @@ Location: /v1/machines/apps/actions/14
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "pending",
   "output_cleared": false,
   "created_at": "2026-11-15T11:40:20Z",
@@ -2349,15 +3339,15 @@ Location: /v1/machines/apps/actions/14
 | Status | When |
 | --- | --- |
 | `400` | The body isn't valid JSON or has a field the route doesn't know. |
-| `404` | The machine doesn't exist, or it has no service with this name. |
-| `409` | The service was removed: Docker on the machine no longer has its container. |
-| `422` | The type isn't one of the five, a service action has no service or has a logs field, a service's logs action has `unit` or `priority`, a logs field isn't valid, `packages` isn't `security` or `all` or comes without `upgrade`, or the type is `update`. |
+| `404` | The machine doesn't exist, it has no service with this name, or the service has no container with this name. |
+| `409` | The service or the container was removed: Docker on the machine no longer has it. |
+| `422` | The type isn't one of the five, a service action has no service or has a logs field, `container` comes without `service` or is empty, a service's logs action has `unit` or `priority`, a logs field isn't valid, `packages` isn't `security` or `all` or comes without `upgrade`, or the type is `update`, `deploy` or `remove`, which go through their own routes. |
 
 #### Equivalents
 
 | MCP tool | CLI command |
 | --- | --- |
-| `start_service`, `stop_service`, `restart_service`, `get_service_logs`, `get_machine_logs` or `upgrade_machine` | `tender services start\|stop\|restart\|logs apps web`, `tender logs apps`, or `tender machines upgrade apps` |
+| `start_service`, `stop_service`, `restart_service`, `service_logs`, `get_machine_logs` or `upgrade_machine` | `tender services start\|stop\|restart\|logs apps notes --container web`, `tender logs apps`, or `tender machines upgrade apps` |
 
 ### `GET /v1/machines/{machine}/actions`
 
@@ -2374,7 +3364,7 @@ Lists a machine's actions, newest first, without their output.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/actions
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/actions
 ```
 
 #### Example response
@@ -2389,7 +3379,8 @@ Content-Type: application/json
       "id": 7,
       "machine": "apps",
       "type": "logs",
-      "service": "web",
+      "service": "notes",
+      "container": null,
       "unit": null,
       "priority": null,
       "since": "10m",
@@ -2397,6 +3388,7 @@ Content-Type: application/json
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:14Z",
@@ -2407,6 +3399,7 @@ Content-Type: application/json
       "machine": "apps",
       "type": "logs",
       "service": null,
+      "container": null,
       "unit": "tenderd",
       "priority": "warning",
       "since": "1h",
@@ -2414,6 +3407,7 @@ Content-Type: application/json
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": true,
       "created_at": "2026-11-15T11:28:13Z",
@@ -2423,7 +3417,8 @@ Content-Type: application/json
       "id": 1,
       "machine": "apps",
       "type": "restart",
-      "service": "web",
+      "service": "notes",
+      "container": null,
       "unit": null,
       "priority": null,
       "since": null,
@@ -2431,6 +3426,7 @@ Content-Type: application/json
       "destination": null,
       "version": null,
       "packages": null,
+      "delete_data": null,
       "status": "completed",
       "output_cleared": false,
       "created_at": "2026-11-15T11:28:07Z",
@@ -2457,7 +3453,7 @@ Content-Type: application/json
 
 Returns one action with its output: the logs, or why it failed.
 
-`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a completed logs action's output. A failed action keeps why it failed. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message.
+`output` is `null` while the action runs, for a completed start, stop or restart, and once the hub has cleared a completed logs action's output. A failed action keeps why it failed. A machine logs line is the time in UTC, the unit and the message. A service logs line is the time and the message, with the container's name and `|` between them when the logs are of more than one container. A deploy's output is the end of what compose printed, and a remove's says where the service's folder was kept.
 
 #### Parameters
 
@@ -2469,7 +3465,7 @@ Returns one action with its output: the logs, or why it failed.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/machines/apps/actions/8
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/machines/apps/actions/8
 ```
 
 #### Example response
@@ -2483,6 +3479,7 @@ Content-Type: application/json
   "machine": "apps",
   "type": "logs",
   "service": null,
+  "container": null,
   "unit": null,
   "priority": "warning",
   "since": null,
@@ -2490,6 +3487,7 @@ Content-Type: application/json
   "destination": null,
   "version": null,
   "packages": null,
+  "delete_data": null,
   "status": "completed",
   "output_cleared": false,
   "created_at": "2026-11-15T11:28:15Z",
@@ -2527,7 +3525,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates
 ```
 
 #### Example response
@@ -2571,7 +3569,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates/settings
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/settings
 ```
 
 #### Example response
@@ -2612,7 +3610,7 @@ Replaces the hub's update settings. The hub looks at GitHub again within 10 seco
 #### Example request
 
 ```sh
-curl -s -X PUT https://apps.your-tailnet.ts.net/v1/updates/settings \
+curl -s -X PUT -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/settings \
   -H 'Content-Type: application/json' \
   -d '{"mode": "auto", "window": "02:00-05:00"}'
 ```
@@ -2655,7 +3653,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates/rollouts
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/rollouts
 ```
 
 #### Example response
@@ -2711,7 +3709,7 @@ Starts a rollout of a stable release to the machines named, or to every machine 
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/updates/rollouts \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/rollouts \
   -H 'Content-Type: application/json' \
   -d '{"version": "0.3.1", "machines": []}'
 ```
@@ -2769,7 +3767,7 @@ Returns one rollout with its machines, as `GET /v1/updates/rollouts` lists it.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/updates/rollouts/4
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/updates/rollouts/4
 ```
 
 #### Example response
@@ -2845,7 +3843,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/logs/sinks
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks
 ```
 
 #### Example response
@@ -2923,7 +3921,7 @@ For a `webhook` sink without a `secret`, the response has `secret`, the one the 
 #### Example request
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks \
   -H 'Content-Type: application/json' \
   -d '{"name": "otel", "type": "otlp", "config": {"endpoint": "https://otel.example.com:4318/v1/logs", "headers": {"Authorization": "Bearer <key>"}}}'
 ```
@@ -2931,7 +3929,7 @@ curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
 A webhook sink for one machine's nginx journal and its web container:
 
 ```sh
-curl -s -X POST https://apps.your-tailnet.ts.net/v1/logs/sinks \
+curl -s -X POST -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks \
   -H 'Content-Type: application/json' \
   -d '{"name": "hook", "type": "webhook", "config": {"url": "https://logs.example.com/tender"}, "machines": ["apps"], "sources": {"journal": {"units": ["nginx.service"], "min_priority": "warning"}, "services": {"names": ["web"]}}}'
 ```
@@ -2992,7 +3990,7 @@ Returns one sink, with each machine's status and its secrets shown as `"***"`.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
 ```
 
 #### Example response
@@ -3063,7 +4061,7 @@ Changes a sink's `config`, `enabled`, `sources` or `machines`, as a JSON merge p
 #### Example request
 
 ```sh
-curl -s -X PATCH https://apps.your-tailnet.ts.net/v1/logs/sinks/otel \
+curl -s -X PATCH -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks/otel \
   -H 'Content-Type: application/merge-patch+json' \
   -d '{"sources": {"journal": {"min_priority": "warning"}, "services": null}}'
 ```
@@ -3125,7 +4123,7 @@ Removes a sink and every machine's status of it.
 #### Example request
 
 ```sh
-curl -s -X DELETE https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/logs/sinks/otel
 ```
 
 #### Example response
@@ -3146,6 +4144,133 @@ HTTP/1.1 204 No Content
 | --- | --- |
 | `remove_log_sink` | `tender sinks remove otel` |
 
+## Exposures
+
+The settings services' routes need to reach people. Only `cloudflare` routes need any: the hub's Cloudflare account and API token. [Exposure](exposure.md#cloudflare) explains how the hub uses them.
+
+### `GET /v1/exposures/cloudflare`
+
+Returns the hub's Cloudflare settings. The API token is always `"***"`, with `api_token_set`.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/exposures/cloudflare
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "account_id": "0123456789abcdef0123456789abcdef",
+  "api_token": "***",
+  "api_token_set": true,
+  "created_at": "2026-11-15T10:00:00Z",
+  "updated_at": "2026-11-15T10:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | Cloudflare isn't set up on this hub. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `get_cloudflare_settings` | `tender exposures cloudflare show` |
+
+### `PUT /v1/exposures/cloudflare`
+
+Replaces the hub's Cloudflare settings. The hub first lists the account's tunnels and zones with the token, and stores nothing if Cloudflare refuses.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account_id` | string | Yes | Body. The Cloudflare account ID, 32 lowercase hex digits, from the dashboard's Account home. |
+| `api_token` | string | No | Body. Secret. A Cloudflare API token with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. Required the first time; leave it out to keep the stored one. |
+
+#### Example request
+
+```sh
+curl -s -X PUT -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/exposures/cloudflare \
+  -H 'Content-Type: application/json' \
+  -d "{\"account_id\": \"0123456789abcdef0123456789abcdef\", \"api_token\": \"$(cat cloudflare-token)\"}"
+```
+
+#### Example response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "account_id": "0123456789abcdef0123456789abcdef",
+  "api_token": "***",
+  "api_token_set": true,
+  "created_at": "2026-11-15T10:00:00Z",
+  "updated_at": "2026-11-15T10:00:00Z"
+}
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | The body isn't valid JSON or has a field the route doesn't know. |
+| `422` | `account_id` isn't 32 lowercase hex digits, `api_token` isn't a token or is `"***"`, there is no stored token to keep, or Cloudflare refused the account or the token. The detail gives Cloudflare's reason. |
+| `502` | Cloudflare didn't answer, or answered with a `5xx` or `429`, after 3 tries. Try again later. |
+| `503` | The hub has no `TENDER_ENCRYPTION_KEY` to seal the token with. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `set_cloudflare_settings` | `tender exposures cloudflare set --account-id ID --api-token-file PATH` |
+
+### `DELETE /v1/exposures/cloudflare`
+
+Removes the hub's Cloudflare settings. The tunnels and DNS records already in Cloudflare stay.
+
+#### Parameters
+
+None.
+
+#### Example request
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/v1/exposures/cloudflare
+```
+
+#### Example response
+
+```http
+HTTP/1.1 204 No Content
+```
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| `404` | Cloudflare isn't set up on this hub. |
+| `409` | A service still has a `cloudflare` route. Take the routes off first. |
+
+#### Equivalents
+
+| MCP tool | CLI command |
+| --- | --- |
+| `remove_cloudflare_settings` | `tender exposures cloudflare remove` |
+
 ## Metrics
 
 ### `GET /metrics`
@@ -3159,7 +4284,7 @@ None.
 #### Example request
 
 ```sh
-curl -s https://apps.your-tailnet.ts.net/metrics
+curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/metrics
 ```
 
 #### Example response
@@ -3174,9 +4299,12 @@ tender_build_info{version="v0.3.0"} 1
 # HELP tender_machine_cpu_load The machine's 1-minute load average, from its latest reading.
 # TYPE tender_machine_cpu_load gauge
 tender_machine_cpu_load{machine="apps"} 0.09
-# HELP tender_service_state 1 for the service's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.
+# HELP tender_service_state 1 for the service's current state: running, degraded, stopped or unknown. managed is true for a service Tender deployed.
 # TYPE tender_service_state gauge
-tender_service_state{machine="apps",service="web",runtime="docker",state="running"} 1
+tender_service_state{machine="apps",service="notes",managed="true",state="running"} 1
+# HELP tender_container_state 1 for the container's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.
+# TYPE tender_container_state gauge
+tender_container_state{machine="apps",service="notes",container="web",runtime="docker",state="running"} 1
 # HELP tender_backup_last_age_seconds How old the machine's newest snapshot is.
 # TYPE tender_backup_last_age_seconds gauge
 tender_backup_last_age_seconds{machine="apps"} 31560
@@ -3211,8 +4339,11 @@ The daemons use these routes to report and to take their work. Each needs the ma
 | `PUT /v1/machines/{machine}/backups/snapshots` | Replaces the hub's list of the machine's snapshots after each backup and cleanup. |
 | `POST /v1/machines/{machine}/backups/history` | Records a run as it starts, or a finished run it couldn't send while the hub was down. |
 | `PATCH /v1/machines/{machine}/backups/history/{id}` | Records how a run ended. |
-| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "services": [...]}` with every container, `[]` for none, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, or `{"docker": "off"}` when Docker is turned off, once a minute and after each start, stop or restart. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. |
+| `PUT /v1/machines/{machine}/services` | Sends `{"docker": "running", "containers": [...]}` with every container, `[]` for none, each with its compose `project`, `compose_service` and `container_number`, or `{"docker": "unreachable", "docker_reason": "refused"}` with no list, or `{"docker": "off"}` when Docker is turned off, once a minute and after each start, stop, restart, deploy or remove. A running container whose stats couldn't be read has `"stats_unavailable": true` and no usage. A daemon before v0.4 sends the list as `services`, which the hub still takes. |
 | `GET /v1/machines/{machine}/actions?wait=25` | Waits up to 25 seconds, at most 30, for the oldest pending action, and gets it without changing its status. |
+| `GET /v1/machines/{machine}/actions?wait=25` (a deploy or remove) | A deploy or remove action comes with `deployment`: the service's `name`, `compose`, `files`, `env` in the clear, its `routes` with their local ports and `expose`, the `registries` logins, the machine's `exposures`, and `cloudflare_error` when the hub couldn't route the service's cloudflare routes through the machine's tunnel, which fails the action once the containers are done, for this daemon only. |
+| `GET /v1/machines/{machine}/exposures` | Gets `{"routes": [...], "cloudflare_tunnel_token": ...}`, the machine's whole set of routes, each with `service`, `container`, `expose`, `local_port`, `host` and `https_port`, when the daemon starts. The tunnel token, `null` while the machine has no Cloudflare tunnel, reaches only this daemon. See [Exposure](exposure.md#how-the-daemon-applies-them). |
+| `PUT /v1/machines/{machine}/exposures/status` | Sends `{"tailscale_dns_name": "apps.tail1234.ts.net"}`, or `null` without Tailscale, after it applies the exposures. Answers `204`. |
 | `GET /v1/machines/{machine}/logs/sinks` | Gets the enabled sinks for the machine, every 30 seconds, each with its whole `config`, secrets included, its `sources` and `updated_at`. |
 | `PUT /v1/machines/{machine}/logs/status` | Sends `{"data": [...]}`, one entry per sink with `sink_id` and the `status` fields, every minute and within seconds when sending starts or stops failing. An entry for a sink that is gone is ignored. |
 | `PUT /v1/machines/{machine}/security` | Sends the security checks, when the daemon starts and every 15 minutes, and after an upgrade. Answers `204`. |
@@ -3222,4 +4353,4 @@ The daemons use these routes to report and to take their work. Each needs the ma
 
 1. [MCP reference](mcp.md) has the same operations as tools for an AI client.
 2. [CLI reference](cli.md) has the `tender` commands that call these routes.
-3. [Security](security.md) explains who can reach the hub.
+3. [Security](security.md) explains who can reach the hub and how tokens are kept.

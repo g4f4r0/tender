@@ -22,7 +22,7 @@ import (
 	"github.com/g4f4r0/tender/internal/mcp"
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/server"
-	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/tokens"
 )
 
 const defaultDatabase = config.DefaultDatabase
@@ -54,8 +54,8 @@ Options:
 	{"--database PATH", "SQLite database file; overrides " + config.EnvDatabase},
 	{"--listen ADDR", "Address to listen on; overrides " + config.EnvListen},
 }) + `
-The hub has no login: it listens on 127.0.0.1 and is reached through Tailscale Serve or your
-own proxy.
+The hub listens on 127.0.0.1 and is reached through Tailscale Serve or your own proxy. People
+and MCP clients send an API token; make the first one with: sudo tender tokens add NAME
 Docs: ` + docsURL + `
 `
 
@@ -101,15 +101,19 @@ func writable(path string) error {
 func newHub(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logger) *server.Server {
 	ms := machines.NewStore(d)
 	srv := server.New(d, log, ms)
+	ts := tokens.NewStore(d)
+	srv.RequireTokens(ts)
+	ts.Routes(srv)
 	ms.Routes(srv)
 	backups.NewStore(d, key).Routes(srv)
 	notifications.NewStore(d, key).Routes(srv, sender, hubIdentity())
-	services.NewStore(d).Routes(srv)
 	as := newActions(d, key)
+	newServices(d, key, as).Routes(srv)
 	as.Routes(srv)
 	logs.NewStore(d, key).Routes(srv)
 	newSecurity(d, ms).Routes(srv)
 	newUpdates(d, ms, as).Routes(srv)
+	newCloudflareStore(d, key).Routes(srv)
 	srv.Handle("GET /metrics", srv.People(metricsRoute(metricSources(d), time.Now)))
 
 	// The SDK handler answers GET and DELETE with 405 in stateless mode, so only POST is routed.
@@ -128,19 +132,22 @@ func newTools(d *db.DB, key []byte, sender notifications.Sender, log *slog.Logge
 	ms.RegisterTools(s)
 	backups.NewStore(d, key).RegisterTools(s, ms.Lookup)
 	notifications.NewStore(d, key).RegisterTools(s, ms.Lookup, sender, hubIdentity())
-	services.NewStore(d).RegisterTools(s, ms.Lookup)
 	as := newActions(d, key)
+	newServices(d, key, as).RegisterTools(s, ms.Lookup)
 	as.RegisterTools(s, ms.Lookup)
 	logs.NewStore(d, key).RegisterTools(s)
 	newSecurity(d, ms).RegisterTools(s, ms.Lookup)
 	newUpdates(d, ms, as).RegisterTools(s)
+	tokens.NewStore(d).RegisterTools(s)
+	newCloudflareStore(d, key).RegisterTools(s)
 	return s
 }
 
 // newActions returns the actions store, which hears about services from the services store and
-// hands the destination of a test, opened with key, to the daemon that runs it.
+// hands the destination of a test and the managed service of a deploy or remove, opened with key,
+// to the daemon that runs it.
 func newActions(d *db.DB, key []byte) *actions.Store {
-	as := actions.NewStore(d, services.NewStore(d))
+	as := actions.NewStore(d, newServices(d, key, nil))
 	as.Destinations = destinationTargets{backups.NewStore(d, key)}
 	if keep, err := logsKeep(os.Getenv); err == nil {
 		as.Keep = keep
@@ -224,6 +231,15 @@ func checkKey(ctx context.Context, d *db.DB, key []byte, path string) error {
 		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
 			"without it they can't be read, and each log sink needs its secrets saved again", config.EnvEncryptionKey, path, err)
 	}
+	if err := newCloudflareStore(d, key).CheckKey(ctx); err != nil {
+		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
+			"without it they can't be read, and the Cloudflare API token needs saving again", config.EnvEncryptionKey, path, err)
+	}
+	if err := newServices(d, key, nil).CheckKey(ctx); err != nil {
+		return fmt.Errorf("%s does not open the secrets in %s: %w. Use the key they were stored with, from /etc/tender/hub.env; "+
+			"without it they can't be read, and each managed service's env and each registry's password need saving again",
+			config.EnvEncryptionKey, path, err)
+	}
 	return nil
 }
 
@@ -275,6 +291,12 @@ func serveHub(args []string, log *slog.Logger) error {
 		return err
 	}
 
+	if has, err := tokens.NewStore(d).Any(ctx); err != nil {
+		return err
+	} else if !has {
+		log.Warn("the hub has no API tokens, so it refuses every request from people and MCP clients until it has one. " +
+			"Make the first one on this machine with: sudo tender tokens add NAME")
+	}
 	hub := newHub(d, cfg.EncryptionKey, sender, log)
 	ms := machines.NewStore(d)
 	go hub.PruneKeys(ctx)
@@ -287,7 +309,7 @@ func serveHub(args []string, log *slog.Logger) error {
 	if after, err := failingAfter(os.Getenv); err == nil {
 		engine.FailingAfter = after
 	}
-	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), services.NewStore(d), logs.NewStore(d, nil), newSecurity(d, ms), up))
+	go engine.Run(ctx, loadMachines(ms, backups.NewStore(d, nil), newServices(d, nil, as), logs.NewStore(d, nil), newSecurity(d, ms), up))
 	// No write timeout: a daemon's long poll for actions holds its request up to 30 s.
 	srv := &http.Server{
 		Addr:              cfg.Listen,

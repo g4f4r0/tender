@@ -176,6 +176,49 @@ func TestUpdateToLatest(t *testing.T) {
 	}
 }
 
+// An updated hub with no API token refuses people, so the update says how to make the first one,
+// in one sentence; with a token, or with no hub, it says nothing about tokens.
+func TestUpdateSaysHowToMakeTheFirstToken(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		hub, has  bool
+		err       error
+		wantNotes bool
+	}{
+		{"hub without tokens", true, false, nil, true},
+		{"hub that can't tell", true, false, errors.New("no such table: api_tokens"), true},
+		{"hub with a token", true, true, nil, false},
+		{"daemon only", false, false, nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			if c.hub {
+				installBoth(t, e)
+			} else {
+				if err := e.in.Daemon(context.Background(), daemonOpts); err != nil {
+					t.Fatal(err)
+				}
+				e.out.Reset()
+			}
+			var asked string
+			e.in.HubTokens = func(_ context.Context, database string) (bool, error) { asked = database; return c.has, c.err }
+			newRelease(t, e, goodSums)
+			if err := e.in.Update(context.Background(), ""); err != nil {
+				t.Fatalf("%v\n%s", err, e.out.String())
+			}
+			if got := strings.Contains(e.out.String(), NoTokensYet); got != c.wantNotes {
+				t.Errorf("says how to make a token: %v, want %v\n%s", got, c.wantNotes, e.out.String())
+			}
+			if c.hub && asked != e.path(config.DefaultDatabase) {
+				t.Errorf("asked about the database %q, want %q", asked, e.path(config.DefaultDatabase))
+			}
+		})
+	}
+	if !strings.Contains(NoTokensYet, "sudo tender tokens add NAME") || strings.Contains(NoTokensYet, ". ") {
+		t.Errorf("NoTokensYet is not one sentence with the command: %q", NoTokensYet)
+	}
+}
+
 func TestUpdateSpecificVersionSkipsLatest(t *testing.T) {
 	e := newEnv(t)
 	installBoth(t, e)

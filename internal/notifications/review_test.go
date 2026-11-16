@@ -208,7 +208,7 @@ func TestOpenProblemsUseTheIndex(t *testing.T) {
 		}
 		plan = append(plan, detail)
 	}
-	if !strings.Contains(strings.Join(plan, "\n"), "SEARCH o USING INDEX notifications_problem (base=? AND <expr>=? AND <expr>=? AND <expr>=? AND id>?)") {
+	if !strings.Contains(strings.Join(plan, "\n"), "SEARCH o USING INDEX notifications_problem (base=? AND <expr>=? AND <expr>=? AND <expr>=? AND <expr>=? AND id>?)") {
 		t.Errorf("plan:\n%s", strings.Join(plan, "\n"))
 	}
 }

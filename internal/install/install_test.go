@@ -461,6 +461,11 @@ func TestHubFreshInstall(t *testing.T) {
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
+	// The first API token is made on the hub machine, which the next steps say before anything else.
+	if out := e.out.String(); !strings.Contains(out, "sudo tender tokens add NAME") || !strings.Contains(out, "export TENDER_TOKEN=") ||
+		strings.Index(out, "tokens add") > strings.Index(out, "destinations add") {
+		t.Errorf("the next steps don't start with making the API token:\n%s", out)
+	}
 	if e.mode(t, "/etc/tender/hub.env") != 0o600 || e.mode(t, "/etc/systemd/system/tenderhub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
 		t.Error("wrong modes")
 	}
@@ -698,7 +703,7 @@ func TestUnitsFollowTheDecisions(t *testing.T) {
 	for _, want := range []string{"User=root", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE",
 		"NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes",
 		"SystemCallFilter=@system-service", "SystemCallFilter=~@privileged @resources",
-		"StateDirectory=tender/daemon", "CacheDirectory=tender", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
+		"StateDirectory=tender/daemon tender/services", "CacheDirectory=tender", "Restart=always", "ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml"} {
 		if !strings.Contains(string(daemon), want+"\n") {
 			t.Errorf("daemon unit lacks %s", want)
 		}
@@ -803,5 +808,22 @@ func TestRefreshMovesTheDaemonToRoot(t *testing.T) {
 	}
 	if got := strings.Join(e.commands(), "\n"); strings.Contains(got, "gpasswd") {
 		t.Errorf("a second refresh changed the groups:\n%s", got)
+	}
+}
+
+// The hub's database is TENDER_DATABASE from hub.env, else the default, under the root.
+func TestHubDatabase(t *testing.T) {
+	root := t.TempDir()
+	if got := HubDatabase(root); got != filepath.Join(root, config.DefaultDatabase) {
+		t.Errorf("without hub.env: %s", got)
+	}
+	if err := os.MkdirAll(filepath.Join(root, etcDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, hubEnvPath), []byte("TENDER_ENCRYPTION_KEY=k\nTENDER_DATABASE=\"/srv/hub.db\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := HubDatabase(root); got != filepath.Join(root, "/srv/hub.db") {
+		t.Errorf("with TENDER_DATABASE: %s", got)
 	}
 }

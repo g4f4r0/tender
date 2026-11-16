@@ -14,6 +14,8 @@ const (
 	TypeTest    = "test"    // tries a backup destination from the machine
 	TypeUpdate  = "update"  // install a Tender release on the machine; only an update rollout queues it
 	TypeUpgrade = "upgrade" // upgrade the machine's system packages
+	TypeDeploy  = "deploy"  // deploy a managed service with docker compose; only the services domain queues it
+	TypeRemove  = "remove"  // remove a managed service; only the services domain queues it
 
 	PackagesSecurity = "security"
 	PackagesAll      = "all"
@@ -48,8 +50,9 @@ var Priorities = []string{"emerg", "alert", "crit", "err", "warning", "notice", 
 type Summary struct {
 	ID            int64     `json:"id"`
 	Machine       string    `json:"machine"`     // the machine's name
-	Type          string    `json:"type"`        // start, stop, restart, logs, test, update or upgrade
+	Type          string    `json:"type"`        // start, stop, restart, logs, test, update, upgrade, deploy or remove
 	Service       *string   `json:"service"`     // the service's name; null for the machine's journal
+	Container     *string   `json:"container"`   // the one container of the service it is for, or null for all
 	Unit          *string   `json:"unit"`        // machine logs only: the systemd unit, or null for every unit
 	Priority      *string   `json:"priority"`    // machine logs only: this priority and the more severe ones, or null for all
 	Since         *string   `json:"since"`       // logs only: how far back, such as 1h, or null for no limit
@@ -57,6 +60,7 @@ type Summary struct {
 	Destination   *string   `json:"destination"` // test only: the backup destination it tries
 	Version       *string   `json:"version"`     // update only: the Tender release, such as 0.3.1
 	Packages      *string   `json:"packages"`    // upgrade only: security or all
+	DeleteData    *bool     `json:"delete_data"` // remove only: whether the daemon deletes the service's folder and data
 	Status        string    `json:"status"`      // pending, in_progress, completed or failed
 	OutputCleared bool      `json:"output_cleared"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -70,11 +74,13 @@ type Action struct {
 }
 
 // Handout is an action as the hub hands it to the machine's daemon. Target is the destination a
-// test action tries, with its secrets: only the machine's own daemon gets it, and it is never
+// test action tries, with its secrets, and Deployment the managed service a deploy or remove is
+// about, with its env and the registries' logins: only the machine's own daemon gets them, and they are never
 // stored with the action.
 type Handout struct {
 	Action
-	Target json.RawMessage `json:"target,omitempty"`
+	Target     json.RawMessage `json:"target,omitempty"`
+	Deployment json.RawMessage `json:"deployment,omitempty"`
 }
 
 // Finished reports whether the action ended, well or not.
@@ -82,12 +88,15 @@ func (a Summary) Finished() bool { return a.Status == StatusCompleted || a.Statu
 
 // Input is the body of POST /v1/machines/{machine}/actions.
 type Input struct {
-	Type     string  `json:"type"`
-	Service  *string `json:"service,omitempty"`  // required for start, stop and restart; with logs, that service's logs
-	Unit     *string `json:"unit,omitempty"`     // machine logs only
-	Priority *string `json:"priority,omitempty"` // machine logs only
-	Since    *string `json:"since,omitempty"`    // logs only, such as 30m, 1h or 7d, at most 7d
-	Lines    *int    `json:"lines,omitempty"`    // logs only, 1 to 2000, default 200
+	Type    string  `json:"type"`
+	Service *string `json:"service,omitempty"` // required for start, stop and restart; with logs, that service's logs
+	// Container narrows a start, stop, restart or logs of the service to its one container, by its
+	// name in the service, such as web.
+	Container *string `json:"container,omitempty"`
+	Unit      *string `json:"unit,omitempty"`     // machine logs only
+	Priority  *string `json:"priority,omitempty"` // machine logs only
+	Since     *string `json:"since,omitempty"`    // logs only, such as 30m, 1h or 7d, at most 7d
+	Lines     *int    `json:"lines,omitempty"`    // logs only, 1 to 2000, default 200
 	// Destination is the backup destination a test action tries. POST
 	// /v1/backups/destinations/{destination}/test sets it; the actions collection doesn't take it.
 	Destination *string `json:"-"`

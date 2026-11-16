@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,12 @@ import (
 // the test ends.
 func fakeDaemon(t *testing.T, as *actions.Store, finish func(actions.Action) actions.Patch) {
 	t.Helper()
+	fakeDaemonWith(t, as, func(h actions.Handout) actions.Patch { return finish(h.Action) })
+}
+
+// fakeDaemonWith is fakeDaemon whose finish gets the whole handout, with a deploy's service.
+func fakeDaemonWith(t *testing.T, as *actions.Store, finish func(actions.Handout) actions.Patch) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -29,7 +36,7 @@ func fakeDaemon(t *testing.T, as *actions.Store, finish func(actions.Action) act
 			}
 			for _, a := range list {
 				if as.Claim(ctx, 1, a.ID) == nil {
-					_ = as.Finish(ctx, 1, a.ID, finish(a.Action))
+					_ = as.Finish(ctx, 1, a.ID, finish(a))
 				}
 			}
 		}
@@ -41,7 +48,7 @@ func TestServiceTools(t *testing.T) {
 	d := seeded(t)
 	ss := services.NewStore(d)
 	ctx := context.Background()
-	if _, err := ss.Replace(ctx, 1, []services.ServiceInput{
+	if err := ss.Replace(ctx, 1, []services.ContainerInput{
 		{Name: "cli-proxy-api", ContainerID: "c1", Image: "cpa", State: "running", MemoryBytes: ptr(int64(200 << 20)), CPUPercent: ptr(3.5)},
 		{Name: "worker", ContainerID: "c2", Image: "w", State: "exited", ExitCode: ptr(int64(1))},
 	}); err != nil {
@@ -69,7 +76,7 @@ func TestServiceTools(t *testing.T) {
 	if want := restJSON(t, rest, "/v1/services"); len(list.Data) != 1 || len(list.Data[0].Data) != 2 || !reflect.DeepEqual(mustJSON(t, list), want) {
 		t.Errorf("list_services = %+v, REST %v", list, want)
 	}
-	if d := list.Data[0].Docker; d == nil || *d != "running" || list.Data[0].Data[0].RestartPolicy != "no" || *list.Data[0].Data[0].CPUPercent != 3.5 {
+	if d := list.Data[0].Docker; d == nil || *d != "running" || list.Data[0].Data[0].Containers[0].RestartPolicy != "no" || *list.Data[0].Data[0].Containers[0].CPUPercent != 3.5 {
 		t.Errorf("docker = %v, service = %+v", d, list.Data[0].Data[0])
 	}
 	structured(t, callTool(t, cs, "list_services", map[string]any{"machine": "g4f4r0-apps"}), &list)
@@ -89,16 +96,16 @@ func TestServiceTools(t *testing.T) {
 		if a.Status != actions.StatusCompleted || a.Type != strings.TrimSuffix(tool, "_service") {
 			t.Errorf("%s = %+v", tool, a)
 		}
-		if sv, _ := ss.Get(ctx, 1, "cli-proxy-api"); sv.StoppedByTender != (tool == "stop_service") {
-			t.Errorf("after %s, stopped_by_tender = %v", tool, sv.StoppedByTender)
+		if sv, _ := ss.Get(ctx, 1, "cli-proxy-api"); sv.Containers[0].StoppedByTender != (tool == "stop_service") {
+			t.Errorf("after %s, stopped_by_tender = %v", tool, sv.Containers[0].StoppedByTender)
 		}
 	}
 	var logs actions.Action
-	structured(t, callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 3, "since": "1h"}), &logs)
+	structured(t, callTool(t, cs, "service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 3, "since": "1h"}), &logs)
 	if logs.Output == nil || *logs.Output != "log line\nlog line\nlog line\n" || *logs.Since != "1h" {
 		t.Errorf("logs = %+v", logs)
 	}
-	structured(t, callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api"}), &logs)
+	structured(t, callTool(t, cs, "service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api"}), &logs)
 	if *logs.Lines != actions.DefaultLines {
 		t.Errorf("default lines = %d", *logs.Lines)
 	}
@@ -139,7 +146,7 @@ func TestServiceTools(t *testing.T) {
 	// lines below 1 is a mistake to name, as REST and the CLI do, not a quiet default.
 	for _, n := range []int{0, -5} {
 		for tool, args := range map[string]map[string]any{
-			"get_service_logs": {"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": n},
+			"service_logs":     {"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": n},
 			"get_machine_logs": {"machine": "g4f4r0-code", "lines": n},
 		} {
 			if res := callTool(t, cs, tool, args); !res.IsError || !strings.Contains(errorText(res), "lines must be a whole number from 1 to 2000") {
@@ -147,7 +154,7 @@ func TestServiceTools(t *testing.T) {
 			}
 		}
 	}
-	if res := callTool(t, cs, "get_service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 5000}); !res.IsError {
+	if res := callTool(t, cs, "service_logs", map[string]any{"machine": "g4f4r0-code", "service": "cli-proxy-api", "lines": 5000}); !res.IsError {
 		t.Error("5000 lines were accepted")
 	}
 
@@ -169,7 +176,7 @@ func TestServiceToolWaitsThenReturnsPending(t *testing.T) {
 	t.Cleanup(func() { actions.Wait = 60 * time.Second })
 	d := seeded(t)
 	ss := services.NewStore(d)
-	if _, err := ss.Replace(context.Background(), 1, []services.ServiceInput{{Name: "web", ContainerID: "c1", Image: "i", State: "running"}}); err != nil {
+	if err := ss.Replace(context.Background(), 1, []services.ContainerInput{{Name: "web", ContainerID: "c1", Image: "i", State: "running"}}); err != nil {
 		t.Fatal(err)
 	}
 	cs := connect(t, d)
@@ -178,6 +185,95 @@ func TestServiceToolWaitsThenReturnsPending(t *testing.T) {
 	structured(t, callTool(t, cs, "restart_service", map[string]any{"machine": "g4f4r0-code", "service": "web"}), &a)
 	if took := time.Since(start); a.Status != actions.StatusPending || took < actions.Wait || took > actions.Wait+2*time.Second {
 		t.Errorf("after %s: %+v", took, a)
+	}
+}
+
+// The deploy tools go through the same store and actions as REST: the daemon gets the service with
+// its env, and the tool waits for it.
+func TestDeployTools(t *testing.T) {
+	d := seeded(t)
+	var mu sync.Mutex
+	var got []string
+	fail := ""
+	fakeDaemonWith(t, newActions(d, testKey), func(a actions.Handout) actions.Patch {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, a.Type+" "+*a.Service+" "+string(a.Deployment))
+		if fail != "" {
+			return actions.Patch{Status: actions.StatusFailed, Output: ptr(fail)}
+		}
+		return actions.Patch{Status: actions.StatusCompleted, Output: ptr("compose output\n")}
+	})
+	cs, rest := connect(t, d), newHub(d, testKey, nil, quiet)
+	compose := "services:\n  web:\n    image: nginx\n    mem_limit: 64m\n"
+
+	if res := callTool(t, cs, "deploy_service", map[string]any{"machine": "g4f4r0-code", "name": "notes"}); !res.IsError ||
+		!strings.Contains(errorText(res), "compose is required for a new service") {
+		t.Errorf("a new service without compose = %s", errorText(res))
+	}
+	var q struct {
+		Service services.Service `json:"service"`
+		Action  actions.Action   `json:"action"`
+	}
+	structured(t, callTool(t, cs, "deploy_service", map[string]any{"machine": "g4f4r0-code", "name": "notes", "compose": compose,
+		"env": map[string]any{"SECRET_KEY": "s3cret"}, "routes": []map[string]any{{"container": "web", "port": 80, "expose": "tailscale"}}}), &q)
+	if q.Action.Status != actions.StatusCompleted || q.Service.DeployStatus == nil || *q.Service.DeployStatus != services.DeployDeployed ||
+		q.Service.Env["SECRET_KEY"] != "***" || len(q.Service.Routes) != 1 {
+		t.Errorf("deploy = %+v", q)
+	}
+	mu.Lock()
+	if len(got) != 1 || !strings.Contains(got[0], `"SECRET_KEY":"s3cret"`) || !strings.HasPrefix(got[0], "deploy notes ") {
+		t.Errorf("the daemon got %q", got)
+	}
+	mu.Unlock()
+	var sv services.Service
+	structured(t, callTool(t, cs, "get_service", map[string]any{"machine": "g4f4r0-code", "service": "notes"}), &sv)
+	if want := restJSON(t, rest, "/v1/machines/g4f4r0-code/services/notes"); !reflect.DeepEqual(mustJSON(t, sv), want) {
+		t.Errorf("get_service = %+v, REST %v", sv, want)
+	}
+
+	// A change keeps what it leaves out, and a failed deploy is the tool's error, with why.
+	mu.Lock()
+	fail = "service web in the compose file has no memory limit, which Tender's memory-high alert needs: add mem_limit, such as mem_limit: 512m, to web"
+	mu.Unlock()
+	res := callTool(t, cs, "deploy_service", map[string]any{"machine": "g4f4r0-code", "name": "notes", "env": map[string]any{"MODE": "prod"}})
+	if !res.IsError || errorText(res) != fail {
+		t.Errorf("a failed deploy = %s", errorText(res))
+	}
+	structured(t, callTool(t, cs, "get_service", map[string]any{"machine": "g4f4r0-code", "service": "notes"}), &sv)
+	if *sv.DeployStatus != services.DeployFailed || *sv.LastError != fail || len(sv.Env) != 2 || len(sv.Routes) != 1 {
+		t.Errorf("after the failed deploy = %+v", sv)
+	}
+	mu.Lock()
+	fail = ""
+	mu.Unlock()
+	structured(t, callTool(t, cs, "redeploy_service", map[string]any{"machine": "g4f4r0-code", "service": "notes"}), &q)
+	if *q.Service.DeployStatus != services.DeployDeployed {
+		t.Errorf("redeploy = %+v", q.Service)
+	}
+
+	var g services.Registry
+	structured(t, callTool(t, cs, "add_registry", map[string]any{"name": "ghcr", "host": "ghcr.io", "username": "me", "password": "token"}), &g)
+	if g.Password != "***" || !g.PasswordSet {
+		t.Errorf("add_registry = %+v", g)
+	}
+	var regs server.List[services.Registry]
+	structured(t, callTool(t, cs, "list_registries", nil), &regs)
+	if want := restJSON(t, rest, "/v1/registries"); !reflect.DeepEqual(mustJSON(t, regs), want) || strings.Contains(string(mustRaw(t, regs)), "token") {
+		t.Errorf("list_registries = %+v, REST %v", regs, want)
+	}
+	structured(t, callTool(t, cs, "update_registry", map[string]any{"name": "ghcr", "username": "you"}), &g)
+	if g.Username != "you" {
+		t.Errorf("update_registry = %+v", g)
+	}
+	structured(t, callTool(t, cs, "remove_registry", map[string]any{"name": "ghcr"}), &struct{}{})
+
+	structured(t, callTool(t, cs, "remove_service", map[string]any{"machine": "g4f4r0-code", "service": "notes", "delete_data": true}), &q)
+	if q.Action.Type != actions.TypeRemove || q.Action.DeleteData == nil || !*q.Action.DeleteData {
+		t.Errorf("remove = %+v", q.Action)
+	}
+	if res := callTool(t, cs, "get_service", map[string]any{"machine": "g4f4r0-code", "service": "notes"}); !res.IsError {
+		t.Error("the service is still there after its remove")
 	}
 }
 

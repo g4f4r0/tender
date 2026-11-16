@@ -25,16 +25,23 @@ func ValidName(s string) bool { return namePattern.MatchString(s) }
 
 // Decode reads the request body, one JSON value of at most 1 MiB with no unknown fields, into v.
 // Malformed JSON is a 400. JSON of the wrong type for a field is a 422.
-func Decode(w http.ResponseWriter, r *http.Request, v any) error { return decode(w, r, v, true) }
+func Decode(w http.ResponseWriter, r *http.Request, v any) error {
+	return decode(w, r, v, true, maxBodyBytes)
+}
+
+// DecodeUpTo is Decode for a route whose body may be larger than 1 MiB, up to maxBytes.
+func DecodeUpTo(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) error {
+	return decode(w, r, v, true, maxBytes)
+}
 
 // DecodeFromDaemon is Decode for the routes only a daemon calls, which ignore unknown fields: a
 // daemon updated before its hub, during a rollout, may send fields this hub doesn't know yet.
 func DecodeFromDaemon(w http.ResponseWriter, r *http.Request, v any) error {
-	return decode(w, r, v, false)
+	return decode(w, r, v, false, maxBodyBytes)
 }
 
-func decode(w http.ResponseWriter, r *http.Request, v any, strict bool) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+func decode(w http.ResponseWriter, r *http.Request, v any, strict bool, maxBytes int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
 	if strict {
 		dec.DisallowUnknownFields()
 	}
@@ -43,7 +50,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any, strict bool) error {
 		var wrongType *json.UnmarshalTypeError
 		switch {
 		case errors.As(err, &tooBig):
-			return &Error{Status: http.StatusRequestEntityTooLarge, Detail: "The body is larger than 1 MiB."}
+			return &Error{Status: http.StatusRequestEntityTooLarge, Detail: fmt.Sprintf("The body is larger than %d MiB.", maxBytes>>20)}
 		case errors.As(err, &wrongType) && wrongType.Field == "":
 			return Invalid("The request body must be a JSON object.")
 		case errors.As(err, &wrongType):

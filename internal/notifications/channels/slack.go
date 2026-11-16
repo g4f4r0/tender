@@ -43,7 +43,7 @@ func (s Slack) Send(ctx context.Context, cfg Config, ev Event) error {
 // SlackText is the message for ev in Slack's mrkdwn, such as:
 //
 //	*Critical: service.down on apps*
-//	The service web on apps stopped with exit code 1.
+//	web in notes on apps stopped with exit code 1.
 //	Notification 12, 2026-11-15 03:31 UTC. Tender hub: https://hub.example.com
 func SlackText(ev Event) string {
 	n := ev.Notification

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/backups"
@@ -98,31 +99,36 @@ func serviceMetrics(s *services.Store) metricSource {
 		docker := metrics.New("tender_docker_up", metrics.Gauge,
 			"1 while the machine's daemon reaches its container runtime, 0 while it can't. A machine without a report has no series.")
 		state := metrics.New("tender_service_state", metrics.Gauge,
-			"1 for the service's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.")
-		mem := metrics.New("tender_service_memory_bytes", metrics.Gauge, "The service's memory in use, less the page cache it can drop, while it runs.")
-		limit := metrics.New("tender_service_memory_limit_bytes", metrics.Gauge, "The service's memory limit, when it has one.")
-		cpu := metrics.New("tender_service_cpu_percent", metrics.Gauge, "The service's CPU use since the previous report; 100 is one whole CPU.")
-		restarts := metrics.New("tender_service_restart_count", metrics.Gauge, "How often the runtime restarted the service's container.")
+			"1 for the service's current state: running, degraded, stopped or unknown. managed is true for a service Tender deployed.")
+		cstate := metrics.New("tender_container_state", metrics.Gauge,
+			"1 for the container's current state: created, running, paused, restarting, exited, removing, dead, unknown or removed.")
+		mem := metrics.New("tender_container_memory_bytes", metrics.Gauge, "The container's memory in use, less the page cache it can drop, while it runs.")
+		limit := metrics.New("tender_container_memory_limit_bytes", metrics.Gauge, "The container's memory limit, when it has one.")
+		cpu := metrics.New("tender_container_cpu_percent", metrics.Gauge, "The container's CPU use since the previous report; 100 is one whole CPU.")
+		restarts := metrics.New("tender_container_restart_count", metrics.Gauge, "How often the runtime restarted the container.")
 		for _, m := range list {
 			if m.Docker != nil {
 				docker.Add(map[bool]float64{true: 1}[*m.Docker == services.DockerRunning], "machine", m.Machine)
 			}
 			for _, sv := range m.Data {
-				l := []string{"machine", m.Machine, "service", sv.Name}
-				state.Add(1, append(l, "runtime", sv.Runtime, "state", sv.State)...)
-				restarts.Add(float64(sv.RestartCount), l...)
-				if sv.MemoryBytes != nil {
-					mem.Add(float64(*sv.MemoryBytes), l...)
-				}
-				if sv.MemoryLimitBytes != nil {
-					limit.Add(float64(*sv.MemoryLimitBytes), l...)
-				}
-				if sv.CPUPercent != nil {
-					cpu.Add(*sv.CPUPercent, l...)
+				state.Add(1, "machine", m.Machine, "service", sv.Name, "managed", strconv.FormatBool(sv.Managed), "state", sv.State)
+				for _, c := range sv.Containers {
+					l := []string{"machine", m.Machine, "service", sv.Name, "container", c.Name}
+					cstate.Add(1, append(l, "runtime", c.Runtime, "state", c.State)...)
+					restarts.Add(float64(c.RestartCount), l...)
+					if c.MemoryBytes != nil {
+						mem.Add(float64(*c.MemoryBytes), l...)
+					}
+					if c.MemoryLimitBytes != nil {
+						limit.Add(float64(*c.MemoryLimitBytes), l...)
+					}
+					if c.CPUPercent != nil {
+						cpu.Add(*c.CPUPercent, l...)
+					}
 				}
 			}
 		}
-		return []*metrics.Family{docker, state, mem, limit, cpu, restarts}, nil
+		return []*metrics.Family{docker, state, cstate, mem, limit, cpu, restarts}, nil
 	}
 }
 

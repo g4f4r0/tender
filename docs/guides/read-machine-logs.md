@@ -5,7 +5,7 @@ Print the newest entries of a machine's systemd journal, filtered by unit, prior
 ## Prerequisites
 
 1. A daemon on the machine, installed or updated with Tender v0.3.0 or later, so it runs as root and can read the journal.
-2. The `tender` command on a machine that can reach the hub.
+2. The `tender` command on a machine that can reach the hub, with your API token in `TENDER_TOKEN`.
 
 ## Read the journal
 
@@ -66,7 +66,7 @@ The hub keeps each read as an action, and keeps its output for 1 hour after it f
 After that hour, `actions show` says when the logs were cleared. The action stays in the list, so you can still see what was read and when.
 
 > [!WARNING]
-> The journal can hold secrets that services print. Anyone who can reach the hub can read it, so keep the hub private. An AI client that reads logs sends them to its model provider.
+> The journal can hold secrets that services print. Anyone with an API token can read it, so keep your tokens private. An AI client that reads logs sends them to its model provider.
 
 ## If it fails
 

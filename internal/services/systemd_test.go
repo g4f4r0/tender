@@ -132,7 +132,7 @@ func TestDaemonDockerOff(t *testing.T) {
 	h := newTestHub(t)
 	ctx := context.Background()
 	s := NewStore(h.db)
-	if _, err := s.Replace(ctx, 1, []ServiceInput{running("web", "c1")}); err != nil {
+	if err := s.Replace(ctx, 1, []ContainerInput{running("web", "c1")}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Unreachable(ctx, 1, ReasonRefused); err != nil {
@@ -147,7 +147,7 @@ func TestDaemonDockerOff(t *testing.T) {
 	defer cancel()
 	d.Run(rctx)
 	ms, err := s.Machines(ctx, 1)
-	if err != nil || ms[0].Docker != nil || ms[0].DockerReason != nil || ms[0].ReportedAt() != nil || ms[0].Data[0].State != StateRemoved {
+	if err != nil || ms[0].Docker != nil || ms[0].DockerReason != nil || ms[0].ReportedAt() != nil || ms[0].Data[0].Containers[0].State != StateRemoved {
 		t.Errorf("after Docker is off: %+v, %v", ms, err)
 	}
 	if n := strings.Count(logs.String(), `msg="Docker is turned off on this machine (docker.service and docker.socket aren't enabled), so Tender doesn't watch its services."`); n != 1 ||
@@ -191,7 +191,7 @@ func TestDaemonSawDockerThenOff(t *testing.T) {
 	fakeSystemctl(t, "printf 'masked\\nmasked\\n'; exit 1")
 	d.reportNow(ctx)
 	ms, err := NewStore(h.db).Machines(ctx, 1)
-	if err != nil || ms[0].Docker != nil || ms[0].Data[0].State != StateRemoved {
+	if err != nil || ms[0].Docker != nil || ms[0].Data[0].Containers[0].State != StateRemoved {
 		t.Errorf("after Docker was turned off: %+v, %v", ms, err)
 	}
 }

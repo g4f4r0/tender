@@ -16,7 +16,7 @@ The event is a dotted name, like Stripe's events. A problem adds up to three not
 
 The severity is `info`, `warning` or `critical`. The status is `pending` until a channel delivers it, `sent` once one did, with `sent_at` set, or `failed` once every channel's delivery of it failed. A notification that no channel could get, because there was none or the only ones were email while email was off, stays `pending` while its problem is open, and goes to the first channel you add. Once its problem resolves, it is `failed`.
 
-A problem is open while its latest notification is not a `.resolved` one. The hub tells problems apart by event, machine, service and channel: two stopped services on one machine are two problems. List the open problems with `tender notifications list --open`, `GET /v1/notifications?open=true` or the `list_notifications` tool with `open`. `tender status` shows them too.
+A problem is open while its latest notification is not a `.resolved` one. The hub tells problems apart by event, machine, service, container and channel: two stopped containers of one service are two problems. List the open problems with `tender notifications list --open`, `GET /v1/notifications?open=true` or the `list_notifications` tool with `open`. `tender status` shows them too.
 
 Each channel gets a notification when its `events` take the event and the notification is at least as severe as the channel's `min_severity`. `events` is a list of patterns: `*` for every event, an area such as `service.*`, or one event such as `backup.failed`. The default is `["*"]`. An escalated or resolved notification follows its base event, so `service.*` takes `service.down.resolved` too.
 
@@ -34,10 +34,11 @@ Every event the hub can send is in this table. A new event can't be added withou
 | `backup.failed` | `critical` | The machine's latest finished backup failed. | A later backup completes. |
 | `backup.stale` | `warning`, then `critical` | No backup has completed for 26 hours, counted from the start of the newest completed backup, or from when you set the schedule if none has. It escalates after 50 hours. | A backup completes. |
 | `disk.full` | `warning`, then `critical` | The machine's root filesystem `/` is at least 90% full. It escalates at 95%. | The disk is below 90% full. |
-| `service.down` | `critical` | Two reports in a row find a service exited or dead that should be running. | A report finds it running, its notifications are turned off, or it is gone. |
-| `service.restarting` | `critical` | Two reports in a row find a service restarting, or Docker restarted it again. | A report finds it settled, its notifications are turned off, or it is gone. |
-| `service.unhealthy` | `warning` | Two reports in a row find a service's health check failing. | A report finds it healthy, its notifications are turned off, or it is gone. |
-| `service.memory_high` | `warning` | Two reports in a row find a service using more than 90% of its container's memory limit. | A report finds it below, its notifications are turned off, or it is gone. |
+| `service.down` | `critical` | Two reports in a row find a container of a service exited or dead that should be running. | A report finds it running, its service's notifications are turned off, or it is gone. |
+| `service.restarting` | `critical` | Two reports in a row find a container restarting, or Docker restarted it again. | A report finds it settled, its service's notifications are turned off, or it is gone. |
+| `service.unhealthy` | `warning` | Two reports in a row find a container's health check failing. | A report finds it healthy, its service's notifications are turned off, or it is gone. |
+| `service.memory_high` | `warning` | Two reports in a row find a container using more than 90% of its memory limit. | A report finds it below, its service's notifications are turned off, or it is gone. |
+| `service.deploy_failed` | `warning` | A deploy of a service Tender deployed failed: a rule refused its compose file, compose failed, or its routes could not be exposed. One problem per service. | A later deploy of the service succeeds, the service is removed, or its notifications are turned off. |
 | `docker.unreachable` | `critical` | Two reports in a row say the daemon can't reach Docker, or the machine still reports usage but its daemon has sent no services report for 5 minutes after it had sent one. | A report reaches Docker again, or says Docker is turned off on the machine. |
 | `logs.shipping_failing` | `warning` | Sending a machine's logs to an enabled sink has failed for 15 minutes, or the daemon dropped records since its last send that worked. | Every sink in it takes a send again. |
 | `security.firewall_off` | `critical` | Two security reports in a row find no active firewall that denies incoming traffic by default: ufw is inactive or allows by default, or without ufw no nftables or iptables input policy drops. | A report finds a firewall that denies by default. |
@@ -56,15 +57,17 @@ While a machine is silent, its Docker, its services, its log shipping, its secur
 
 ## Service events
 
-The daemon reports every Docker container once a minute. A service problem starts only after two reports in a row show it, so a container that restarts once during a deploy doesn't page anyone.
+The daemon reports every Docker container once a minute. A service problem is about one container of a service, and names it as `web in notes on apps`, or `redis on apps` for a container that is its own service. Its notification has the service in `service` and the container in `container`. It starts only after two reports in a row show it, so a container that restarts once during a deploy doesn't page anyone.
 
-A service should be running when it exited with an error, or when its restart policy is `always` or `unless-stopped`. A container that exits 0 with the restart policy `no` or `on-failure`, such as a migration job, finished on purpose and adds nothing. A service you stop with Tender adds nothing either, until something starts it again.
+A container should be running when it exited with an error, or when its restart policy is `always` or `unless-stopped`. A container that exits 0 with the restart policy `no` or `on-failure`, such as a migration job, finished on purpose and adds nothing. A container you stop with Tender adds nothing either, until something starts it again.
 
-`service.memory_high` compares a service's memory with its container's limit only. A container without a memory limit never gets this event. Set a limit with `mem_limit` in Compose or `--memory` in `docker run` for the services you want watched. A report without a running service's stats, as [Services](services.md#what-a-service-is) explains, neither resolves this problem nor starts its count again.
+`service.memory_high` compares a container's memory with its limit only. A container without a memory limit never gets this event. Set a limit with `mem_limit` in Compose or `--memory` in `docker run` for the containers you want watched; a service Tender deploys needs one on each. A report without a running container's stats, as [Services](services.md#what-a-service-is) explains, neither resolves this problem nor starts its count again.
 
 `docker.unreachable` says why in words, from the report's `docker_reason`, such as `Docker on apps can't be reached: its socket refuses connections, so Docker is stopped.` [Services](services.md#when-docker-cant-be-reached) lists the reasons. While Docker is unreachable, the machine's other service problems neither start nor resolve. The count of reports in a row starts again once Docker answers.
 
-A removed service's problems resolve, because its counts start again. See [Removed services](services.md#removed-services).
+A removed container's problems resolve, because its counts start again. See [Removed containers](services.md#removed-containers).
+
+`service.deploy_failed` is about the whole service, so its `container` is `null`. Its message has the first line of why, such as `The deploy of notes on apps failed: service web in the compose file has no memory limit, which Tender's memory-high alert needs: add mem_limit, such as mem_limit: 512m, to web. See the whole reason with: tender services show apps notes`, and `last_error` has the rest. Tender doesn't roll a failed deploy back. [Deploy a service](services.md#what-the-daemon-does) explains it.
 
 ## Log shipping events
 
@@ -93,14 +96,14 @@ Install pending security updates with `tender machines upgrade apps`. [Security]
 
 ## Turn a service's notifications off
 
-Each service has its own notifications. Turn them off for a service you expect to stop, such as a worker you run by hand:
+Each service has one switch for all its containers. Turn its notifications off for a service you expect to stop, such as a worker you run by hand:
 
 ```sh
-tender services alerts apps web off
+tender services alerts apps notes off
 ```
 
 ```text
-Alerts for web on apps are off. Its open problems resolve within a minute.
+Alerts for notes on apps are off. Its open problems resolve within a minute.
 ```
 
 This works even while Docker is unreachable. Turn them back on with `on`.

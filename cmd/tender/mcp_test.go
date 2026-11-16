@@ -161,9 +161,7 @@ func TestToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"get_action", "get_backup_status", "get_machine_logs", "get_machine_usage", "get_security", "get_service_logs",
-		"get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks",
-		"list_machines", "list_notifications", "list_services"}
+	reads := []string{"get_action", "get_backup_status", "get_cloudflare_settings", "get_machine_logs", "get_machine_usage", "get_security", "get_service", "get_updates", "list_actions", "list_backup_history", "list_backup_snapshots", "list_channels", "list_destinations", "list_log_sinks", "list_machines", "list_notifications", "list_registries", "list_services", "list_tokens", "service_logs"}
 	// Per write tool: destructive, idempotent.
 	writes := map[string][2]bool{
 		"add_machine": {false, false}, "rotate_machine_token": {true, false}, "remove_machine": {true, true},
@@ -171,12 +169,17 @@ func TestToolsList(t *testing.T) {
 		"set_backup": {false, true}, "unset_backup": {true, true},
 		"add_channel": {false, false}, "update_channel": {false, true}, "remove_channel": {true, true}, "send_test_notification": {false, false},
 		"start_service": {false, true}, "stop_service": {true, true}, "restart_service": {true, false}, "set_service_alerts": {false, true},
+		"deploy_service": {true, false}, "redeploy_service": {true, false}, "remove_service": {true, false},
+		"add_registry": {false, false}, "update_registry": {false, true}, "remove_registry": {true, true},
 		"test_destination": {false, true},
 		"add_log_sink":     {false, false}, "update_log_sink": {false, true}, "remove_log_sink": {true, true},
 		"update_machine": {false, true}, "upgrade_machine": {true, false}, "set_update_settings": {false, true}, "start_update": {false, false},
+		"delete_token":            {true, true},
+		"set_cloudflare_settings": {false, true}, "remove_cloudflare_settings": {true, true},
 	}
-	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, and the package mirrors.
-	openWorld := []string{"send_test_notification", "test_destination", "start_update", "upgrade_machine"}
+	// Only these reach outside the hub: the channels, a backup destination, GitHub for a release, the package mirrors, and
+	// the image registries a deploy pulls from, and Cloudflare.
+	openWorld := []string{"deploy_service", "redeploy_service", "send_test_notification", "test_destination", "start_update", "upgrade_machine", "set_cloudflare_settings"}
 	var gotReads, gotWrites []string
 	for _, tool := range list.Tools {
 		a := tool.Annotations
@@ -259,6 +262,7 @@ func restJSON(t *testing.T, h http.Handler, path string) any {
 	t.Helper()
 	req := httptest.NewRequest("GET", path, nil)
 	req.Header.Set("Tailscale-User-Login", "johan@example.com")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	var v any
@@ -465,6 +469,7 @@ func post(t *testing.T, srv *httptest.Server, login bool, body string) (*http.Re
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	if login {
 		req.Header.Set("Tailscale-User-Login", "johan@example.com")
 	}
@@ -487,7 +492,6 @@ func TestMCPOverHTTP(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}`
-	// No login: the hub is reached through the owner's own network access control.
 	res, body := post(t, srv, false, initialize)
 	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") ||
 		!strings.Contains(body, `"serverInfo":{"name":"tender"`) {

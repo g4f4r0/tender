@@ -6,12 +6,12 @@ This page explains how to scrape the hub and what each metric holds. Nothing is 
 
 ## Scrape the hub
 
-`/metrics` takes the same access rule as the rest of the API: anyone who can reach the hub can read it, and no token is needed. See [Security](security.md#the-hub-has-no-login).
+`/metrics` takes the same access rule as the rest of the API: it needs an API token. Make one for the scraper, such as `sudo tender tokens add prometheus` on the hub machine, and keep it in a file only the scraper can read. See [Security](security.md#api-tokens).
 
 1. Check that the hub answers:
 
    ```sh
-   curl -s https://apps.your-tailnet.ts.net/metrics | grep tender_build_info
+   curl -s -H "Authorization: Bearer $TENDER_TOKEN" https://apps.your-tailnet.ts.net/metrics | grep tender_build_info
    ```
 
    It prints the hub's version:
@@ -29,6 +29,8 @@ This page explains how to scrape the hub and what each metric holds. Nothing is 
      - job_name: tender
        scrape_interval: 1m
        scheme: https
+       authorization:
+         credentials_file: /etc/prometheus/tender-token
        static_configs:
          - targets: ["apps.your-tailnet.ts.net"]
    ```
@@ -65,13 +67,14 @@ The machine numbers come from its latest reading, which the daemon sends once a 
 | Metric | Labels | What it holds |
 | --- | --- | --- |
 | `tender_docker_up` | `machine` | `1` while the daemon reaches Docker, `0` while it can't. |
-| `tender_service_state` | `machine`, `service`, `runtime`, `state` | Always `1`. The `state` label is the service's state, such as `running` or `exited`. |
-| `tender_service_memory_bytes` | `machine`, `service` | Memory in use, less the page cache it can drop, while it runs. |
-| `tender_service_memory_limit_bytes` | `machine`, `service` | The container's memory limit, when it has one. |
-| `tender_service_cpu_percent` | `machine`, `service` | CPU use since the previous report, where 100 is one whole CPU. |
-| `tender_service_restart_count` | `machine`, `service` | How often Docker restarted the container. |
+| `tender_service_state` | `machine`, `service`, `managed`, `state` | Always `1`. The `state` label is the service's state: `running`, `degraded`, `stopped` or `unknown`. `managed` is `true` for a service Tender deployed. |
+| `tender_container_state` | `machine`, `service`, `container`, `runtime`, `state` | Always `1`. The `state` label is the container's state, such as `running` or `exited`. |
+| `tender_container_memory_bytes` | `machine`, `service`, `container` | Memory in use, less the page cache it can drop, while it runs. |
+| `tender_container_memory_limit_bytes` | `machine`, `service`, `container` | The container's memory limit, when it has one. |
+| `tender_container_cpu_percent` | `machine`, `service`, `container` | CPU use since the previous report, where 100 is one whole CPU. |
+| `tender_container_restart_count` | `machine`, `service`, `container` | How often Docker restarted the container. |
 
-[Services](services.md#what-a-service-is) explains each state and when usage is missing.
+[Services](services.md#what-a-service-is) explains each state, and [What the daemon reports](services.md#what-the-daemon-reports) when usage is missing. Before v0.4, the container numbers were `tender_service_*` series without a `container` label.
 
 ### Backups
 
@@ -105,9 +108,10 @@ Each machine's daemon reports its counters for each enabled [log sink](log-shipp
 ## Example queries
 
 1. A machine without a snapshot for 26 hours: `tender_backup_last_age_seconds > 26 * 3600`.
-2. Services that stopped: `tender_service_state{state="exited"} == 1`.
-3. Any critical problem: `sum(tender_problems_open{severity="critical"}) > 0`.
-4. Log records dropped in the last hour: `increase(tender_log_records_dropped_total[1h]) > 0`.
+2. Services that don't run as they should: `tender_service_state{state=~"degraded|stopped"} == 1`.
+3. Containers that stopped: `tender_container_state{state="exited"} == 1`.
+4. Any critical problem: `sum(tender_problems_open{severity="critical"}) > 0`.
+5. Log records dropped in the last hour: `increase(tender_log_records_dropped_total[1h]) > 0`.
 
 ## Next steps
 

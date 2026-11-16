@@ -60,7 +60,7 @@ func TestEvaluateServices(t *testing.T) {
 	}
 
 	f := evaluate(up(0, down(2)), t0)
-	if f[0].service != "web" || f[0].content != "The service web on a stopped with exit code 1." {
+	if f[0].service != "web" || f[0].content != "web on a stopped with exit code 1." {
 		t.Errorf("down finding = %+v", f[0])
 	}
 	dead := down(2)
@@ -69,7 +69,7 @@ func TestEvaluateServices(t *testing.T) {
 		t.Errorf("dead finding = %+v", f[0])
 	}
 	if f := evaluate(up(0, Service{Name: "web", AlertsEnabled: true, RestartingReports: 2, RestartCount: 1}), t0); f[0].content !=
-		"The service web on a keeps restarting. Docker has restarted it 1 time." {
+		"web on a keeps restarting. Docker has restarted it 1 time." {
 		t.Errorf("restarting finding = %+v", f[0])
 	}
 }
@@ -107,7 +107,7 @@ func TestServiceAlerts(t *testing.T) {
 	if want := []string{"a: web stopped", "a: worker stopped"}; !slices.Equal(r.sender.subjects, want) {
 		t.Errorf("emails = %q, want %q", r.sender.subjects, want)
 	}
-	if !strings.Contains(r.sender.texts[0], "The service web on a stopped with exit code 1.") ||
+	if !strings.Contains(r.sender.texts[0], "web on a stopped with exit code 1.") ||
 		!strings.Contains(r.sender.texts[0], "call list_services for a") {
 		t.Errorf("opened text:\n%s", r.sender.texts[0])
 	}
@@ -152,7 +152,7 @@ func TestServiceAlertListsItsService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, ok := ns[key{EventServiceUnhealthy, "a", "web", ""}]
+	n, ok := ns[key{EventServiceUnhealthy, "a", "web", "", ""}]
 	if !ok || n.Service == nil || *n.Service != "web" || n.Severity != SeverityWarning {
 		t.Errorf("open = %+v", ns)
 	}
@@ -221,7 +221,7 @@ func TestMemoryHigh(t *testing.T) {
 			t.Errorf("%s: findings = %v, want %v", c.name, got, c.want)
 		}
 	}
-	if f := evaluate(up(0, svc(2, &gib)), t0); f[0].content != "The service web on a uses 950 MiB, 92% of its 1 GiB memory limit." {
+	if f := evaluate(up(0, svc(2, &gib)), t0); f[0].content != "web on a uses 950 MiB, 92% of its 1 GiB memory limit." {
 		t.Errorf("content = %q", f[0].content)
 	}
 
@@ -351,5 +351,22 @@ func TestDockerUnreachableSaysWhy(t *testing.T) {
 		if len(f) != 1 || !strings.Contains(f[0].content, "Docker on a can't be reached: "+want+".") || strings.Contains(f[0].content, "refuses connections or doesn't answer") {
 			t.Errorf("%q: %+v", reason, f)
 		}
+	}
+}
+
+// A container in a compose project is named with its service; a lone container is its own service.
+func TestWhere(t *testing.T) {
+	for _, c := range []struct{ service, container, want string }{
+		{"notes", "web", "web in notes on apps"},
+		{"migrate", "migrate", "migrate on apps"},
+		{"notes", "", "notes on apps"},
+	} {
+		if got := Where("apps", c.service, c.container); got != c.want {
+			t.Errorf("Where(%q, %q) = %q, want %q", c.service, c.container, got, c.want)
+		}
+	}
+	f := evaluateService("apps", Service{Name: "notes", Container: "web", State: "exited", ExitCode: ptrTo(int64(1)), DownReports: 2}, 2)
+	if len(f) != 1 || f[0].service != "notes" || f[0].container != "web" || f[0].content != "web in notes on apps stopped with exit code 1." {
+		t.Errorf("finding = %+v", f)
 	}
 }

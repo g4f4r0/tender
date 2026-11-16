@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/actions"
+	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/install"
@@ -21,20 +22,40 @@ import (
 
 // This file wires the security and updates domains to the others: the hub's side, then the daemon's.
 
-// newSecurity returns the security store, which reads each machine's allowlist from the machines store.
+// newSecurity returns the security store, which reads each machine's allowlist from the machines
+// store, with Caddy's ports while the machine has public routes.
 func newSecurity(d *db.DB, ms *machines.Store) *security.Store {
 	s := security.NewStore(d)
+	ss := services.NewStore(d)
 	s.Allowed = func(ctx context.Context, machineID int64) ([]string, error) {
 		list, err := ms.List(ctx)
 		if err != nil {
 			return nil, err
 		}
+		public, err := ss.PublicMachines(ctx)
+		if err != nil {
+			return nil, err
+		}
 		if i := slices.IndexFunc(list, func(o machines.Overview) bool { return o.ID == machineID }); i >= 0 {
-			return list[i].SecurityAllowedPorts, nil
+			return expose.AllowedPorts(list[i].SecurityAllowedPorts, public[machineID]), nil
 		}
 		return nil, nil
 	}
 	return s
+}
+
+// withPublicPorts returns overviews with Caddy's ports added to the allowlist of each machine that
+// has public routes, for the security rules.
+func withPublicPorts(ctx context.Context, ss *services.Store, overviews []machines.Overview) ([]machines.Overview, error) {
+	public, err := ss.PublicMachines(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := slices.Clone(overviews)
+	for i := range out {
+		out[i].SecurityAllowedPorts = expose.AllowedPorts(out[i].SecurityAllowedPorts, public[out[i].ID])
+	}
+	return out, nil
 }
 
 // newUpdates returns the updates store: it reads the machines from the machines store, queues
