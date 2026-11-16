@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/actions"
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/install"
@@ -17,6 +16,7 @@ import (
 	"github.com/g4f4r0/tender/internal/notifications"
 	"github.com/g4f4r0/tender/internal/security"
 	"github.com/g4f4r0/tender/internal/services"
+	"github.com/g4f4r0/tender/internal/services/expose"
 	"github.com/g4f4r0/tender/internal/updates"
 )
 

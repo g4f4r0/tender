@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/mcp"
 	"github.com/g4f4r0/tender/internal/secret"
 	"github.com/g4f4r0/tender/internal/server"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // Hidden is what a secret shows as.

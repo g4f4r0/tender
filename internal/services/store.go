@@ -78,8 +78,8 @@ func scanContainer(row scanner) (Container, error) {
 
 func at(unix int64) time.Time { return time.Unix(unix, 0).UTC() }
 
-// finished says a stopped container did its job: it exited 0, and Docker wouldn't restart it.
-func finished(c Container) bool {
+// Finished says a stopped container did its job: it exited 0, and Docker wouldn't restart it.
+func (c Container) Finished() bool {
 	return c.State == StateExited && c.ExitCode != nil && *c.ExitCode == 0 &&
 		(c.RestartPolicy == PolicyNo || c.RestartPolicy == PolicyOnFailure)
 }
@@ -92,7 +92,7 @@ func stateOf(list []Container) string {
 		case c.State == StateRemoved:
 		case c.State == StateUnknown:
 			return ServiceUnknown
-		case finished(c):
+		case c.Finished():
 		default:
 			should++
 			if c.State == StateRunning {

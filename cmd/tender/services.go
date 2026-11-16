@@ -148,9 +148,13 @@ func servicesList(args []string, s session) error {
 	}
 	rows := make([][]string, len(list))
 	for i, sv := range list {
-		running, present := 0, 0
+		running, present, gone := 0, 0, 0
 		for _, c := range sv.Containers {
-			if c.State != services.StateRemoved {
+			switch {
+			case c.State == services.StateRemoved:
+				gone++
+			case c.Finished():
+			default:
 				present++
 				if c.State == services.StateRunning {
 					running++
@@ -158,7 +162,7 @@ func servicesList(args []string, s session) error {
 			}
 		}
 		containers := fmt.Sprintf("%d/%d", running, present)
-		if present == 0 && len(sv.Containers) > 0 {
+		if gone > 0 && gone == len(sv.Containers) {
 			containers = "removed"
 		}
 		deployed, alerts := "-", "on"

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/services/deploy"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // fakeTunnels records each Apply. It refuses the routes of the services in refuse, and fails as a

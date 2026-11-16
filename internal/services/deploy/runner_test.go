@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/client"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 // fakeDocker writes a docker program that logs each call, with its folder and the registry logins

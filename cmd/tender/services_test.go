@@ -327,6 +327,16 @@ func TestServicesList(t *testing.T) {
 	}
 	delete(h.services, "code")
 	delete(h.docker, "code")
+	// A one-shot container that finished, such as a seed step, doesn't count against the running ones.
+	seeded := lone("seeded", services.StateRunning)
+	seeded.Containers = append(seeded.Containers, services.Container{Name: "seed", Image: "busybox", State: services.StateExited,
+		ExitCode: ptr(int64(0)), RestartPolicy: services.PolicyNo})
+	h.addServices(t, "code", seeded)
+	if got := mustRun(t, h, a, "services", "list", "code"); !strings.Contains(got, "code      seeded    running   1/1") {
+		t.Errorf("service with a finished one-shot container =\n%s", got)
+	}
+	delete(h.services, "code")
+	delete(h.docker, "code")
 
 	// Docker stops answering: the states are unknown, and the list says why.
 	h.docker["apps"] = services.DockerUnreachable

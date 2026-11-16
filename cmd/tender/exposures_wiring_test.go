@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/machines"
 	"github.com/g4f4r0/tender/internal/services"
 	"github.com/g4f4r0/tender/internal/services/deploy"
+	"github.com/g4f4r0/tender/internal/services/expose"
 )
 
 const cfCompose = "services:\n  web:\n    image: ghcr.io/me/blog:2\n    mem_limit: 512m\n"
