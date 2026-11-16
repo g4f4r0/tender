@@ -378,3 +378,49 @@ func TestName(t *testing.T) {
 		t.Errorf("Name = %v, want %v", got, want)
 	}
 }
+
+// A new route gets the next local port after the last one the machine got, so a port a route let
+// go of isn't handed out again right away: a failed deploy can leave the daemon's exposures
+// pointing at it. After 29999 the next route takes the lowest free port.
+func TestLocalPortsAreNotReusedRightAway(t *testing.T) {
+	s, _ := managedStore(t)
+	ctx := context.Background()
+	route := func(port int) []RouteInput {
+		return []RouteInput{{Container: "web", Port: port, Expose: deploy.ExposeTailscale}}
+	}
+	local := func(name string) int {
+		t.Helper()
+		sv, err := s.row(ctx, 1, name)
+		if err != nil || len(sv.Routes) != 1 {
+			t.Fatalf("%s: %+v, %v", name, sv.Routes, err)
+		}
+		return sv.Routes[0].LocalPort
+	}
+	if _, err := s.Create(ctx, 1, Input{Name: "notes", Compose: notesCompose, Routes: route(80)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(ctx, 1, "notes", Change{Routes: ptr(route(81))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(ctx, 1, Input{Name: "blog", Compose: notesCompose, Routes: route(80)}); err != nil {
+		t.Fatal(err)
+	}
+	if n, b := local("notes"), local("blog"); n != 20001 || b != 20002 {
+		t.Errorf("notes has %d and blog %d; want 20001 and 20002, with 20000, which notes let go of, left alone", n, b)
+	}
+	if _, err := s.db.Write.Exec(`UPDATE service_exposures SET last_local_port = 29999 WHERE machine_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(ctx, 1, Input{Name: "shop", Compose: notesCompose, Routes: route(80)}); err != nil {
+		t.Fatal(err)
+	}
+	if p := local("shop"); p != 20000 {
+		t.Errorf("after 29999 shop has %d; want the lowest free, 20000", p)
+	}
+	if _, err := s.Create(ctx, 1, Input{Name: "wiki", Compose: notesCompose, Routes: route(80)}); err != nil {
+		t.Fatal(err)
+	}
+	if p := local("wiki"); p != 20003 {
+		t.Errorf("wiki has %d; want 20003, the next free after shop's", p)
+	}
+}

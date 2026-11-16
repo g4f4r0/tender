@@ -15,7 +15,7 @@ A service's routes come with its deploy: `--route CONTAINER:PORT:EXPOSE[:HOST]` 
 | `expose` | `tailscale`, `cloudflare` or `public`. |
 | `host` | The full hostname for a `cloudflare` or `public` route, such as `notes.example.com`, and `null` for `tailscale`. A host routes to one service across the hub. |
 | `https_port` | For a `tailscale` route, the HTTPS port on the machine's tailnet name. Left out, the hub picks the lowest free one from `10000`. It is unique per machine. |
-| `local_port` | The `127.0.0.1` port the container is published on, which the hub assigns per machine from `20000` to `29999`. A route the service keeps keeps its port across changes. |
+| `local_port` | The `127.0.0.1` port the container is published on, which the hub assigns per machine from `20000` to `29999`. A route the service keeps keeps its port across changes. A new route gets the next free port after the last one the machine got, and the lowest free one once `29999` is taken, so a port a route let go of isn't handed out again right away. |
 | `url` | Where the route answers, such as `https://apps.tail1234.ts.net:10000` or `https://notes.example.com`. It is `null` for a `tailscale` route until the daemon has told the hub the machine's tailnet name. |
 
 For example, this deploy exposes `web` on the tailnet at port 443 and `api` at a public host:
@@ -32,7 +32,7 @@ A route to a container that the compose file doesn't have fails the deploy with 
 
 Each adapter takes the whole set of routes of its kind on the machine, every managed service's, and makes the machine match it. It changes only what it created, so running it again changes nothing, and a port or record you set up yourself stays.
 
-The daemon applies the exposures after every deploy and remove, and once when it starts, from `GET /v1/machines/{machine}/exposures`. A service being removed has its routes taken out first. Each adapter sets every route it can. A route that can't be set fails only the deploy of the service it belongs to, with `the service runs, but its routes could not all be exposed:` and a sentence naming the route, so that service's `deploy_status` is `failed` and its `last_error` says why. Every other route stays up, and the other services on the machine still deploy and remove; the daemon logs the failed route as a warning. An adapter that fails as a whole, such as Tailscale missing, fails the deploys of the services with routes on it. One adapter's failure doesn't stop the others.
+The daemon applies the exposures after every deploy and remove, and once when it starts, from `GET /v1/machines/{machine}/exposures`. A service being removed has its routes taken out first. Each adapter sets every route it can. A route that can't be set fails only the deploy of the service it belongs to, with `the service runs, but its routes could not all be exposed:` and a sentence naming the route, so that service's `deploy_status` is `failed` and its `last_error` says why. Every other route stays up, and the other services on the machine still deploy and remove; the daemon logs the failed route as a warning. An adapter that fails as a whole, such as Tailscale missing, fails the deploys of the services with routes on it, or that had routes on it before this deploy. One adapter's failure doesn't stop the others.
 
 ## Tailscale
 
@@ -153,7 +153,7 @@ The hub stores the token encrypted under `TENDER_ENCRYPTION_KEY`, like the other
 
 ### What Tender does in Cloudflare
 
-The hub does this through the Cloudflare API after every deploy and remove:
+The hub does this through the Cloudflare API when it queues every deploy and remove, before the daemon gets the action:
 
 1. It keeps one remotely managed tunnel per machine, named `tender-<machine>`, created on the machine's first `cloudflare` route.
 2. It replaces the tunnel's routes with every `cloudflare` route of the machine, each `<host>` to `http://127.0.0.1:<local_port>`, then a `404` for any other host.
@@ -161,7 +161,7 @@ The hub does this through the Cloudflare API after every deploy and remove:
 4. It deletes only records with the comment `managed by tender` that point at that machine's tunnel. Your own records, and other machines' records, stay.
 5. It refuses a host that already has a record it didn't make. That route fails with a sentence naming the host and the route, and stays out of the tunnel's routes. Delete that record in the dashboard, or pick another host.
 
-One route's failure never touches another's. A route the hub can't set in Cloudflare fails only the deploy or remove of its own service, after its containers are done, with the route's sentence in `last_error`; the hub logs it for the other services' deploys. A `cloudflare` route on a hub without the Cloudflare settings is refused with `A cloudflare route needs the hub's Cloudflare settings, and it has none yet.` and how to set them. A host in no zone of the account, a host with a record Tender didn't make, or a record Cloudflare refuses with a `4xx` fails that route alone, and every other route and record stays in place. A failing route's host also keeps its record of Tender's. A `5xx`, a `429` or no answer is tried 3 times, then fails the routes of every service on that machine; deploy again later.
+One route's failure never touches another's. A route the hub can't set in Cloudflare fails only the deploy or remove of its own service, after its containers are done, with the route's sentence in `last_error`; the hub logs it for the other services' deploys. Cloudflare failing as a whole also fails the deploy of a service that drops its last `cloudflare` route. The hub syncs one machine's tunnel at a time, and gives each sync 1 minute; a sync that takes longer stops and fails the service's deploy, so deploy again later. It keeps the tunnel's token encrypted under `TENDER_ENCRYPTION_KEY`, so the daemon gets it without the hub asking Cloudflare again. A remove takes the service's routes out of the tunnel when it is queued; when the remove fails, the service is still there, and its routes go back in. A `cloudflare` route on a hub without the Cloudflare settings is refused with `A cloudflare route needs the hub's Cloudflare settings, and it has none yet.` and how to set them. A host in no zone of the account, a host with a record Tender didn't make, or a record Cloudflare refuses with a `4xx` fails that route alone, and every other route and record stays in place. A failing route's host also keeps its record of Tender's. A `5xx`, a `429` or no answer is tried 3 times, then fails the routes of every service on that machine; deploy again later.
 
 ### What Tender does on the machine
 

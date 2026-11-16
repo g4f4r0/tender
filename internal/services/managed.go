@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/g4f4r0/tender/internal/apps/expose"
@@ -39,11 +40,77 @@ type Tunnels interface {
 	Ready(ctx context.Context) error
 	// Apply makes the tunnel of machine route exactly routes, its cloudflare routes, with their DNS
 	// records. It sets every route it can, and returns an *expose.RouteError for each one it
-	// couldn't; any other error is Cloudflare failing as a whole.
-	Apply(ctx context.Context, machine string, routes []expose.Route) error
-	// Token returns the token the machine's daemon runs its tunnel with, for routes, its
-	// cloudflare routes, or "" when it has none.
-	Token(ctx context.Context, machine string, routes []expose.Route) (string, error)
+	// couldn't; any other error is Cloudflare failing as a whole. The tunnel it returns has the
+	// token the machine's daemon runs it with, "" without routes, and no ID when Apply couldn't
+	// tell.
+	Apply(ctx context.Context, machine string, routes []expose.Route) (expose.Tunnel, error)
+}
+
+// tunnelSyncTimeout is how long one sync of a machine's tunnel may take, retries and all.
+var tunnelSyncTimeout = time.Minute
+
+// tunnelLocks holds a lock per machine id, so one sync of a machine's tunnel runs at a time: two
+// at once could both make its tunnel, or an older one delete a newer one's DNS record.
+var tunnelLocks sync.Map
+
+func lockTunnel(machineID int64) func() {
+	m, _ := tunnelLocks.LoadOrStore(machineID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// syncTunnel brings the machine's tunnel in Cloudflare up to date with the cloudflare routes its
+// services have now, and stores the token its daemon runs the tunnel with. It reads the routes and
+// applies them under the machine's lock, so the last sync applies the latest routes. It returns
+// what failed for svc, which has or had cloudflare routes when uses, and logs the rest. It runs
+// until its deadline even when ctx ends, so a sync isn't cut off halfway.
+func (s *Store) syncTunnel(ctx context.Context, machineID int64, svc string, uses bool) error {
+	if s.Tunnels == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tunnelSyncTimeout)
+	defer cancel()
+	unlock := lockTunnel(machineID)
+	defer unlock()
+	machine, err := s.machineName(ctx, machineID)
+	if err != nil {
+		return err
+	}
+	routes, err := s.machineRoutes(ctx, machineID)
+	if err != nil {
+		return err
+	}
+	tun, err := s.Tunnels.Apply(ctx, machine, deploy.ExposeRoutes(routes, deploy.ExposeCloudflare))
+	if ctx.Err() != nil {
+		err = fmt.Errorf("the hub's sync with Cloudflare took longer than %s, so it stopped. Deploy again later", tunnelSyncTimeout)
+	} else if err == nil || tun.ID != "" {
+		if serr := s.storeTunnelToken(ctx, machineID, tun.Token); serr != nil {
+			err = errors.Join(err, serr)
+		}
+	}
+	mine, others := expose.For(err, svc, uses)
+	if others != nil {
+		s.log().Warn("could not route all of the machine's cloudflare routes", "machine", machine, "error", others)
+	}
+	return mine
+}
+
+// storeTunnelToken keeps the machine's tunnel token, sealed, or forgets it when token is "".
+func (s *Store) storeTunnelToken(ctx context.Context, machineID int64, token string) error {
+	var sealed *string
+	if token != "" {
+		v, err := s.seal(token)
+		if err != nil {
+			return err
+		}
+		sealed = &v
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Write.ExecContext(ctx, `INSERT INTO service_exposures (machine_id, cloudflare_tunnel_token, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+		ON CONFLICT (machine_id) DO UPDATE SET cloudflare_tunnel_token = excluded.cloudflare_tunnel_token, updated_at = excluded.updated_at`,
+		machineID, sealed, now)
+	return err
 }
 
 // errNoKey is what a process without TENDER_ENCRYPTION_KEY answers when it needs a secret.
@@ -191,6 +258,7 @@ func (s *Store) reconcile(ctx context.Context, machineID int64) error {
 		return err
 	}
 	now := time.Now().Unix()
+	resync := map[int64]bool{}
 	for _, p := range list {
 		q, err := s.Actions.Get(ctx, p.machineID, p.actionID)
 		var e *server.Error
@@ -219,10 +287,18 @@ func (s *Store) reconcile(ctx context.Context, machineID int64) error {
 			}
 			_, err = s.db.Write.ExecContext(ctx, `UPDATE services SET deploy_status = 'failed', last_error = ?2, updated_at = ?3 WHERE id = ?1 AND action_id = ?4`,
 				p.id, msg, now, p.actionID)
+			if p.actionType == ActionRemove && p.status == DeployRemoving {
+				resync[p.machineID] = true
+			}
 		}
 		if err != nil {
 			return err
 		}
+	}
+	// A service whose remove failed is still there, maybe with its containers running: its
+	// cloudflare routes, which left the tunnel when the remove was queued, come back.
+	for id := range resync {
+		_ = s.syncTunnel(ctx, id, "", false)
 	}
 	return nil
 }
@@ -278,10 +354,13 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Queued, 
 	if err := tx.Commit(); err != nil {
 		return Queued{}, err
 	}
-	q, err := s.queue(ctx, machineID, in.Name, ActionDeploy, "", false)
+	q, err := s.queue(ctx, machineID, in.Name, ActionDeploy, "", false, false)
 	if err != nil {
-		// Without its deploy the new service would wait for nothing.
+		// Without its deploy the new service would wait for nothing, and its routes go with it.
 		_, derr := s.db.Write.ExecContext(context.WithoutCancel(ctx), `DELETE FROM services WHERE id = ?`, id)
+		if derr == nil {
+			_ = s.syncTunnel(ctx, machineID, "", false)
+		}
 		return Queued{}, errors.Join(err, derr)
 	}
 	return q, nil
@@ -401,9 +480,37 @@ const (
 	httpsFrom          = 10000
 )
 
+// lastLocalPort is the local port the hub assigned last on the machine, or the highest one its
+// routes have when that is higher, or localFrom-1 when it has assigned none.
+func lastLocalPort(ctx context.Context, tx *sql.Tx, machineID int64) (int, error) {
+	var last int
+	err := tx.QueryRowContext(ctx, `SELECT max(coalesce((SELECT last_local_port FROM service_exposures WHERE machine_id = ?1), ?2),
+		coalesce((SELECT max(r.local_port) FROM service_routes r JOIN services s ON s.id = r.service_id WHERE s.machine_id = ?1), ?2))`,
+		machineID, localFrom-1).Scan(&last)
+	return last, err
+}
+
+// nextLocalPort is the first free local port after last, or, once localTo is reached, the lowest
+// free one. A port a route just let go of isn't handed out again right away: a failed deploy can
+// leave the machine's exposures pointing at it.
+func nextLocalPort(last int, used map[int]bool) (int, bool) {
+	for p := last + 1; p <= localTo; p++ {
+		if !used[p] {
+			return p, true
+		}
+	}
+	for p := localFrom; p <= last && p <= localTo; p++ {
+		if !used[p] {
+			return p, true
+		}
+	}
+	return 0, false
+}
+
 // saveRoutes replaces the service's routes with routes. A route the service had keeps its local
-// port, and its HTTPS port unless it gives another; new ones get the lowest free ports. A host is
-// unique across the hub, and a local or HTTPS port across the machine's routes.
+// port, and its HTTPS port unless it gives another. A new route gets the next free local port after
+// the last one the machine got, and the lowest free HTTPS port. A host is unique across the hub,
+// and a local or HTTPS port across the machine's routes.
 func saveRoutes(ctx context.Context, tx *sql.Tx, machineID, serviceID int64, routes []RouteInput, now int64) error {
 	type kept struct {
 		local     int
@@ -486,15 +593,17 @@ func saveRoutes(ctx context.Context, tx *sql.Tx, machineID, serviceID int64, rou
 			usedHTTPS[*p] = ""
 		}
 	}
+	last, err := lastLocalPort(ctx, tx, machineID)
+	if err != nil {
+		return err
+	}
 	for i := range plan {
 		if plan[i].local == 0 {
-			p := localFrom
-			for ; p <= localTo && usedLocal[p]; p++ {
-			}
-			if p > localTo {
+			p, ok := nextLocalPort(last, usedLocal)
+			if !ok {
 				return server.Conflict("This machine has no free local port left from %d to %d for another route.", localFrom, localTo)
 			}
-			usedLocal[p], plan[i].local = true, p
+			usedLocal[p], plan[i].local, last = true, p, p
 		}
 		if plan[i].Expose == deploy.ExposeTailscale && plan[i].HTTPSPort == nil {
 			p := httpsFrom
@@ -509,6 +618,12 @@ func saveRoutes(ctx context.Context, tx *sql.Tx, machineID, serviceID int64, rou
 			usedHTTPS[p], plan[i].HTTPSPort = "", &p
 		}
 	}
+	if last >= localFrom {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO service_exposures (machine_id, last_local_port, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+			ON CONFLICT (machine_id) DO UPDATE SET last_local_port = excluded.last_local_port, updated_at = excluded.updated_at`, machineID, last, now); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM service_routes WHERE service_id = ?`, serviceID); err != nil {
 		return err
 	}
@@ -521,23 +636,33 @@ func saveRoutes(ctx context.Context, tx *sql.Tx, machineID, serviceID int64, rou
 	return nil
 }
 
-// queue queues an action for the service, marks a managed one deploying or removing for a deploy
-// or remove, and returns both.
-func (s *Store) queue(ctx context.Context, machineID int64, name, typ, container string, deleteData bool) (Queued, error) {
+// queue queues an action for the service and returns both. A deploy or remove marks the managed
+// service deploying or removing first, then brings the machine's tunnel up to date with its routes
+// as they will be, keeping what failed for the service, and only then queues the action: the
+// daemon's poll only reads what the sync left. hadCloudflare says the service had cloudflare
+// routes before this change, so dropping its last one still fails when Cloudflare does.
+func (s *Store) queue(ctx context.Context, machineID int64, name, typ, container string, deleteData, hadCloudflare bool) (Queued, error) {
 	if s.Actions == nil {
 		return Queued{}, server.Invalid("This hub can't queue actions for services.")
 	}
+	deployOrRemove := typ == ActionDeploy || typ == ActionRemove
+	var undo func()
+	if deployOrRemove {
+		var err error
+		if undo, err = s.prepare(ctx, machineID, name, typ, hadCloudflare); err != nil {
+			return Queued{}, err
+		}
+	}
 	q, err := s.Actions.Queue(ctx, machineID, typ, name, container, deleteData)
 	if err != nil {
+		if undo != nil {
+			undo()
+		}
 		return Queued{}, err
 	}
-	if typ == ActionDeploy || typ == ActionRemove {
-		status := DeployDeploying
-		if typ == ActionRemove {
-			status = DeployRemoving
-		}
-		if _, err := s.db.Write.ExecContext(ctx, `UPDATE services SET deploy_status = ?, action_id = ?, action_type = ?, updated_at = ? WHERE machine_id = ? AND name = ?`,
-			status, q.ID, typ, time.Now().Unix(), machineID, name); err != nil {
+	if deployOrRemove {
+		if _, err := s.db.Write.ExecContext(ctx, `UPDATE services SET action_id = ?, updated_at = ? WHERE machine_id = ? AND name = ?`,
+			q.ID, time.Now().Unix(), machineID, name); err != nil {
 			return Queued{}, err
 		}
 	}
@@ -546,6 +671,47 @@ func (s *Store) queue(ctx context.Context, machineID int64, name, typ, container
 		return Queued{}, err
 	}
 	return Queued{Service: sv, Action: q.Action, actionID: q.ID}, nil
+}
+
+// prepare marks the service deploying or removing, with no action yet, so a remove's routes leave
+// the machine's and reconcile leaves the service be. Then it syncs the machine's tunnel and keeps
+// what failed for the service in cloudflare_error, for its deploy or remove. undo puts the service
+// back as it was and syncs again, for an action that couldn't be queued.
+func (s *Store) prepare(ctx context.Context, machineID int64, name, typ string, hadCloudflare bool) (undo func(), err error) {
+	var id int64
+	var status string
+	var actionID *int64
+	var actionType *string
+	var hasCloudflare bool
+	if err := s.db.Read.QueryRowContext(ctx, `SELECT id, deploy_status, action_id, action_type,
+		EXISTS (SELECT 1 FROM service_routes r WHERE r.service_id = services.id AND r.expose = 'cloudflare')
+		FROM services WHERE machine_id = ? AND name = ?`, machineID, name).Scan(&id, &status, &actionID, &actionType, &hasCloudflare); err != nil {
+		return nil, err
+	}
+	next := DeployDeploying
+	if typ == ActionRemove {
+		next = DeployRemoving
+	}
+	if _, err := s.db.Write.ExecContext(ctx, `UPDATE services SET deploy_status = ?, action_id = NULL, action_type = ?, updated_at = ? WHERE id = ?`,
+		next, typ, time.Now().Unix(), id); err != nil {
+		return nil, err
+	}
+	var cloudflareError *string
+	if err := s.syncTunnel(ctx, machineID, name, hadCloudflare || hasCloudflare); err != nil {
+		msg := err.Error()
+		cloudflareError = &msg
+	}
+	if _, err := s.db.Write.ExecContext(context.WithoutCancel(ctx), `UPDATE services SET cloudflare_error = ? WHERE id = ?`, cloudflareError, id); err != nil {
+		return nil, err
+	}
+	return func() {
+		ctx := context.WithoutCancel(ctx)
+		if _, err := s.db.Write.ExecContext(ctx, `UPDATE services SET deploy_status = ?, action_id = ?, action_type = ?, updated_at = ? WHERE id = ?`,
+			status, actionID, actionType, time.Now().Unix(), id); err != nil {
+			s.log().Warn("could not put the service back as it was before its action", "service", name, "error", err)
+		}
+		_ = s.syncTunnel(ctx, machineID, "", false)
+	}, nil
 }
 
 // unmanaged is the 409 of a change only a managed service can have.
@@ -662,7 +828,8 @@ func (s *Store) Update(ctx context.Context, machineID int64, name string, c Chan
 	if err := tx.Commit(); err != nil {
 		return Queued{}, err
 	}
-	return s.queue(ctx, machineID, name, ActionDeploy, "", false)
+	hadCloudflare := slices.ContainsFunc(sv.Routes, func(r Route) bool { return r.Expose == deploy.ExposeCloudflare })
+	return s.queue(ctx, machineID, name, ActionDeploy, "", false, hadCloudflare)
 }
 
 // Redeploy queues a deploy of the managed service as stored, which pulls its images again.
@@ -670,7 +837,7 @@ func (s *Store) Redeploy(ctx context.Context, machineID int64, name string) (Que
 	if _, err := s.changeable(ctx, machineID, name, "deploy"); err != nil {
 		return Queued{}, err
 	}
-	return s.queue(ctx, machineID, name, ActionDeploy, "", false)
+	return s.queue(ctx, machineID, name, ActionDeploy, "", false, false)
 }
 
 // Remove queues the managed service's remove. The service is deleted once the remove succeeds.
@@ -679,7 +846,7 @@ func (s *Store) Remove(ctx context.Context, machineID int64, name string, delete
 	if _, err := s.changeable(ctx, machineID, name, "remove"); err != nil {
 		return Queued{}, err
 	}
-	return s.queue(ctx, machineID, name, ActionRemove, "", deleteData)
+	return s.queue(ctx, machineID, name, ActionRemove, "", deleteData, false)
 }
 
 // Act queues a start, stop or restart of the service, or of its one container when container
@@ -688,34 +855,37 @@ func (s *Store) Act(ctx context.Context, machineID int64, name, typ, container s
 	if _, err := s.row(ctx, machineID, name); err != nil {
 		return Queued{}, err
 	}
-	return s.queue(ctx, machineID, name, typ, container, false)
+	return s.queue(ctx, machineID, name, typ, container, false, false)
 }
 
 // Exposures returns the machine's whole set of routes, for its daemon's exposure adapters: the
 // routes of every managed service on it except those being removed, and the token of its
-// Cloudflare tunnel when it has cloudflare routes. A tunnel token Cloudflare doesn't give is
-// logged, and the exposures go without it.
+// Cloudflare tunnel, as the last sync stored it, when it has cloudflare routes. It only reads: the
+// sync runs when a deploy or remove is queued. A token the hub can't open is logged, and the
+// exposures go without it.
 func (s *Store) Exposures(ctx context.Context, machineID int64) (deploy.Exposures, error) {
 	routes, err := s.machineRoutes(ctx, machineID)
 	if err != nil {
 		return deploy.Exposures{}, err
 	}
 	out := deploy.Exposures{Routes: routes}
-	cf := deploy.ExposeRoutes(routes, deploy.ExposeCloudflare)
-	if s.Tunnels == nil || len(cf) == 0 {
+	if len(deploy.ExposeRoutes(routes, deploy.ExposeCloudflare)) == 0 {
 		return out, nil
 	}
-	machine, err := s.machineName(ctx, machineID)
-	if err != nil {
+	var sealed sql.NullString
+	err = s.db.Read.QueryRowContext(ctx, `SELECT cloudflare_tunnel_token FROM service_exposures WHERE machine_id = ?`, machineID).Scan(&sealed)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return out, err
 	}
-	token, err := s.Tunnels.Token(ctx, machine, cf)
+	if !sealed.Valid {
+		return out, nil
+	}
+	token, err := s.open("the machine's Cloudflare tunnel token", sealed.String)
 	if err != nil {
-		s.log().Warn("could not get the machine's Cloudflare tunnel token", "machine", machine, "error", err)
+		s.log().Warn("could not open the machine's Cloudflare tunnel token", "machine_id", machineID, "error", err)
+		return out, nil
 	}
-	if token != "" {
-		out.CloudflareTunnelToken = &token
-	}
+	out.CloudflareTunnelToken = &token
 	return out, nil
 }
 
@@ -747,10 +917,9 @@ func (s *Store) machineRoutes(ctx context.Context, machineID int64) ([]deploy.Ex
 
 // Deployment returns what the daemon needs to deploy or remove the machine's managed service, as
 // JSON: the service with its env opened, the registries' logins and the machine's exposures. It
-// brings the machine's Cloudflare tunnel up to date first. A route of this service's that the
-// tunnel couldn't take, or Cloudflare failing while the service has cloudflare routes, goes to the
-// daemon as cloudflare_error, which fails the deploy or remove once the containers are done; the
-// other services' failed routes are only logged, so they never fail this one.
+// runs in the daemon's poll, so it only reads: what the tunnel's sync, when the action was queued,
+// couldn't do for this service's cloudflare routes goes to the daemon as cloudflare_error, which
+// fails the deploy or remove once the containers are done.
 func (s *Store) Deployment(ctx context.Context, machineID int64, name string) (json.RawMessage, error) {
 	sv, err := s.row(ctx, machineID, name)
 	if err != nil {
@@ -771,20 +940,11 @@ func (s *Store) Deployment(ctx context.Context, machineID int64, name string) (j
 	if d.Registries, err = s.logins(ctx); err != nil {
 		return nil, err
 	}
-	if s.Tunnels != nil {
-		routes, err := s.machineRoutes(ctx, machineID)
-		if err != nil {
-			return nil, err
-		}
-		uses := slices.ContainsFunc(sv.Routes, func(r Route) bool { return r.Expose == deploy.ExposeCloudflare })
-		mine, others := expose.For(s.Tunnels.Apply(ctx, sv.Machine, deploy.ExposeRoutes(routes, deploy.ExposeCloudflare)), sv.Name, uses)
-		if others != nil {
-			s.log().Warn("could not route all of the machine's cloudflare routes", "machine", sv.Machine, "error", others)
-		}
-		if mine != nil {
-			d.CloudflareError = mine.Error()
-		}
+	var cloudflareError sql.NullString
+	if err := s.db.Read.QueryRowContext(ctx, `SELECT cloudflare_error FROM services WHERE id = ?`, sv.ID).Scan(&cloudflareError); err != nil {
+		return nil, err
 	}
+	d.CloudflareError = cloudflareError.String
 	if d.Exposures, err = s.Exposures(ctx, machineID); err != nil {
 		return nil, err
 	}
