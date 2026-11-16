@@ -159,6 +159,29 @@ func unknownKey(raw json.RawMessage, allowed map[string]bool) (string, error) {
 	return "", nil
 }
 
+// withoutEmptyIPAM returns raw, a network, without its ipam when that is empty or null. Compose v5
+// renders "ipam": {} on every network, so only an ipam that chooses a driver, subnets or options is
+// refused.
+func withoutEmptyIPAM(raw json.RawMessage) json.RawMessage {
+	m, err := object(raw)
+	if err != nil {
+		return raw
+	}
+	ipam, ok := m["ipam"]
+	if !ok {
+		return raw
+	}
+	if inner, err := object(ipam); err != nil || len(inner) > 0 {
+		return raw
+	}
+	delete(m, "ipam")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 // set reports whether a value compose rendered is there and not false, empty or zero.
 func set(raw json.RawMessage) bool {
 	v := string(bytes.TrimSpace(raw))
@@ -273,7 +296,7 @@ func CheckRules(r Rendered, dir string) error {
 		case n.Name != "" && n.Name != project+"_"+name:
 			return fmt.Errorf("network %s sets name %s, which could be another network on the machine: remove name from it", name, n.Name)
 		}
-		if k, err := unknownKey(nets[name], networkKeys); err != nil || k != "" {
+		if k, err := unknownKey(withoutEmptyIPAM(nets[name]), networkKeys); err != nil || k != "" {
 			return errors.Join(err, fmt.Errorf("network %s sets %s, which Tender's rules don't allow: remove %s from it", name, k, k))
 		}
 	}
