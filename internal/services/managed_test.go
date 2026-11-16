@@ -225,6 +225,17 @@ func TestUnmanaged(t *testing.T) {
 	if _, err := s.Act(ctx, 1, "nope", actRestart, ""); status(err) != http.StatusNotFound {
 		t.Errorf("an unknown service: %v", err)
 	}
+	// Once its containers are down, the name is free for a service Tender deploys, without waiting the
+	// 7 days the removed containers are kept.
+	if err := s.Replace(ctx, 1, []ContainerInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if q, err := s.Create(ctx, 1, Input{Name: "shop", Compose: notesCompose}); err != nil || !q.Service.Managed {
+		t.Fatalf("deploy over an unmanaged service that is gone = %+v, %v", q, err)
+	}
+	if sv, err := s.row(ctx, 1, "shop"); err != nil || !sv.Managed || len(sv.Containers) != 0 {
+		t.Errorf("the service = %+v, %v", sv, err)
+	}
 }
 
 // A change merges files and env into the stored ones and keeps each route's ports; a remove

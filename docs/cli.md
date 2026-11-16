@@ -857,7 +857,7 @@ tender services deploy MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `MACHINE` | string | Yes | The machine to deploy it on. |
-| `NAME` | string | Yes | The service's name, its compose project: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `NAME` | string | Yes | The service's name, its compose project: lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most 32. |
 | `-f` | path | Yes | The docker compose file. |
 | `--file` | path | No | A config file the compose file mounts, in the compose file's folder; repeat for each. It goes to the same path relative to the compose file on the machine. |
 | `--env-file` | path | No | A file of `KEY=VALUE` lines for the env. Blank lines and `#` comments are skipped, `export ` is taken off, and so is one pair of quotes around a value. |

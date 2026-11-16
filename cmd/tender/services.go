@@ -405,7 +405,7 @@ func servicesDeploy(args []string, s session) error {
 	fs := newFlagSet("services deploy", "MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] [--env KEY=VALUE ...] "+
 		"[--route CONTAINER:PORT:EXPOSE[:HOST] ...] [--no-wait] [--hub URL]",
 		"Deploy a service from a docker compose file, through the daemon on the machine, and wait for it. NAME is its compose project: "+
-			"lowercase letters and digits, starting with a letter, at most 32. The daemon checks the file against Tender's rules first "+
+			"lowercase letters, digits and dashes, starting with a letter, at most 32. The daemon checks the file against Tender's rules first "+
 			"(images only, no ports, no host namespaces, privileges or devices, mounts inside the service's folder, a memory limit on "+
 			"each compose service) and says which rule failed and how to fix it. A service Tender deployed already changes: the file "+
 			"replaces its compose file, and files, env and routes are replaced when their options are given and kept when not. "+

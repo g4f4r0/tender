@@ -65,7 +65,7 @@ Tender deploys a service from a docker compose file, through the daemon on the m
 tender services deploy apps notes -f compose.yaml --env-file .env --route web:8080:tailscale
 ```
 
-A service's name is its compose project name: lowercase letters and digits, starting with a letter, at most 32, with no dashes. It can't be `tender`, the project of Tender's own containers. With the compose file come:
+A service's name is its compose project name: lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most 32. It can't be `tender`, the project of Tender's own containers. With the compose file come:
 
 1. `files`, the config files the compose file mounts, by their path relative to it, such as `config/app.toml`. A service has at most 64 files and 1 MiB in all.
 2. `env`, the values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores, and can't start with `COMPOSE_` or `DOCKER_`, which compose reads from `.env` as its own settings. The hub stores the values encrypted and shows each as `"***"`. A value can't hold a single quote or a line break.

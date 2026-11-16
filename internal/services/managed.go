@@ -330,6 +330,12 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Queued, 
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().Unix()
+	// A service Tender only watched, whose containers are all gone, gives its name to the new one:
+	// its row would otherwise keep the name for the 7 days removed containers are kept.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM services WHERE machine_id = ? AND name = ? AND managed = 0
+		AND NOT EXISTS (SELECT 1 FROM containers c WHERE c.service_id = services.id AND c.state != 'removed')`, machineID, in.Name); err != nil {
+		return Queued{}, err
+	}
 	var id int64
 	err = tx.QueryRowContext(ctx, `INSERT INTO services (machine_id, name, managed, compose, files, env, deploy_status, created_at, updated_at)
 		VALUES (?, ?, 1, ?, ?, ?, 'deploying', ?, ?) ON CONFLICT (machine_id, name) DO NOTHING RETURNING id`,

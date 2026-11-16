@@ -2400,7 +2400,7 @@ Stores a new managed service and queues its deploy. The daemon checks the compos
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
-| `name` | string | Yes | Body. The compose project name: lowercase letters and digits, starting with a letter, at most 32, with no dashes. |
+| `name` | string | Yes | Body. The compose project name: lowercase letters, digits and dashes, starting with a letter and not ending with a dash, at most 32. |
 | `compose` | string | Yes | Body. The text of the docker compose file, at most 256 KiB. |
 | `files` | object | No | Body. Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. At most 64 files and 1 MiB in all. |
 | `env` | object | No | Body. Values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores, not starting with `COMPOSE_` or `DOCKER_`; a value can't hold a single quote or a line break. |
