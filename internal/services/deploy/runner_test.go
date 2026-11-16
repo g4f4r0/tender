@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/client"
@@ -132,7 +133,7 @@ func TestDeploy(t *testing.T) {
 		t.Fatalf("calls = %q", got)
 	}
 	// With no container running, nothing stops before up.
-	if !strings.Contains(got[2], "compose.tender.yaml ps --quiet --status running | ") {
+	if !strings.Contains(got[2], " | ps --all --quiet --no-trunc --filter label=com.docker.compose.project=notes ") {
 		t.Errorf("call 2 = %q, want ps", got[2])
 	}
 	got = append(got[:2], got[3])
@@ -224,7 +225,7 @@ func TestDeployRefused(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "service web in the compose file mounts "+folder+"/data/x/etc, and "+folder+"/data/x in its folder is a symbolic link") {
 		t.Errorf("a bind through a link: %v", err)
 	}
-	if got := calls(t, log); len(got) != 3 || !strings.Contains(got[1], " pull | ") || !strings.Contains(got[2], " ps --quiet") {
+	if got := calls(t, log); len(got) != 3 || !strings.Contains(got[1], " pull | ") || !strings.Contains(got[2], " | ps --all ") {
 		t.Errorf("a bind through a link reached up: %q", got)
 	}
 	if err := os.Remove(filepath.Join(folder, "data", "x")); err != nil {
@@ -391,11 +392,59 @@ func TestOneRouteFailsOnlyItsService(t *testing.T) {
 	if out, err := r.Deploy(context.Background(), deployment(t, plain)); err != nil {
 		t.Errorf("a service without tailscale routes failed for tailscale: %v\n%s", err, out)
 	}
+	// Dropping its last tailscale route while tailscale is down still fails notes: the route the
+	// adapter was given for it last counts, not only those it keeps.
+	dropped := notes
+	dropped.Routes, dropped.Exposures = nil, Exposures{Routes: ex.Routes[:2]}
+	if _, err := r.Deploy(context.Background(), deployment(t, dropped)); err == nil || !strings.Contains(err.Error(), "the tailscale routes: tailscale is not running") {
+		t.Errorf("notes dropped its last tailscale route with tailscale down: %v", err)
+	}
 }
 
-// A running container that can write in a folder the new config binds stops before the link check
-// and up, so it can't swap a link in between; one that can't, or a read-only bind, keeps running
-// until up recreates it.
+// Run asks the hub for the exposures while it holds the deploys' lock, so a remove that runs
+// meanwhile applies its exposures after Run's, and Run never puts back the routes it took out.
+func TestRunNeverUndoesARemove(t *testing.T) {
+	asked, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method+" "+req.URL.Path != "GET /v1/machines/apps/exposures" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		once.Do(func() { close(asked) })
+		<-release
+		_, _ = io.WriteString(w, `{"routes":[{"service":"notes","container":"web","expose":"tailscale","local_port":20000,"host":null,"https_port":443}],
+			"cloudflare_tunnel_token":null}`)
+	}))
+	t.Cleanup(hub.Close)
+	docker, _ := fakeDocker(t, goodRendered, "never")
+	r, ts := newRunner(t, docker, client.New(hub.URL, "token-a"))
+	ctx := context.Background()
+	ran := make(chan struct{})
+	go func() { r.Run(ctx); close(ran) }()
+	<-asked
+	removed := make(chan error, 1)
+	go func() {
+		_, err := r.Remove(ctx, deployment(t, Deployment{Name: "notes", Exposures: Exposures{Routes: []Exposed{}}}), true)
+		removed <- err
+	}()
+	time.Sleep(200 * time.Millisecond) // without the lock, the remove is done by now
+	close(release)
+	<-ran
+	if err := <-removed; err != nil {
+		t.Fatal(err)
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if last := ts.got[len(ts.got)-1]; len(ts.got) != 2 || len(last) != 0 {
+		t.Errorf("the adapter got %+v last; want the remove's exposures, without notes", ts.got)
+	}
+}
+
+// A container that can write in a folder the new config binds stops before the link check and up,
+// so it can't swap a link in between; one that can't, or a read-only bind, keeps running until up
+// recreates it. The containers are every one of the project's that isn't exited or dead, with a
+// restarting one and orphans of the old config, and docker stops them by ID.
 func TestDeployStopsContainersThatReachItsBinds(t *testing.T) {
 	r, _ := newRunner(t, "", nil)
 	folder := filepath.Join(r.Dir, "notes")
@@ -427,17 +476,23 @@ func TestDeployStopsContainersThatReachItsBinds(t *testing.T) {
 		for _, line := range got {
 			f := strings.Split(line, " | ")[1]
 			switch {
-			case strings.HasPrefix(f, "inspect "):
+			case strings.HasPrefix(f, "ps "):
+				if f != "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=notes --filter status=created --filter status=restarting "+
+					"--filter status=running --filter status=removing --filter status=paused" {
+					t.Errorf("%s: listed the containers with %q", c.name, f)
+				}
+				steps = append(steps, "ps")
+			case strings.HasPrefix(f, "inspect "), strings.HasPrefix(f, "stop "):
 				steps = append(steps, f)
 			case strings.Contains(f, " stop"):
-				steps = append(steps, "stop")
+				steps = append(steps, "compose stop")
 			case strings.Contains(f, " up "):
 				steps = append(steps, "up")
 			}
 		}
-		want := "inspect c0ffee01 c0ffee02,up"
+		want := "ps,inspect c0ffee01 c0ffee02,up"
 		if c.stops {
-			want = "inspect c0ffee01 c0ffee02,stop,up"
+			want = "ps,inspect c0ffee01 c0ffee02,stop c0ffee01 c0ffee02,up"
 		}
 		if strings.Join(steps, ",") != want {
 			t.Errorf("%s: steps %q, want %s", c.name, steps, want)

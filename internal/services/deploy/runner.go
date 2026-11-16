@@ -52,6 +52,7 @@ type Runner struct {
 
 	mu       sync.Mutex // one deploy, remove or exposure change at a time
 	reported string     // the tailnet name last sent to the hub
+	applied  []Exposed  // the routes the adapters were given last
 }
 
 // NewRunner returns a runner for machine that keeps the managed services in dir.
@@ -62,18 +63,20 @@ func NewRunner(hub *client.Client, machine, dir string, log *slog.Logger) *Runne
 func (d *Runner) path(rest string) string { return "/v1/machines/" + url.PathEscape(d.Machine) + rest }
 
 // Run applies the machine's exposures as the hub has them, once, retrying until the hub answers or
-// ctx ends, and tells the hub the machine's tailnet name.
+// ctx ends, and tells the hub the machine's tailnet name. It asks the hub while it holds the lock
+// deploys and removes take, so the exposures it applies are never older than theirs.
 func (d *Runner) Run(ctx context.Context) {
 	logged := ""
 	for ctx.Err() == nil {
 		var ex Exposures
+		d.mu.Lock()
 		err := d.Hub.Do(ctx, http.MethodGet, d.path("/exposures"), "", nil, &ex)
 		if err == nil {
-			d.mu.Lock()
 			_ = d.expose(ctx, ex, "", nil) // it logs what failed
 			d.mu.Unlock()
 			return
 		}
+		d.mu.Unlock()
 		if ctx.Err() != nil {
 			return
 		}
@@ -93,6 +96,7 @@ func (d *Runner) Run(ctx context.Context) {
 // fails another's deploy: expose returns only what belongs to svc, the service of the deploy or
 // remove that called it, which has routes on the adapters in uses. It logs the rest.
 func (d *Runner) expose(ctx context.Context, ex Exposures, svc string, uses map[string]bool) error {
+	d.applied = ex.Routes
 	var mine []error
 	known := map[string]bool{}
 	for _, e := range d.Exposers {
@@ -141,11 +145,18 @@ func hubError(dep Deployment) error {
 	return fmt.Errorf("the cloudflare routes: %s", dep.CloudflareError)
 }
 
-// adapters returns the adapters routes are exposed with.
-func adapters(routes []Published) map[string]bool {
+// uses returns the adapters the service's routes are on, those it has now and those the adapters
+// were last given for it: a service that drops its last route on an adapter still fails when that
+// adapter does.
+func (d *Runner) uses(svc string, routes []Published) map[string]bool {
 	out := map[string]bool{}
 	for _, r := range routes {
 		out[r.Expose] = true
+	}
+	for _, r := range d.applied {
+		if r.Service == svc {
+			out[r.Expose] = true
+		}
 	}
 	return out
 }
@@ -335,16 +346,17 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 	if err := d.compose(ctx, dir, config, "pull", out, nil, append(files, "pull")...); err != nil {
 		return out.String(), fmt.Errorf("%v: it could not pull the images. The end of its output:\n%s", err, out.String())
 	}
-	// A running container of the service that can write where the new config binds or reads could
-	// swap a symbolic link in between the check and up: those containers stop first. Otherwise the
-	// containers keep running until up recreates them.
-	writable, err := d.writableBinds(ctx, dir, config, files)
+	// A container of the service that can write where the new config binds or reads could swap a
+	// symbolic link in between the check and up: those containers stop first. That is every one
+	// of the project's that isn't exited or dead, orphans too, since up only removes them later.
+	// Otherwise the containers keep running until up recreates them.
+	live, writable, err := d.writableBinds(ctx, dir, config, dep.Name)
 	if err != nil {
 		return out.String(), err
 	}
 	if under := reachedBy(r, writable); under != "" {
 		_, _ = fmt.Fprintf(out, "Stopping the service's containers before up: one of them can write in %s, which this deploy binds or reads.\n", under)
-		if err := d.compose(ctx, dir, config, "stop", out, nil, append(files, "stop")...); err != nil {
+		if err := d.docker(ctx, dir, config, "stop", out, nil, append([]string{"stop"}, live...)...); err != nil {
 			return out.String(), fmt.Errorf("%v: the containers could not be stopped before up. The end of its output:\n%s", err, out.String())
 		}
 	}
@@ -355,27 +367,34 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 		strconv.Itoa(waitTimeoutSeconds))...); err != nil {
 		return out.String(), fmt.Errorf("%v: the containers did not all start and turn healthy. The end of its output:\n%s", err, out.String())
 	}
-	if err := errors.Join(d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)), hubError(dep)); err != nil {
+	if err := errors.Join(d.expose(ctx, dep.Exposures, dep.Name, d.uses(dep.Name, dep.Routes)), hubError(dep)); err != nil {
 		return out.String(), fmt.Errorf("the service runs, but its routes could not all be exposed: %w", err)
 	}
 	return out.String(), nil
 }
 
-// writableBinds returns the host paths that the service's running containers have bound
-// read-write. files are compose's options for the checked config.
-func (d *Runner) writableBinds(ctx context.Context, dir, config string, files []string) ([]string, error) {
+// liveStates are the states of a container that may still run or start: all but exited and dead.
+var liveStates = []string{"created", "restarting", "running", "removing", "paused"}
+
+// writableBinds returns the containers of the compose project name that aren't exited or dead, and
+// the host paths they have bound read-write.
+func (d *Runner) writableBinds(ctx context.Context, dir, config, name string) (live, writable []string, err error) {
 	var ids bytes.Buffer
 	errOut := &tail{}
-	if err := d.compose(ctx, dir, config, "ps", errOut, &ids, append(files, "ps", "--quiet", "--status", "running")...); err != nil {
-		return nil, fmt.Errorf("%v: could not list the service's running containers before up:\n%s", err, errOut.String())
+	args := []string{"ps", "--all", "--quiet", "--no-trunc", "--filter", "label=com.docker.compose.project=" + name}
+	for _, st := range liveStates {
+		args = append(args, "--filter", "status="+st)
+	}
+	if err := d.docker(ctx, dir, config, "ps", errOut, &ids, args...); err != nil {
+		return nil, nil, fmt.Errorf("%v: could not list the service's containers before up:\n%s", err, errOut.String())
 	}
 	list := strings.Fields(ids.String())
 	if len(list) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var inspected bytes.Buffer
 	if err := d.docker(ctx, dir, config, "inspect", errOut, &inspected, append([]string{"inspect"}, list...)...); err != nil {
-		return nil, fmt.Errorf("%v: could not read the mounts of the service's containers before up:\n%s", err, errOut.String())
+		return nil, nil, fmt.Errorf("%v: could not read the mounts of the service's containers before up:\n%s", err, errOut.String())
 	}
 	var containers []struct {
 		Mounts []struct {
@@ -385,17 +404,16 @@ func (d *Runner) writableBinds(ctx context.Context, dir, config string, files []
 		} `json:"Mounts"`
 	}
 	if err := json.Unmarshal(inspected.Bytes(), &containers); err != nil {
-		return nil, fmt.Errorf("docker inspect printed something that isn't its JSON: %w", err)
+		return nil, nil, fmt.Errorf("docker inspect printed something that isn't its JSON: %w", err)
 	}
-	var out []string
 	for _, c := range containers {
 		for _, m := range c.Mounts {
 			if m.Type == "bind" && m.RW && m.Source != "" {
-				out = append(out, filepath.Clean(m.Source))
+				writable = append(writable, filepath.Clean(m.Source))
 			}
 		}
 	}
-	return out, nil
+	return list, writable, nil
 }
 
 func writeOverride(dir string, content []byte) error {
@@ -438,7 +456,7 @@ func (d *Runner) Remove(ctx context.Context, raw json.RawMessage, deleteData boo
 		return out.String(), fmt.Errorf("%v: the service's containers may still run. The end of its output:\n%s", err, out.String())
 	}
 	var errs []error
-	if err := errors.Join(d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)), hubError(dep)); err != nil {
+	if err := errors.Join(d.expose(ctx, dep.Exposures, dep.Name, d.uses(dep.Name, dep.Routes)), hubError(dep)); err != nil {
 		errs = append(errs, fmt.Errorf("its containers are gone, but its routes could not all be taken out: %w", err))
 	}
 	if run == dir {
