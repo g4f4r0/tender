@@ -655,8 +655,8 @@ func TestCloudflareAccessWithoutAnApplication(t *testing.T) {
 	if got := routeErrors(t, err); !slices.Equal(got, []string{"zeron-mcp/gateway"}) {
 		t.Errorf("route errors %q: %v", got, err)
 	}
-	want := "the route to gateway in zeron-mcp requires Cloudflare Access, but no Access application in the Cloudflare account protects gate.example.com. " +
-		"Add a self-hosted Access application for it, or deploy the route without access"
+	want := "the route to gateway in zeron-mcp requires Cloudflare Access, but no Access application the API token can see protects gate.example.com. " +
+		"Add a self-hosted Access application for it, give the API token " + CloudflareAccessPermissions + ", or deploy the route without access"
 	if err.Error() != want {
 		t.Errorf("error %q\nwant %q", err, want)
 	}
@@ -699,7 +699,7 @@ func TestCloudflareAccessRefused(t *testing.T) {
 			}
 			// On the organization, other already failed for want of an application.
 			if call == orgs && (!strings.Contains(err.Error(), "the route to gateway in zeron-mcp requires Cloudflare Access, but Cloudflare refused") ||
-				!strings.Contains(err.Error(), "no Access application in the Cloudflare account protects other.example.com")) {
+				!strings.Contains(err.Error(), "no Access application the API token can see protects other.example.com")) {
 				t.Errorf("%s %d: %v", call, status, err)
 			}
 			if got := f.ingress[tun.ID]; len(got) != 3 || got[0].Hostname != "api.shop.example.com" || got[1].Hostname != "blog.example.com" || tun.Token == "" {
