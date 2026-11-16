@@ -123,8 +123,14 @@ func caddyfile(routes []Route) []byte {
 }
 
 // compose is Caddy's compose file. The folder is mounted read-only as /etc/caddy, rather than the
-// Caddyfile alone, because a new Caddyfile is a new file that a file mount wouldn't show.
+// Caddyfile alone, because a new Caddyfile is a new file that a file mount wouldn't show. The binds
+// are in the long syntax, with the folder's absolute path: compose reads a relative source from the
+// compose file's own folder, and the short syntax splits a path at its colons.
 func (p *Public) compose() []byte {
+	dir := p.Dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
 	return fmt.Appendf(nil, `# Written by Tender: the Caddy that serves this machine's public routes.
 services:
   caddy:
@@ -132,9 +138,14 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-      - %s:/etc/caddy:ro
-      - %s:/data
-`, CaddyImage, yamlQuote(p.Dir), yamlQuote(filepath.Join(p.Dir, "data")))
+      - type: bind
+        source: %s
+        target: /etc/caddy
+        read_only: true
+      - type: bind
+        source: %s
+        target: /data
+`, CaddyImage, yamlQuote(dir), yamlQuote(filepath.Join(dir, "data")))
 }
 
 // yamlQuote is s as a YAML double-quoted string.

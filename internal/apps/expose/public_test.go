@@ -113,7 +113,9 @@ func TestPublicStartsCaddyOnTheFirstRoute(t *testing.T) {
 		t.Errorf("Caddyfile:\n%s", caddy)
 	}
 	compose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
-	for _, w := range []string{"image: " + CaddyImage, "network_mode: host", "restart: unless-stopped", `- "` + dir + `":/etc/caddy:ro`, `- "` + dir + `/data":/data`} {
+	for _, w := range []string{"image: " + CaddyImage, "network_mode: host", "restart: unless-stopped",
+		"- type: bind\n        source: \"" + dir + "\"\n        target: /etc/caddy\n        read_only: true\n",
+		"- type: bind\n        source: \"" + dir + "/data\"\n        target: /data\n"} {
 		if !strings.Contains(string(compose), w) {
 			t.Errorf("compose.yaml lacks %q:\n%s", w, compose)
 		}
@@ -364,5 +366,20 @@ func TestPublicSetsTheGoodRoutesBesideBadOnes(t *testing.T) {
 	}
 	if mine, _ := For(err, "blog", true); mine == nil || errors.As(mine, &re) {
 		t.Errorf("Caddy's failure isn't blog's: %v", mine)
+	}
+}
+
+// Caddy's compose file binds its folder by absolute path, in the long syntax, so compose neither
+// reads a relative folder from beside the compose file nor splits a path at a colon.
+func TestCaddyBindsItsFolderByAbsolutePath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	compose := string((&Public{Dir: "state/caddy:1"}).compose())
+	abs, err := filepath.Abs("state/caddy:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(compose, "        source: \""+abs+"\"\n        target: /etc/caddy\n") ||
+		!strings.Contains(compose, "        source: \""+abs+"/data\"\n        target: /data\n") || strings.Contains(compose, "\":/") {
+		t.Errorf("compose.yaml:\n%s", compose)
 	}
 }
