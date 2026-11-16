@@ -42,7 +42,7 @@ func newHub(t *testing.T) *hub {
 		t.Fatal(err)
 	}
 	st := security.NewStore(d)
-	st.Allowed = func(context.Context, int64) ([]string, error) { return []string{"41641/udp"}, nil }
+	st.Allowed = func(context.Context, int64) ([]string, error) { return []string{"41641/udp", "cloudflared"}, nil }
 	srv := server.New(d, slog.New(slog.NewTextHandler(io.Discard, nil)), identity{})
 	st.Routes(srv)
 	h := &hub{store: st, srv: httptest.NewServer(srv), token: "token-apps", id: 1}
@@ -113,7 +113,11 @@ func TestSecurityReportRoundTrip(t *testing.T) {
 	t0 := time.Now().UTC().Truncate(time.Second)
 	tailscale := security.Listener{Protocol: "udp", Address: "0.0.0.0", Port: 41641, Allowed: true}
 	web := security.Listener{Protocol: "tcp", Address: "0.0.0.0", Port: 8080, Docker: true}
-	if status, body := h.call(t, "PUT", "/v1/machines/apps/security", h.token, report(t0, 2, tailscale, web)); status != 204 {
+	// cloudflared is allowed by its name, so each port its QUIC connections bind is; another program on the same port isn't.
+	cloudflared, cloudflared2 := "cloudflared", "cloudflared2"
+	quic := security.Listener{Protocol: "udp", Address: "0.0.0.0", Port: 54637, Process: &cloudflared}
+	other := security.Listener{Protocol: "udp", Address: "0.0.0.0", Port: 54638, Process: &cloudflared2}
+	if status, body := h.call(t, "PUT", "/v1/machines/apps/security", h.token, report(t0, 2, tailscale, web, quic, other)); status != 204 {
 		t.Fatalf("PUT: %d %s", status, body)
 	}
 	if status, _ := h.call(t, "PUT", "/v1/machines/apps/security", "", report(t0, 0)); status != 401 {
@@ -124,7 +128,8 @@ func TestSecurityReportRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &st); status != 200 || err != nil {
 		t.Fatalf("GET: %d %s", status, body)
 	}
-	if st.Machine != "apps" || len(st.Listeners.Ports) != 2 || !st.Listeners.Ports[0].Allowed || st.Listeners.Ports[1].Allowed ||
+	if st.Machine != "apps" || len(st.Listeners.Ports) != 4 || !st.Listeners.Ports[0].Allowed || st.Listeners.Ports[1].Allowed ||
+		!st.Listeners.Ports[2].Allowed || st.Listeners.Ports[3].Allowed ||
 		st.SecurityUpdatesSince == nil || !st.SecurityUpdatesSince.Equal(t0) || strings.Contains(body, "previous") {
 		t.Errorf("state = %s", body)
 	}
@@ -135,7 +140,7 @@ func TestSecurityReportRoundTrip(t *testing.T) {
 	}
 	all, err := h.store.All(context.Background())
 	if err != nil || all[h.id].SecurityUpdatesSince == nil || !all[h.id].SecurityUpdatesSince.Equal(t0) || all[h.id].Previous == nil ||
-		len(all[h.id].Previous.Listeners.Ports) != 2 {
+		len(all[h.id].Previous.Listeners.Ports) != 4 {
 		t.Fatalf("all = %+v %v", all[h.id], err)
 	}
 	if status, _ := h.call(t, "PUT", "/v1/machines/apps/security", h.token, report(t0.Add(30*time.Minute), 0)); status != 204 {

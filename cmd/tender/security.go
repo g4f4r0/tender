@@ -94,7 +94,7 @@ func printSecurity(s session, st security.State) {
 			rows[i] = []string{p.Key(), p.Address, who, note}
 		}
 		printTable(s.out, []string{"PORT", "ADDRESS", "PROCESS", "NOTE"}, rows)
-		say(s.out, "\nAllow an expected port with: tender machines set %s --allow-port PORT", st.Machine)
+		say(s.out, "\nAllow an expected port with: tender machines set %s --allow-port PORT, or all of a program's with --allow-port PROGRAM", st.Machine)
 	}
 }
 

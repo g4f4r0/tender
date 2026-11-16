@@ -15,7 +15,7 @@ The hub asks GitHub for the latest stable release every 6 hours. A rollout updat
 2. The job downloads the release, checks the signature of its `SHA256SUMS` against the keys built into Tender, then checks the binary against `SHA256SUMS`. A release that isn't signed by Tender's key never installs.
 3. It runs the new binary's `tender version` and checks that it reads the machine's daemon config and hub settings.
 4. It keeps the current binary as `/usr/local/bin/tender.previous`.
-5. It waits for a running backup or action to finish, however long it takes, then swaps the binary and restarts the services. A busy machine isn't a failed update: the rollout waits with it. Only a machine that stops reporting for 30 minutes fails its step.
+5. It waits for a running backup or action to finish, however long it takes. On the hub's machine it then stops the hub and copies its database, with its `-wal` and `-shm` files, to `<database>.before-<version>`, such as `/var/lib/tender/hub/hub.db.before-0.4.2`, owned by `tender` with mode `0600`. The last two copies stay. Then it swaps the binary and restarts the services. A busy machine isn't a failed update: the rollout waits with it. Only a machine that stops reporting for 30 minutes fails its step.
 6. Within 2 minutes, `tenderd` must be active and have reported to the hub on the new version. On the hub's machine, `tenderhub` must be active and answer `GET /v1/health` with `200`. When root updates a machine by hand, the hub may be down, so instead of the report the new binary's `tender daemon --check` must pass.
 7. Otherwise it puts the previous binary back, restarts the services and reports the failure.
 
@@ -93,11 +93,11 @@ Each release carries the file `tender-release.json`, listed in its signed `SHA25
 Each machine takes a minute or two, and longer while a backup runs.
 
 > [!IMPORTANT]
-> From v0.4 the hub refuses every request from people and AI clients until it has an API token. A rollout to v0.4 updates the hub's machine first and then goes on by itself; to follow it, make your token on the hub machine with `sudo tender tokens add NAME`, as [Update to v0.4](install.md#update-to-v04) explains.
+> From v0.4 the hub refuses every request from people and AI clients until it has an API token. A rollout to v0.4 updates the hub's machine first and then goes on by itself; to follow it, make your token on the hub machine with `sudo tender tokens add owner`, as [Update to v0.4](install.md#update-to-v04) explains.
 
 ## When an update fails
 
-When the new version fails its health check, the machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. `tender updates show` and the `update.failed` alert give the reason, such as:
+When the new version fails its health check, the machine rolls back to the version it ran, and the rollout stops there, so the machines after it keep their version. The new version may have migrated the hub's database, which the old one can't read, so on the hub's machine the rollback stops the hub and puts back the copy from before the update, then starts the old version. What the hub stored on the new version in the meantime is lost, and the reason says the database was put back. `tender updates show` and the `update.failed` alert give the reason, such as:
 
 ```text
 Rollout 4 of 0.3.2, failed, started 12 minutes ago:

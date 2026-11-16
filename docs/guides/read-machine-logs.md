@@ -5,7 +5,7 @@ Print the newest entries of a machine's systemd journal, filtered by unit, prior
 ## Prerequisites
 
 1. A daemon on the machine, installed or updated with Tender v0.3.0 or later, so it runs as root and can read the journal.
-2. The `tender` command on a machine that can reach the hub, with your API token in `TENDER_TOKEN`.
+2. The `tender` command on a machine that can reach the hub, with your API token in `~/.config/tender/token` or `TENDER_TOKEN`.
 
 ## Read the journal
 

@@ -6,7 +6,7 @@ The examples add a machine called `apps`. Use each new machine's own name.
 
 ## Prerequisites
 
-1. A running hub with a destination, and your API token in `TENDER_TOKEN`. `tender destinations list` shows the destinations.
+1. A running hub with a destination, and your API token in `~/.config/tender/token` or `TENDER_TOKEN`. `tender destinations list` shows the destinations.
 2. Root on the new machine, with Linux on x86_64 and systemd.
 3. The new machine can reach the hub, such as over your tailnet.
 

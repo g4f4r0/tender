@@ -35,7 +35,7 @@ func writeFolder(dir string, d Deployment) error {
 	}
 	for _, p := range SortedKeys(d.Files) {
 		if dir := path.Dir(p); dir != "." {
-			if err := root.MkdirAll(dir, 0o755); err != nil {
+			if err := mkdirAll(root, dir); err != nil {
 				return fmt.Errorf("make the folder of %s: %w", p, err)
 			}
 		}
@@ -101,12 +101,37 @@ func makeVolumes(dir string, r Rendered) error {
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	if err := root.MkdirAll("volumes", 0o755); err != nil {
+	if err := mkdirAll(root, "volumes"); err != nil {
 		return fmt.Errorf("make the volumes folder: %w", err)
 	}
 	for _, v := range SortedKeys(r.Volumes) {
-		if err := root.Mkdir(path.Join("volumes", v), 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err := mkdir(root, path.Join("volumes", v)); err != nil {
 			return fmt.Errorf("make the folder of volume %s: %w", v, err)
+		}
+	}
+	return nil
+}
+
+// mkdir makes the folder name in root with mode 0755, so a container that runs as another user
+// than root can read it. The daemon's unit has UMask=0077, so the mode is set after the folder is
+// made. A folder already there keeps its mode, which its container may have set.
+func mkdir(root *os.Root, name string) error {
+	err := root.Mkdir(name, 0o755)
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return root.Chmod(name, 0o755)
+}
+
+// mkdirAll is mkdir for name and each folder above it in root.
+func mkdirAll(root *os.Root, name string) error {
+	parts := strings.Split(path.Clean(name), "/")
+	for i := range parts {
+		if err := mkdir(root, path.Join(parts[:i+1]...)); err != nil {
+			return err
 		}
 	}
 	return nil

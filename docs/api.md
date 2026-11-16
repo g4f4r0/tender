@@ -542,7 +542,7 @@ Changes a machine's settings: its own update mode, the ports that may listen on 
 | --- | --- | --- | --- |
 | `machine` | string | Yes | Path. The machine's name. |
 | `updates` | string | No | Body. `inherit` follows the hub's update mode, as [Updates](updates.md#choose-auto-or-manual) explains; `auto` or `manual` is the machine's own. |
-| `security_allowed_ports` | array of strings | No | Body. The whole allowlist, which replaces the old one: ports with their protocol, such as `["41641/udp", "443/tcp"]`, at most 100. |
+| `security_allowed_ports` | array of strings | No | Body. The whole allowlist, which replaces the old one: ports with their protocol, such as `["41641/udp", "443/tcp"]`, and programs as `ss` names them, such as `"cloudflared"`, whose every port is allowed, at most 100 in all. A program's name is 1 to 32 letters, digits, dots, dashes and underscores, not digits only. |
 | `security_alerts` | boolean | No | Body. Whether the machine's security alerts open. Off, its open ones resolve within a minute. |
 
 #### Example request

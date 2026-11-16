@@ -12,8 +12,6 @@ People and AI clients reach the hub with an API token, and the installer publish
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/g4f4r0/tender/main/install.sh | sudo sh -s -- hub
-sudo tender tokens add laptop   # prints your API token once
-export TENDER_TOKEN=tender_...
 tender destinations add r2 --endpoint https://<account-id>.r2.cloudflarestorage.com --bucket my-backups --path tender
 tender machines add apps
 tender backups set apps --destination r2 --schedule "30 3 * * *" --retention-days 30

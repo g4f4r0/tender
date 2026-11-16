@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -461,10 +462,9 @@ func TestHubFreshInstall(t *testing.T) {
 	if got := e.commands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	// The first API token is made on the hub machine, which the next steps say before anything else.
-	if out := e.out.String(); !strings.Contains(out, "sudo tender tokens add NAME") || !strings.Contains(out, "export TENDER_TOKEN=") ||
-		strings.Index(out, "tokens add") > strings.Index(out, "destinations add") {
-		t.Errorf("the next steps don't start with making the API token:\n%s", out)
+	// The install makes the first API token itself, so the next steps have no step for it.
+	if out := e.out.String(); strings.Contains(out, "tokens add") || strings.Contains(out, "export TENDER_TOKEN=") {
+		t.Errorf("the next steps still make the API token by hand:\n%s", out)
 	}
 	if e.mode(t, "/etc/tender/hub.env") != 0o600 || e.mode(t, "/etc/systemd/system/tenderhub.service") != 0o644 || e.mode(t, "/usr/local/bin/tender") != 0o755 {
 		t.Error("wrong modes")
@@ -825,5 +825,111 @@ func TestHubDatabase(t *testing.T) {
 	}
 	if got := HubDatabase(root); got != filepath.Join(root, "/srv/hub.db") {
 		t.Errorf("with TENDER_DATABASE: %s", got)
+	}
+}
+
+// install hub makes the API token owner and saves it for the user who ran sudo, in a folder and
+// file only they can read, and never prints it. A token file already there stays, and no token is
+// made; without SUDO_USER the token is root's. When it can't make one, it says how, and goes on.
+func TestHubSavesTheOwnerToken(t *testing.T) {
+	e := newEnv(t)
+	const value = "tender_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+	var made []string
+	e.in.MakeToken = func(_ context.Context, database string) (string, string, error) {
+		made = append(made, database)
+		return "owner", value, nil
+	}
+	homes := map[string]string{"alice": "/home/alice", "root": "/root"}
+	e.in.LookupUser = func(name string) (*user.User, error) {
+		home, ok := homes[name]
+		if !ok {
+			return nil, errors.New("unknown user " + name)
+		}
+		return &user.User{Username: name, Uid: "1000", Gid: "1001", HomeDir: home}, nil
+	}
+	for _, home := range homes {
+		if err := os.MkdirAll(e.path(home), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.in.SudoUser = "alice"
+	if err := e.in.Hub(context.Background(), HubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	file := "/home/alice/.config/tender/token"
+	if got := e.read(t, file); got != value+"\n" || e.mode(t, file) != 0o600 || e.mode(t, "/home/alice/.config/tender") != 0o700 ||
+		e.mode(t, "/home/alice/.config") != 0o700 {
+		t.Errorf("token file %q, modes %o %o %o", got, e.mode(t, file), e.mode(t, "/home/alice/.config/tender"), e.mode(t, "/home/alice/.config"))
+	}
+	commands := e.commands()
+	for _, p := range []string{"/home/alice/.config", "/home/alice/.config/tender", file} {
+		if !slices.Contains(commands, "chown -h 1000:1001 "+e.path(p)) {
+			t.Errorf("%s isn't given to alice: %q", p, commands)
+		}
+	}
+	if len(made) != 1 || made[0] != e.path("/var/lib/tender/hub/hub.db") {
+		t.Errorf("tokens made in %q", made)
+	}
+	if out := e.out.String(); !strings.Contains(out, "Saved your API token owner in "+file+", where the tender command finds it.\n") || strings.Contains(out, value) {
+		t.Errorf("output:\n%s", out)
+	}
+
+	// Again: the file stays, and no token is made.
+	if err := e.in.Hub(context.Background(), HubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(made) != 1 || e.read(t, file) != value+"\n" {
+		t.Errorf("a second run made %d tokens", len(made))
+	}
+
+	// Without SUDO_USER, the token is root's; a token that can't be made is said, and the install goes on.
+	e.in.SudoUser = ""
+	e.in.MakeToken = func(context.Context, string) (string, string, error) {
+		return "", "", errors.New("the hub has no database yet")
+	}
+	e.out.Reset()
+	if err := e.in.Hub(context.Background(), HubOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.out.String(), "Could not make your API token: the hub has no database yet. Make it on this machine with: sudo tender tokens add owner") {
+		t.Errorf("output:\n%s", e.out.String())
+	}
+	if _, err := os.Stat(e.path("/root/.config/tender/token")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a token file without a token: %v", err)
+	}
+}
+
+// What the deploy path runs works under the daemon's sandbox: ufw takes /run/ufw.lock for every
+// command and writes /etc/ufw, and iptables's legacy backend takes /run/xtables.lock, so those are
+// the only writable paths outside the daemon's own, and the lock files exist before the sandbox
+// binds them; docker keeps its config in the state folder, since ~/.docker is read-only.
+func TestDaemonUnitLetsTheDeployRun(t *testing.T) {
+	e := newEnv(t)
+	b, err := e.in.daemonUnit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(b)
+	values := map[string][]string{}
+	for _, line := range strings.Split(unit, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(line, "#") {
+			values[k] = append(values[k], v)
+		}
+	}
+	for k, want := range map[string]string{"ProtectSystem": "strict", "ProtectHome": "read-only", "PrivateTmp": "yes",
+		"ExecStartPre": "-+touch /run/ufw.lock /run/xtables.lock", "ReadWritePaths": "-/etc/ufw -/run/ufw.lock -/run/xtables.lock"} {
+		if got := values[k]; len(got) != 1 || got[0] != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	// A writable path under /run must be one the touch makes, since systemd binds only paths that exist.
+	touched := strings.Fields(strings.TrimPrefix(values["ExecStartPre"][0], "-+touch"))
+	for _, p := range strings.Fields(values["ReadWritePaths"][0]) {
+		if p = strings.TrimPrefix(p, "-"); strings.HasPrefix(p, "/run/") && !slices.Contains(touched, p) {
+			t.Errorf("%s is writable, but nothing makes it before the daemon starts", p)
+		}
+	}
+	if !slices.Contains(values["Environment"], "DOCKER_CONFIG=%S/tender/daemon/docker") || !strings.Contains(unit, "\nStateDirectory=tender/daemon ") {
+		t.Errorf("docker's config isn't in the daemon's state folder: %q", values["Environment"])
 	}
 }

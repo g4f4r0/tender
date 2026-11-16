@@ -5,7 +5,7 @@ Restart, stop or start a service, or one of its containers, on any machine, and 
 ## Prerequisites
 
 1. A daemon on the machine, reporting its services. `tender services list apps` lists them.
-2. The `tender` command on a machine that can reach the hub, with your API token in `TENDER_TOKEN`. Off the hub machine, set `TENDER_HUB` or pass `--hub`.
+2. The `tender` command on a machine that can reach the hub, with your API token in `~/.config/tender/token` or `TENDER_TOKEN`. Off the hub machine, set `TENDER_HUB` or pass `--hub`.
 
 ## Restart a service
 

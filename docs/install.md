@@ -19,9 +19,10 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
      --smtp-host smtp.example.com --smtp-from "Tender <alerts@example.com>" --smtp-username alerts@example.com
    ```
 
-   The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. It writes `/etc/tender/hub.env` with a new encryption key, starts the `tenderhub` service and publishes the hub on your tailnet. It prints the hub's address:
+   The installer downloads the latest release, checks it against the release's `SHA256SUMS` and installs `/usr/local/bin/tender`. It asks for the SMTP password with typing hidden. It writes `/etc/tender/hub.env` with a new encryption key, starts the `tenderhub` service and publishes the hub on your tailnet. It makes your API token, `owner`, and saves it for you, then prints the hub's address:
 
    ```text
+   Saved your API token owner in /home/you/.config/tender/token, where the tender command finds it.
    The hub is running at https://apps.your-tailnet.ts.net.
    The tender command on this machine finds it by itself.
    Anywhere else, set TENDER_HUB=https://apps.your-tailnet.ts.net or pass --hub https://apps.your-tailnet.ts.net.
@@ -35,23 +36,7 @@ The [quickstart](quickstart.md) does all of this for one machine. This page cove
 
    Its key decrypts the destination keys and passwords the hub stores. The hub won't start without the same key.
 
-3. Make your API token. Every `tender` command and AI client sends one, and the hub refuses requests without it:
-
-   ```sh
-   sudo tender tokens add laptop
-   ```
-
-   ```text
-   Made API token laptop.
-
-   The token, shown only now. Save it before you go on:
-     tender_<43 characters>
-
-   Use it from the tender command:
-     export TENDER_TOKEN=tender_<43 characters>
-   ```
-
-   Save it in your password manager, and set `TENDER_TOKEN` to it in your shell. Make one token for each person and AI client with `tender tokens add NAME`, as [Security](security.md#api-tokens) explains.
+Every `tender` command and AI client sends an API token, and the hub refuses requests without one. The install saves yours in `~/.config/tender/token` of the user who ran `sudo`, in a folder and file only that user can read, so every `tender` command you run on this machine sends it. A token file already there stays, and the install makes no new token. The token is never printed. Make one token for each other machine, person and AI client with `tender tokens add NAME`, as [Security](security.md#api-tokens) explains.
 
 Leave out the `--smtp-` options to start without email. Run the command again with them later; it keeps the key and every setting you don't pass, and removes one you pass empty, as [`tender install hub`](cli.md#tender-install-hub) explains. To install a specific release, put `TENDER_VERSION=v0.3.0` before `sh`.
 
@@ -117,7 +102,7 @@ To install without a terminal, such as from a provisioning script, save the toke
 
 ## The daemon runs as root
 
-The daemon, `tenderd`, runs as root, so it can back up every file, control Docker, read the journal and check the machine's security. A systemd sandbox lets it write only its own folders, and holds it to three capabilities. [Security](security.md#what-the-daemon-can-do) explains what it can do. The hub stays the unprivileged `tender` user.
+The daemon, `tenderd`, runs as root, so it can back up every file, control Docker, read the journal and check the machine's security. A systemd sandbox lets it write only its own folders and ufw's rules, and holds it to three capabilities. [Security](security.md#what-the-daemon-can-do) explains what it can do. The hub stays the unprivileged `tender` user.
 
 The daemon reaches Docker at `/var/run/docker.sock`. If you install Docker after Tender, nothing needs to change: the daemon finds it within a minute.
 
@@ -147,7 +132,7 @@ sudo tender update --version 0.3.0
 
 ### Update to v0.4
 
-From v0.4 the hub refuses every request from people and AI clients until it has an API token, so after the update make the first one on the hub machine with `sudo tender tokens add NAME`. The daemons keep working with their machine tokens.
+From v0.4 the hub refuses every request from people and AI clients until it has an API token. A hub installed new makes yours itself, but a hub updated from v0.3 has none, so after the update make the first one on the hub machine with `sudo tender tokens add owner`. The daemons keep working with their machine tokens.
 
 1. Update the hub's machine, through the hub or by hand. By hand, the update ends with the same sentence:
 
@@ -163,10 +148,17 @@ From v0.4 the hub refuses every request from people and AI clients until it has 
 2. On the hub machine, make your token:
 
    ```sh
-   sudo tender tokens add laptop
+   sudo tender tokens add owner
    ```
 
-3. Set `TENDER_TOKEN` to it wherever you run `tender`, and give each AI client its own token, as [Connect an AI client](guides/connect-an-ai-client.md) shows.
+   It prints the token once, with a line that saves it where the `tender` command finds it, the same file a new install writes:
+
+   ```text
+   Or save it for the tender command on another machine:
+     mkdir -p ~/.config/tender && (umask 077; printf %s 'tender_<43 characters>' > ~/.config/tender/token)
+   ```
+
+3. Run that line as yourself, without `sudo`, on the hub machine and wherever else you run `tender`. Give each AI client its own token, as [Connect an AI client](guides/connect-an-ai-client.md) shows.
 
 4. Give `/metrics` scrapers a token too, as [Metrics](metrics.md#scrape-the-hub) shows.
 

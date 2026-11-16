@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -69,6 +70,15 @@ type Installer struct {
 	// HubTokens reports whether the hub's database has an API token. After an update of a hub with
 	// none, or when it can't tell, the update says how to make the first. Nil can't tell.
 	HubTokens func(ctx context.Context, database string) (bool, error)
+
+	// MakeToken waits for the hub that "install hub" started to make its database, then makes an
+	// API token in it and returns its name and value. Nil makes none.
+	MakeToken func(ctx context.Context, database string) (name, value string, err error)
+	// SudoUser is the user who ran the install with sudo, SUDO_USER: the API token "install hub"
+	// makes is saved for them. Empty saves it for root.
+	SudoUser string
+	// LookupUser finds a user's home folder and IDs; user.Lookup when nil.
+	LookupUser func(name string) (*user.User, error)
 
 	changed bool // some file changed during this run
 }
@@ -477,9 +487,6 @@ The hub is running at ` + hub + `.
 ` + where + `
 
 Next:
-  0. Make your API token, which every tender command and AI client sends, and keep it:
-       sudo tender tokens add NAME
-       export TENDER_TOKEN=THE_TOKEN
   1. Add a destination for the backups; it asks for the S3 keys and makes the repository password:
        tender destinations add NAME --endpoint URL --bucket BUCKET
   2. Add a machine and keep the token it prints once:
@@ -571,11 +578,84 @@ func (in *Installer) Hub(ctx context.Context, o HubOptions) error {
 		listen = defaultListen
 	}
 	url, published := in.serve(ctx, "http://"+listen)
+	in.saveOwnerToken(ctx)
 	switch {
 	case !existed:
 		in.say(hubNext(url, listen, envValue(env, "TENDER_SMTP_HOST") != ""))
 	case !in.changed && !published && !in.Refreshing:
 		in.say("tenderhub is already installed and up to date. Nothing to change.")
 	}
+	return nil
+}
+
+// tokenPath is where the tender command reads its API token, under a user's home folder.
+const tokenPath = ".config/tender/token"
+
+// saveOwnerToken makes the hub's API token owner and saves it in the token file of the user who
+// ran the install with sudo, or root's, so the tender command finds it. A token file already there
+// stays, and no token is made. It never prints the token. When it can't, it says how to make one
+// by hand, and the install goes on.
+func (in *Installer) saveOwnerToken(ctx context.Context) {
+	if in.MakeToken == nil {
+		return
+	}
+	if err := in.makeOwnerToken(ctx); err != nil {
+		in.say("Could not make your API token: %v. Make it on this machine with: sudo tender tokens add owner", err)
+	}
+}
+
+func (in *Installer) makeOwnerToken(ctx context.Context) error {
+	name := in.SudoUser
+	if name == "" {
+		name = "root"
+	}
+	lookup := in.LookupUser
+	if lookup == nil {
+		lookup = user.Lookup
+	}
+	u, err := lookup(name)
+	if err != nil {
+		return fmt.Errorf("cannot find the user %s: %w", name, err)
+	}
+	if !filepath.IsAbs(u.HomeDir) {
+		return fmt.Errorf("the user %s has no home folder", name)
+	}
+	file := filepath.Join(u.HomeDir, tokenPath)
+	if _, err := os.Lstat(in.path(file)); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return err // a token file already there stays
+	}
+	owner := u.Uid + ":" + u.Gid
+	// ~/.config, when missing, and its tender folder are the user's, and only theirs.
+	for _, dir := range []string{filepath.Dir(filepath.Dir(file)), filepath.Dir(file)} {
+		if _, err := os.Lstat(in.path(dir)); err == nil {
+			continue
+		}
+		if err := os.Mkdir(in.path(dir), 0o700); err != nil {
+			return err
+		}
+		if _, err := in.run(ctx, "chown", "-h", owner, in.path(dir)); err != nil {
+			return err
+		}
+	}
+	if fi, err := os.Lstat(in.path(filepath.Dir(file))); err != nil || !fi.IsDir() {
+		return fmt.Errorf("%s isn't a folder", filepath.Dir(file))
+	}
+	token, value, err := in.MakeToken(ctx, HubDatabase(in.Root))
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(in.path(file), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString(value + "\n")
+	if err := errors.Join(werr, f.Close()); err != nil {
+		return err
+	}
+	if _, err := in.run(ctx, "chown", "-h", owner, in.path(file)); err != nil {
+		return err
+	}
+	in.changed = true
+	in.say("Saved your API token %s in %s, where the tender command finds it.", token, file)
 	return nil
 }

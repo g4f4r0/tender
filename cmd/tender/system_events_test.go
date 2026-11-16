@@ -56,6 +56,18 @@ func TestSecurityFindings(t *testing.T) {
 		{"auto updates", secured(manual(clean()), manual(clean())), []string{"security.auto_updates_off:warning:"}},
 		{"ports, each its own, the allowed one and a new one left out", secured(ports("8080/tcp", "41641/udp", "5432/tcp")(clean()), ports("8080/tcp", "41641/udp")(clean())),
 			[]string{"security.port_exposed:warning:8080/tcp"}},
+		{"a program on the allowlist, with a new UDP port on each reconnect", func() *machineSecurity {
+			quic := func(port string) func(r *securityFacts) *securityFacts {
+				return func(r *securityFacts) *securityFacts {
+					r.Listeners = append(r.Listeners, listener{Port: port, Address: "0.0.0.0", Process: "cloudflared"},
+						listener{Port: "51820/udp", Address: "0.0.0.0", Process: "wireguard"})
+					return r
+				}
+			}
+			s := secured(quic("54637/udp")(clean()), quic("54637/udp")(clean()))
+			s.AllowedPorts = append(s.AllowedPorts, "cloudflared")
+			return s
+		}(), []string{"security.port_exposed:warning:51820/udp"}},
 		{"first report", secured(off(clean()), nil), []string{}},
 		{"notifications off", func() *machineSecurity { s := secured(off(clean()), off(clean())); s.Enabled = false; return s }(), []string{}},
 		{"no reports", nil, []string{}},

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -177,6 +178,33 @@ func TestCheckFilesAndEnv(t *testing.T) {
 	for h, want := range map[string]bool{"app.example.com": true, "a.b": true, "example": false, "App.example.com": false, "a..b": false, "a.b.": false} {
 		if ValidHost(h) != want {
 			t.Errorf("ValidHost(%q) = %v", h, !want)
+		}
+	}
+}
+
+// The daemon's unit has UMask=0077. The folders of a service's files and volumes still get 0755, so
+// a container that runs as another user than root can read them; a volume's folder already there
+// keeps the mode its container gave it.
+func TestFolderModesUnderTheUnitsUmask(t *testing.T) {
+	defer syscall.Umask(syscall.Umask(0o077))
+	dir := filepath.Join(t.TempDir(), "notes")
+	if err := writeFolder(dir, Deployment{Name: "notes", Compose: "x", Files: map[string]string{"config/app/app.toml": "x = 1\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "volumes", "kept"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r, err := ParseRendered([]byte(`{"services":{"web":{"image":"x"}},"volumes":{"db":{},"kept":{}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := makeVolumes(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]os.FileMode{"config": 0o755, "config/app": 0o755, "config/app/app.toml": 0o644, "volumes/db": 0o755,
+		"volumes/kept": 0o700, ".": 0o700, "compose.yaml": 0o600} {
+		if got := mode(t, filepath.Join(dir, p)); got != want {
+			t.Errorf("%s: %o, want %o", p, got, want)
 		}
 	}
 }

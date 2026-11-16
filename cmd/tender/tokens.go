@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/install"
+	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/tokens"
 )
 
@@ -64,7 +67,7 @@ func tokensList(args []string, s session) error {
 
 func tokensAdd(args []string, s session) error {
 	fs := newFlagSet("tokens add", "NAME [--hub URL] [--database PATH]",
-		"Make an API token and print it, once. Save it, then set TENDER_TOKEN to it, or give it to an AI client.\n\n"+
+		"Make an API token and print it, once. Save it in ~/.config/tender/token, set TENDER_TOKEN to it, or give it to an AI client.\n\n"+
 			"Run as root on the hub machine with no token, as \"sudo tender tokens add NAME\", it writes to the hub's database "+
 			"directly: that is how the first token is made. Otherwise it asks the hub, with the token you have.")
 	hubURL := hubFlag(fs)
@@ -77,8 +80,12 @@ func tokensAdd(args []string, s session) error {
 	if err != nil {
 		return err
 	}
+	token, _, err := apiToken(fs)
+	if err != nil {
+		return err
+	}
 	var created tokens.TokenCreated
-	if apiToken(fs) == "" && isRoot() {
+	if token == "" && isRoot() {
 		path := *database
 		if path == "" {
 			path = os.Getenv(config.EnvDatabase)
@@ -105,8 +112,16 @@ func tokensAdd(args []string, s session) error {
 	say(s.out, "The token, shown only now. Save it before you go on:")
 	say(s.out, "  %s\n", created.Value)
 	say(s.out, "Use it from the tender command:")
-	say(s.out, "  export %s=%s", envToken, created.Value)
+	say(s.out, "  export %s=%s\n", envToken, created.Value)
+	say(s.out, "Or save it for the tender command on another machine:")
+	say(s.out, "  %s", saveTokenLine(created.Value))
 	return nil
+}
+
+// saveTokenLine is a shell line that saves token as the tender command's token file, readable by
+// its owner only.
+func saveTokenLine(token string) string {
+	return "mkdir -p ~/.config/tender && (umask 077; printf %s '" + token + "' > ~/.config/tender/token)"
 }
 
 // addTokenToDatabase makes a token in the hub's database at path, without the hub. The database
@@ -131,6 +146,38 @@ func addTokenToDatabase(ctx context.Context, path, name string) (tokens.TokenCre
 		return tokens.NewStore(d).Create(ctx, name)
 	}()
 	return created, errors.Join(err, d.Close())
+}
+
+// ownerWait is how long "install hub" waits for the hub it started to make its database.
+var ownerWait = time.Minute
+
+// makeOwnerToken waits up to ownerWait for the hub that "install hub" just started to make its
+// database at path with the current schema, then makes the API token owner in it, or owner-2 and
+// up when that name is taken, and returns its name and value.
+func makeOwnerToken(ctx context.Context, path string) (string, string, error) {
+	deadline := time.Now().Add(ownerWait)
+	for n := 1; ; {
+		name := "owner"
+		if n > 1 {
+			name += "-" + strconv.Itoa(n)
+		}
+		created, err := addTokenToDatabase(ctx, path, name)
+		var e *server.Error
+		switch {
+		case err == nil:
+			return created.Name, created.Value, nil
+		case errors.As(err, &e) && e.Status == http.StatusConflict && n < 9:
+			n++
+			continue
+		case errors.As(err, &e) || !time.Now().Before(deadline):
+			return "", "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // giveToOwner gives the database's WAL and shared-memory files to the owner of the database, fi,

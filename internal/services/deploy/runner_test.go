@@ -20,7 +20,8 @@ import (
 )
 
 // fakeDocker writes a docker program that logs each call, with its folder and the registry logins
-// it was given, and prints rendered for docker compose config. A step named in fail exits 1.
+// it was given, and prints rendered for docker compose config, with @PROJECT@ in it as the project
+// that -p names, as compose names its networks and volumes. A step named in fail exits 1.
 func fakeDocker(t *testing.T, rendered, fail string) (bin, log string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,12 +32,13 @@ func fakeDocker(t *testing.T, rendered, fail string) (bin, log string) {
 	bin = filepath.Join(dir, "docker")
 	script := `#!/bin/sh
 echo "$(pwd) | $* | $(cat "$DOCKER_CONFIG/config.json" 2>/dev/null) | checked=$(tr -d '\n\t' < "$DOCKER_CONFIG/compose.checked.json" 2>/dev/null)" >> ` + log + `
-for a in "$@"; do last="$a"; done
+project=; prev=
+for a in "$@"; do last="$a"; [ "$prev" = -p ] && project="$a"; prev="$a"; done
 d=$(dirname "$0")
 if [ "$1" = inspect ]; then cat "$d/inspect.json"; exit 0; fi
 for a in "$@"; do
   case "$a" in
-    config) cat ` + out + `; exit 0 ;;
+    config) sed "s/@PROJECT@/$project/g" ` + out + `; exit 0 ;;
     ps) cat "$d/ps.out" 2>/dev/null; exit 0 ;;
     ` + fail + `) echo "Error response from daemon: it broke" >&2; exit 1 ;;
   esac
@@ -108,8 +110,15 @@ func deployment(t *testing.T, d Deployment) json.RawMessage {
 	return b
 }
 
-const goodRendered = `{"services":{"web":{"image":"ghcr.io/me/notes:1","mem_limit":"536870912"},"db":{"image":"postgres:17","mem_limit":"1073741824",
-	"volumes":[{"type":"volume","source":"pg","target":"/var/lib/postgresql/data"}]}},"volumes":{"pg":{}}}`
+// goodRendered, for the project @PROJECT@, is shaped as Compose v5 prints "config --format json" (see
+// testdata/compose-v5.7.1-config.json), with the defaults the file never set: the default network
+// with ipam: {}, entrypoint: null, networks: {default: null}, volume: {} on a mount, mem_limit in
+// bytes as a string, environment as a map and command as a list.
+const goodRendered = `{"name":"@PROJECT@","networks":{"default":{"name":"@PROJECT@_default","ipam":{}}},
+	"services":{"web":{"command":["serve","--port","8080"],"entrypoint":null,"image":"ghcr.io/me/notes:1","mem_limit":"536870912",
+	"networks":{"default":null}},"db":{"command":null,"entrypoint":null,"environment":{"PGDATA":"/var/lib/postgresql/data/pg"},
+	"image":"postgres:17","mem_limit":"1073741824","networks":{"default":null},
+	"volumes":[{"type":"volume","source":"pg","target":"/var/lib/postgresql/data","volume":{}}]}},"volumes":{"pg":{"name":"@PROJECT@_pg"}}}`
 
 func TestDeploy(t *testing.T) {
 	docker, log := fakeDocker(t, goodRendered, "never")
@@ -151,7 +160,7 @@ func TestDeploy(t *testing.T) {
 	for i, step := range []string{"pull", "up -d --remove-orphans --wait --wait-timeout 300"} {
 		line := got[i+1]
 		if !strings.Contains(line, "/compose.checked.json -f "+folder+"/compose.tender.yaml "+step+" | ") || strings.Contains(line, "-f compose.yaml") ||
-			strings.Contains(line, folder+"/compose.checked.json") || !strings.HasSuffix(line, "checked="+strings.NewReplacer("\n", "", "\t", "").Replace(goodRendered)) {
+			strings.Contains(line, folder+"/compose.checked.json") || !strings.HasSuffix(line, "checked="+strings.NewReplacer("\n", "", "\t", "", "@PROJECT@", "notes").Replace(goodRendered)) {
 			t.Errorf("%s = %q; want it on the checked config", step, line)
 		}
 	}

@@ -1,6 +1,7 @@
 package security
 
 import (
+	"slices"
 	"strconv"
 	"time"
 )
@@ -30,6 +31,14 @@ type Listener struct {
 	Docker   bool    `json:"docker"`  // Docker publishes it, which goes around ufw
 	Service  *string `json:"service"` // the container that publishes it
 	Allowed  bool    `json:"allowed"` // on the machine's security_allowed_ports; set by the hub
+}
+
+// AllowedBy reports whether allowed, a machine's security_allowed_ports, allows a listener on key,
+// such as 41641/udp, of process, its program as ss names it: either the port, or the program,
+// which allows every port it listens on. A QUIC client such as cloudflared binds a new UDP port on
+// each reconnect, so only its name can allow it.
+func AllowedBy(allowed []string, key, process string) bool {
+	return slices.Contains(allowed, key) || process != "" && slices.Contains(allowed, process)
 }
 
 // Key is the listener's port and protocol, such as 41641/udp, as security_allowed_ports lists it.

@@ -3,6 +3,7 @@ package machines_test
 import (
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,13 +20,13 @@ func TestPatchMachineSettings(t *testing.T) {
 	if m.Updates != "inherit" || !m.SecurityAlerts || m.SecurityAllowedPorts == nil || len(m.SecurityAllowedPorts) != 0 || m.Version != nil {
 		t.Fatalf("defaults = %+v", m.Machine)
 	}
-	res := h.do(http.MethodPatch, "/v1/machines/apps", "", map[string]any{"updates": "manual", "security_allowed_ports": []string{"443/tcp", "41641/udp", "443/tcp"}}, &m)
-	if res.StatusCode != 200 || m.Updates != "manual" || !reflect.DeepEqual(m.SecurityAllowedPorts, []string{"41641/udp", "443/tcp"}) || !m.SecurityAlerts {
+	res := h.do(http.MethodPatch, "/v1/machines/apps", "", map[string]any{"updates": "manual", "security_allowed_ports": []string{"443/tcp", "41641/udp", "443/tcp", "cloudflared", "my_app-2.1"}}, &m)
+	if res.StatusCode != 200 || m.Updates != "manual" || !reflect.DeepEqual(m.SecurityAllowedPorts, []string{"41641/udp", "443/tcp", "cloudflared", "my_app-2.1"}) || !m.SecurityAlerts {
 		t.Fatalf("%s %+v", res.Status, m.Machine)
 	}
 	// A merge patch keeps what it leaves out.
 	if res := h.do(http.MethodPatch, "/v1/machines/apps", "", map[string]any{"security_alerts": false}, &m); res.StatusCode != 200 ||
-		m.Updates != "manual" || len(m.SecurityAllowedPorts) != 2 || m.SecurityAlerts {
+		m.Updates != "manual" || len(m.SecurityAllowedPorts) != 4 || m.SecurityAlerts {
 		t.Fatalf("%s %+v", res.Status, m.Machine)
 	}
 	for name, body := range map[string]any{
@@ -33,6 +34,11 @@ func TestPatchMachineSettings(t *testing.T) {
 		"bad port":      map[string]any{"security_allowed_ports": []string{"41641"}},
 		"port too high": map[string]any{"security_allowed_ports": []string{"70000/tcp"}},
 		"port zero":     map[string]any{"security_allowed_ports": []string{"0/udp"}},
+		"program path":  map[string]any{"security_allowed_ports": []string{"/usr/bin/cloudflared"}},
+		"program space": map[string]any{"security_allowed_ports": []string{"cloud flared"}},
+		"program long":  map[string]any{"security_allowed_ports": []string{strings.Repeat("a", 33)}},
+		"empty":         map[string]any{"security_allowed_ports": []string{""}},
+		"port tcp6":     map[string]any{"security_allowed_ports": []string{"443/sctp"}},
 	} {
 		if res := h.do(http.MethodPatch, "/v1/machines/apps", "", body, nil); res.StatusCode != 422 {
 			t.Errorf("%s: %s, want 422", name, res.Status)

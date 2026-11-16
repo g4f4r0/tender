@@ -35,10 +35,10 @@ The hub sends a sink's whole config, secrets included, only to the daemons of th
 
 People, scripts and AI clients send an API token as `Authorization: Bearer <token>`. A token is `tender_` and 32 random bytes in base64url, shown once when it is made. The hub stores only its SHA-256 hash, and notes when it was last used.
 
-1. Make the first token on the hub machine, as root:
+1. `sudo tender install hub` makes the first token, `owner`, and saves it in `~/.config/tender/token` of the user who ran `sudo`, in a folder only that user can open and a file only that user can read. It never prints the token. The `tender` command refuses a token file that other users can read. For a hub updated from v0.3, make the first token on the hub machine, as root:
 
    ```sh
-   sudo tender tokens add laptop
+   sudo tender tokens add owner
    ```
 
    As root with no token, `tender tokens add` writes to the hub's database directly, so it works while the hub has no token. Anywhere else, it asks the hub with the token you have.
@@ -84,7 +84,7 @@ The daemon, `tenderd`, runs as root. It backs up every file, controls Docker and
 A systemd sandbox keeps a bug in the daemon from changing the system:
 
 1. It holds three capabilities only. `CAP_DAC_READ_SEARCH` reads every file, for backups. `CAP_NET_ADMIN` reads the firewall's rules, and `CAP_SYS_PTRACE` names the process behind each listening socket, for the security checks. Without `CAP_DAC_OVERRIDE` it can't write another user's files.
-2. With `ProtectSystem=strict`, it can write only its own folder, `/var/lib/tender/daemon`, and restic's cache, `/var/cache/tender`.
+2. With `ProtectSystem=strict`, it can write only its own folders, `/var/lib/tender/daemon` and `/var/lib/tender/services`, restic's cache, `/var/cache/tender`, and, for [public routes](exposure.md#public), ufw's rules in `/etc/ufw` and its locks `/run/ufw.lock` and `/run/xtables.lock`. ufw takes its lock for every command, `ufw status` too, so systemd makes the two lock files before the daemon starts. With `ProtectHome=read-only`, `docker` keeps its config in `/var/lib/tender/daemon/docker` rather than `~/.docker`.
 3. `NoNewPrivileges`, the `ProtectKernel` settings and a system call filter keep it from loading modules, changing the clock or gaining privileges.
 4. It may lower a process's CPU and IO priority, which it does for restic, but without `CAP_SYS_NICE` it can't raise one. [Backups](backups.md#destinations-settings-and-runs) explains why.
 
@@ -111,7 +111,7 @@ The daemon checks its machine when it starts and every 15 minutes, and reports w
 | Check | What it reads | Alert |
 | --- | --- | --- |
 | Firewall | `ufw status verbose`, or without ufw, the input chains of `nft -j list chains`, or `iptables -S INPUT`. | `security.firewall_off` when no active firewall denies incoming traffic by default. |
-| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). A DHCP client's port (UDP 68, or 546 for DHCPv6) is left out: the client only takes the answers of the network's DHCP server. Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port is on the machine's allowlist. |
+| Listeners | `ss -lntup`: every TCP or UDP socket on an address other than loopback, link-local or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). A DHCP client's port (UDP 68, or 546 for DHCPv6) is left out: the client only takes the answers of the network's DHCP server. Docker's published ports are flagged, because they go around ufw. | `security.port_exposed`, one per port, unless the port, or the program listening on it, is on the machine's allowlist. |
 | SSH | `PasswordAuthentication` and `PermitRootLogin` from `sshd -T`. | `security.ssh_weak` when `PasswordAuthentication` is `yes`. |
 | Updates | A simulated `apt-get upgrade --with-new-pkgs`, what `tender machines upgrade --all-packages` would install, counting the updates from a security repository, and whether unattended-upgrades is on. | `security.updates_pending` after 3 days, `security.auto_updates_off`. |
 | Reboot | `/var/run/reboot-required` and its age. | `security.reboot_required` after 7 days. |
@@ -136,7 +136,7 @@ PORT        ADDRESS   PROCESS     NOTE
 41641/udp   0.0.0.0   tailscaled  allowed
 8080/tcp    0.0.0.0   -           published by Docker for web, around ufw
 
-Allow an expected port with: tender machines set apps --allow-port PORT
+Allow an expected port with: tender machines set apps --allow-port PORT, or all of a program's with --allow-port PROGRAM
 ```
 
 Allow the ports that should be reachable, such as Tailscale's:
@@ -149,7 +149,13 @@ tender machines set apps --allow-port 41641/udp
 apps: updates inherit, allowed ports 41641/udp, security alerts on.
 ```
 
-Take one off with `--deny-port`, and turn a machine's security notifications off with `--security-alerts off`. [Notifications](notifications.md#security-events) explains when each event fires.
+Allow a program by its name as `ss` shows it in the PROCESS column, and every port it listens on is allowed. That is how to allow a QUIC client such as cloudflared: it opens a new UDP port on every reconnect, which `ss` lists as listening on `0.0.0.0`, so no port number stays allowed for long:
+
+```sh
+tender machines set apps --allow-port cloudflared
+```
+
+Allow a program only when you know it, since any program can take its name. Take one off with `--deny-port`, and turn a machine's security notifications off with `--security-alerts off`. [Notifications](notifications.md#security-events) explains when each event fires.
 
 ## Upgrade a machine's packages
 

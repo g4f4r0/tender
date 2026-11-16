@@ -14,23 +14,35 @@ import (
 // portPattern is a port and its protocol, such as 41641/udp.
 var portPattern = regexp.MustCompile(`^([0-9]{1,5})/(tcp|udp)$`)
 
+// programPattern is a program's name as ss shows it, such as cloudflared, which allows every port
+// it listens on. A name of digits only is refused: it is a port without its protocol.
+var (
+	programPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,32}$`)
+	digitsPattern  = regexp.MustCompile(`^[0-9]+$`)
+)
+
 // maxAllowedPorts bounds a machine's allowlist.
 const maxAllowedPorts = 100
 
 // validPorts checks an allowlist and returns it sorted, without repeats.
 func validPorts(ports []string) ([]string, error) {
 	if len(ports) > maxAllowedPorts {
-		return nil, server.Invalid("security_allowed_ports takes at most %d ports.", maxAllowedPorts)
+		return nil, server.Invalid("security_allowed_ports takes at most %d ports and programs.", maxAllowedPorts)
 	}
 	out := []string{}
 	for _, p := range ports {
+		if programPattern.MatchString(p) && !digitsPattern.MatchString(p) {
+			out = append(out, p)
+			continue
+		}
 		m := portPattern.FindStringSubmatch(p)
 		n := 0
 		if m != nil {
 			n, _ = strconv.Atoi(m[1])
 		}
 		if n < 1 || n > 65535 {
-			return nil, server.Invalid("%q is not a port. Write each port with its protocol, such as 41641/udp or 443/tcp.", p)
+			return nil, server.Invalid("%q is not a port or a program. Write a port with its protocol, such as 41641/udp or 443/tcp, "+
+				"or a program's name as ss shows it, such as cloudflared, to allow every port it listens on.", p)
 		}
 		out = append(out, p)
 	}

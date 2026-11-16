@@ -158,7 +158,8 @@ func TestTokensCommands(t *testing.T) {
 	}
 	out, err := run("add", "laptop", "--database", path)
 	token := regexp.MustCompile(`tender_[A-Za-z0-9_-]{43}`).FindString(out)
-	if err != nil || token == "" || !strings.Contains(out, "export TENDER_TOKEN="+token) {
+	if err != nil || token == "" || !strings.Contains(out, "export TENDER_TOKEN="+token) ||
+		!strings.Contains(out, "\n  mkdir -p ~/.config/tender && (umask 077; printf %s '"+token+"' > ~/.config/tender/token)\n") {
 		t.Fatalf("bootstrap add: %v\n%s", err, out)
 	}
 	if has, err := hubHasTokens(context.Background(), path); !has || err != nil {
@@ -245,5 +246,84 @@ func TestTokenTools(t *testing.T) {
 		if strings.Contains(name, "token") && name != "list_tokens" && name != "delete_token" && name != "rotate_machine_token" {
 			t.Errorf("tool %s touches tokens; making an API token is not a tool", name)
 		}
+	}
+}
+
+// The tender command takes its API token from --token, then TENDER_TOKEN, then the token file in
+// $XDG_CONFIG_HOME/tender, or ~/.config/tender without it, trimmed. It refuses a token file other
+// users can read, and says how to fix it.
+func TestAPITokenSources(t *testing.T) {
+	home, config := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv(envToken, "")
+	token := func(args ...string) (string, string, error) {
+		fs := newFlagSet("tokens list", "", "")
+		hubFlag(fs)
+		if err := fs.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		return apiToken(fs)
+	}
+	if got, from, err := token(); got != "" || from != "" || err != nil {
+		t.Errorf("no token anywhere = %q %q %v", got, from, err)
+	}
+	file := filepath.Join(config, "tender", "token")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("  tender_from_file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, from, err := token(); got != "tender_from_file" || from != file || err != nil {
+		t.Errorf("the file = %q %q %v", got, from, err)
+	}
+	t.Setenv(envToken, "tender_from_env")
+	if got, _, _ := token(); got != "tender_from_env" {
+		t.Errorf("TENDER_TOKEN lost to the file: %q", got)
+	}
+	if got, _, _ := token("--token", "tender_from_flag"); got != "tender_from_flag" {
+		t.Errorf("--token lost: %q", got)
+	}
+	t.Setenv(envToken, "")
+	if err := os.Chmod(file, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := token(); err == nil || !strings.Contains(err.Error(), "can be read by other users (mode 0640)") ||
+		!strings.Contains(err.Error(), "chmod 600 "+file) {
+		t.Errorf("a file others can read: %v", err)
+	}
+	// A relative XDG_CONFIG_HOME is ignored, as the spec says: ~/.config it is.
+	t.Setenv("XDG_CONFIG_HOME", "relative")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "tender"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "tender", "token"), []byte("tender_from_home"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := token(); got != "tender_from_home" || err != nil {
+		t.Errorf("~/.config = %q %v", got, err)
+	}
+}
+
+// install hub's token: owner in the hub's database, then owner-2 when owner is taken. It waits for
+// the hub to make its database, and gives up after ownerWait.
+func TestMakeOwnerToken(t *testing.T) {
+	d := schema(t)
+	path := hubDatabasePath(t, d)
+	ctx := context.Background()
+	name, value, err := makeOwnerToken(ctx, path)
+	if err != nil || name != "owner" || !strings.HasPrefix(value, "tender_") {
+		t.Fatalf("first = %q %q %v", name, value, err)
+	}
+	if name, _, err := makeOwnerToken(ctx, path); err != nil || name != "owner-2" {
+		t.Errorf("owner taken = %q %v", name, err)
+	}
+	defer func(w time.Duration) { ownerWait = w }(ownerWait)
+	ownerWait = 600 * time.Millisecond
+	start := time.Now()
+	if _, _, err := makeOwnerToken(ctx, filepath.Join(t.TempDir(), "tender.db")); err == nil || !strings.Contains(err.Error(), "no hub database at") ||
+		time.Since(start) < ownerWait {
+		t.Errorf("no database: %v after %s", err, time.Since(start))
 	}
 }

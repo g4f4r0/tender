@@ -17,7 +17,7 @@ func (s *Store) RegisterTools(m *mcp.Server, lookup mcp.MachineLookup) {
 			"Debian and Ubuntu. Each check has check (ok, error or unsupported on other systems) and error. firewall: tool (ufw, "+
 			"nftables, iptables or none), active and default_incoming (deny, reject or allow). listeners.ports: every TCP or UDP socket "+
 			"listening on an address other than loopback, link-local or the tailnet, with protocol, address, port, process, docker "+
-			"(Docker publishes it, which goes around ufw), service (its container) and allowed (on the machine's "+
+			"(Docker publishes it, which goes around ufw), service (its container) and allowed (its port or its process on the machine's "+
 			"security_allowed_ports). ssh: installed, password_authentication and permit_root_login. updates: pending, security and "+
 			"unattended_upgrades. reboot: required and since. Also id, machine, security_updates_since, collected_at, created_at and updated_at. "+
 			"The alerts security.firewall_off, security.port_exposed, security.ssh_weak, security.updates_pending, security.auto_updates_off and security.reboot_required come "+

@@ -414,7 +414,7 @@ Changes a machine's settings: its own update mode, its security allowlist and wh
 | --- | --- | --- | --- |
 | `machine` | string | Yes | The machine's name, as `list_machines` shows it. |
 | `updates` | string | No | `inherit` follows the hub's update mode; `auto` or `manual` is the machine's own. |
-| `security_allowed_ports` | array of strings | No | The whole allowlist, which replaces the old one: ports such as `41641/udp` that may listen on a public address without a `security.port_exposed` notification. |
+| `security_allowed_ports` | array of strings | No | The whole allowlist, which replaces the old one: ports such as `41641/udp` that may listen on a public address without a `security.port_exposed` notification, and programs as `ss` names them, such as `cloudflared`, whose every port may. |
 | `security_alerts` | boolean | No | Whether the machine's security alerts open. |
 
 #### Returns
@@ -452,13 +452,13 @@ At most 100 allowed ports.
 
 1. `Machine "apps" doesn't exist. Call list_machines to see the names.`
 2. `updates must be inherit, auto or manual.`
-3. `"41641" is not a port. Write each port with its protocol, such as 41641/udp or 443/tcp.`
+3. `"41641" is not a port or a program. Write a port with its protocol, such as 41641/udp or 443/tcp, or a program's name as ss shows it, such as cloudflared, to allow every port it listens on.`
 
 #### Covers
 
 | REST route | CLI command |
 | --- | --- |
-| `PATCH /v1/machines/{machine}` | `tender machines set NAME --updates MODE --allow-port PORT` |
+| `PATCH /v1/machines/{machine}` | `tender machines set NAME --updates MODE --allow-port PORT|PROGRAM` |
 
 ## Security
 

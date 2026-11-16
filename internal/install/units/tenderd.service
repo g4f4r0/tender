@@ -8,7 +8,8 @@ Wants=network-online.target
 Type=simple
 # The daemon runs as root. It backs up every file, controls Docker and reads the journal, which made
 # it root-equivalent as the tender user too. The sandbox below keeps a bug from changing the system:
-# it writes only its own folders. The hub, the part on the network, stays the tender user.
+# it writes only its own folders, and ufw's rules and locks for public routes. The hub, the part on
+# the network, stays the tender user.
 User=root
 Group=root
 ExecStart=/usr/local/bin/tender daemon --config /etc/tender/daemon.toml
@@ -27,6 +28,18 @@ CacheDirectoryMode=0700
 ConfigurationDirectory=tender
 Environment=RESTIC_CACHE_DIR=%C/tender
 Environment=TENDER_RESTIC_BIN=/usr/local/bin/restic
+# docker and docker compose keep their config in DOCKER_CONFIG, else in ~/.docker, which is read-only
+# here (ProtectHome=read-only): a folder in the daemon's state folder takes its place. A deploy gives
+# compose a folder of its own, with the registry logins its images need.
+Environment=DOCKER_CONFIG=%S/tender/daemon/docker
+
+# ufw takes the lock /run/ufw.lock for every command, ufw status too, and ufw allow and delete write
+# its rules in /etc/ufw; iptables's legacy backend takes /run/xtables.lock. /run and /etc are
+# read-only here, and a path in ReadWritePaths must exist, so the lock files are made first, outside
+# the sandbox (+). Those two files and /etc/ufw are the only writable paths outside the daemon's
+# own; "-" skips them, and the touch, on a machine without ufw.
+ExecStartPre=-+touch /run/ufw.lock /run/xtables.lock
+ReadWritePaths=-/etc/ufw -/run/ufw.lock -/run/xtables.lock
 
 # The hub token is the one file in /etc/tender/credentials (0750 root:tender, file 0640). The daemon gets
 # its destination and keys from the hub and keeps them in its state folder.
