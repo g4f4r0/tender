@@ -1630,7 +1630,7 @@ A channel that fails is not an error: its delivery says `failed`, with the reaso
 
 ## Services
 
-A service is a compose project on a machine, or a container without one. Each tool that returns a service returns these fields: `id`, `machine`, `name`, `managed` (`true` when Tender deployed it), `state` (`running`, `degraded`, `stopped` or `unknown`), `deploy_status` (`deploying`, `deployed`, `failed` or `removing`, or `null` when unmanaged), `last_error` (why the last deploy or remove failed), `deployed_at`, `action_id`, `compose`, `files`, `env` (every key, each value `"***"`), `routes`, `alerts_enabled`, `containers` and the timestamps. Each route has `container`, `port`, `expose`, `host`, `https_port`, `local_port` and `url`. Each container has `name` (its compose service, such as `web`), `runtime`, `container_id`, `image`, `state`, `health`, `exit_code`, `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes`, `cpu_percent`, `stopped_by_tender`, `removed_at` and the timestamps. [Services](services.md#what-a-service-is) explains each field, and [Exposure](exposure.md#routes) the routes.
+A service is a compose project on a machine, or a container without one. Each tool that returns a service returns these fields: `id`, `machine`, `name`, `managed` (`true` when Tender deployed it), `state` (`running`, `degraded`, `stopped` or `unknown`), `deploy_status` (`deploying`, `deployed`, `failed` or `removing`, or `null` when unmanaged), `last_error` (why the last deploy or remove failed), `deployed_at`, `action_id`, `compose`, `files`, `env` (every key, each value `"***"`), `routes`, `alerts_enabled`, `containers` and the timestamps. Each route has `container`, `port`, `expose`, `host`, `https_port`, `access` (`true` when a `cloudflare` route requires Cloudflare Access), `local_port` and `url`. Each container has `name` (its compose service, such as `web`), `runtime`, `container_id`, `image`, `state`, `health`, `exit_code`, `restart_count`, `restart_policy`, `started_at`, `memory_bytes`, `memory_limit_bytes`, `cpu_percent`, `stopped_by_tender`, `removed_at` and the timestamps. [Services](services.md#what-a-service-is) explains each field, and [Exposure](exposure.md#routes) the routes.
 
 The deploy tools, `deploy_service`, `redeploy_service` and `remove_service`, queue an action for the machine's daemon and wait up to 60 seconds for it. A deploy that takes longer, such as one that pulls large images or waits for health checks, comes back with the action `pending` or `in_progress`; the hub gives it 45 minutes. Check it with `get_action`, and the service with `get_service`.
 
@@ -1697,6 +1697,7 @@ None. A machine without Docker has no services.
               "expose": "tailscale",
               "host": null,
               "https_port": 443,
+              "access": false,
               "local_port": 20000,
               "url": "https://apps.tail1234.ts.net",
               "created_at": "2026-11-15T10:31:49Z",
@@ -1877,7 +1878,7 @@ It pulls images from their registries, which is why `openWorldHint` is `true`.
 | `compose` | string | For a new service | The text of the docker compose file. Leave it out to keep the stored one. |
 | `files` | object | No | Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. They merge into the stored ones, and `null` removes one. |
 | `env` | object | No | Values for the compose file's `${KEY}` interpolation. They merge into the stored ones, and `null` removes one. |
-| `routes` | array | No | Every route of the service, each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` or `https_port`. They replace the stored ones; leave it out to keep them. |
+| `routes` | array | No | Every route of the service, each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` or `https_port`. A `cloudflare` route can also have `access`, `true` to require Cloudflare Access; it defaults to `false`. They replace the stored ones; leave it out to keep them. |
 
 #### Returns
 
@@ -1920,6 +1921,7 @@ A service has at most 64 files and 1 MiB of them, 256 env keys, and 64 routes. T
         "expose": "tailscale",
         "host": null,
         "https_port": 10000,
+        "access": false,
         "local_port": 20001,
         "url": "https://apps.tail1234.ts.net:10000",
         "created_at": "2026-11-15T11:40:20Z",
@@ -3638,7 +3640,7 @@ Sets the Cloudflare account and API token that services' `cloudflare` routes use
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `account_id` | string | Yes | The Cloudflare account ID, 32 lowercase hex digits. |
-| `api_token` | string | No | The API token, with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. Required the first time; leave it out to keep the stored one. |
+| `api_token` | string | No | The API token, with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. A route with `access` also needs Access: Apps and Policies Read and Access: Organizations, Identity Providers, and Groups Read. Required the first time; leave it out to keep the stored one. |
 
 #### Returns
 

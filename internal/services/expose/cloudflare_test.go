@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -25,6 +26,9 @@ type fakeCloudflare struct {
 	mu      sync.Mutex
 	tunnels []fakeTunnel
 	ingress map[string][]ingressRule
+	config  map[string]string // by tunnel id, the body of the latest PUT of its configuration
+	apps    []accessApp       // the account's Access applications
+	team    string            // the Access organization's auth_domain
 	zones   []zone
 	records map[string][]dnsRecord // by zone id
 	calls   []string               // "METHOD path", in order
@@ -41,7 +45,7 @@ type fakeTunnel struct {
 }
 
 func newFakeCloudflare(t *testing.T) (*fakeCloudflare, *Cloudflare) {
-	f := &fakeCloudflare{ingress: map[string][]ingressRule{}, records: map[string][]dnsRecord{}, fail: map[string][]int{}}
+	f := &fakeCloudflare{ingress: map[string][]ingressRule{}, config: map[string]string{}, team: "myteam.cloudflareaccess.com", records: map[string][]dnsRecord{}, fail: map[string][]int{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, &Cloudflare{Base: srv.URL, AccountID: testAccount, Token: testAPIToken, Backoff: time.Millisecond}
@@ -124,11 +128,13 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	acct := "/accounts/" + testAccount + "/cfd_tunnel"
 	var body map[string]any
+	var raw []byte
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ = io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
 	}
 	switch {
-	case strings.HasPrefix(r.URL.Path, "/accounts/") && !strings.HasPrefix(r.URL.Path, acct):
+	case strings.HasPrefix(r.URL.Path, "/accounts/") && !strings.HasPrefix(r.URL.Path, "/accounts/"+testAccount+"/"):
 		f.refuse(w, 404, 7003, "Could not route to "+r.URL.Path+", perhaps your object identifier is invalid?")
 	case call == "GET "+acct:
 		var out []fakeTunnel
@@ -157,9 +163,14 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(body)
 		_ = json.Unmarshal(b, &in)
 		f.ingress[parts[3]] = in.Config.Ingress
+		f.config[parts[3]] = string(raw)
 		f.reply(w, 200, map[string]any{"tunnel_id": parts[3]}, nil)
 	case r.Method == "GET" && len(parts) == 5 && parts[4] == "token":
 		f.reply(w, 200, "token-of-"+parts[3], nil)
+	case call == "GET /accounts/"+testAccount+"/access/apps":
+		page(f, w, r, f.apps)
+	case call == "GET /accounts/"+testAccount+"/access/organizations":
+		f.reply(w, 200, map[string]any{"name": "My team", "auth_domain": f.team}, nil)
 	case call == "GET /zones":
 		if q.Get("account.id") != testAccount {
 			f.refuse(w, 400, 1001, "account.id is wrong")
@@ -580,3 +591,162 @@ func TestCloudflareKeepsTheRecordOfAFailingRoute(t *testing.T) {
 }
 
 var api2 = Route{Service: "shop", Container: "api", LocalPort: 20002, Host: "api.example.com"}
+
+var gate = Route{Service: "zeron-mcp", Container: "gateway", LocalPort: 20010, Host: "gate.example.com", Access: true}
+
+// accessCalls counts the calls to the account's Access endpoints.
+func (f *fakeCloudflare) accessCalls() int {
+	return f.count("GET /accounts/" + testAccount + "/access/")
+}
+
+// A route with access gets an ingress rule that requires Cloudflare Access, with the team name and
+// the aud of every application whose domain or public destination is its host, in any case, with a
+// trailing dot or a path; a private destination doesn't count. The route without access keeps its
+// plain rule. Every page of the applications is read.
+func TestCloudflareRequiresAccess(t *testing.T) {
+	f, c := newFakeCloudflare(t)
+	f.addZone("example.com")
+	f.apps = []accessApp{
+		{AUD: "aud-1", Domain: "Gate.Example.com./admin"},
+		{AUD: "aud-other", Domain: "other.example.com", Destinations: []accessDestination{{Type: "private", URI: "gate.example.com"}}},
+		{AUD: "aud-2", Domain: "other.example.com", Destinations: []accessDestination{{Type: "public", URI: "gate.example.com/api"}}},
+		{AUD: "aud-1", Domain: "gate.example.com"},
+		{AUD: "aud-gatekeeper", Domain: "gatekeeper.example.com"},
+	}
+	tun, err := c.Apply(t.Context(), "apps", []Route{web, gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exactly("GET /accounts/" + testAccount + "/access/apps"); n != 3 {
+		t.Errorf("5 applications were read in %d pages, want 3", n)
+	}
+	got := f.ingress[tun.ID]
+	if len(got) != 3 || got[0].Hostname != "blog.example.com" || got[0].OriginRequest != nil || got[1].Hostname != "gate.example.com" ||
+		got[1].OriginRequest == nil || got[2].Service != "http_status:404" {
+		t.Fatalf("ingress %+v", got)
+	}
+	if a := got[1].OriginRequest.Access; !a.Required || a.TeamName != "myteam" || !slices.Equal(a.AudTag, []string{"aud-1", "aud-2"}) {
+		t.Errorf("access %+v", a)
+	}
+	want := `{"config":{"ingress":[{"hostname":"blog.example.com","service":"http://127.0.0.1:20001"},` +
+		`{"hostname":"gate.example.com","service":"http://127.0.0.1:20010","originRequest":{"access":{"required":true,"teamName":"myteam","audTag":["aud-1","aud-2"]}}},` +
+		`{"service":"http_status:404"}]}}`
+	if raw := f.config[tun.ID]; raw != want {
+		t.Errorf("configuration\n%s\nwant\n%s", raw, want)
+	}
+	if tun.Token == "" {
+		t.Error("no token")
+	}
+}
+
+// A route with access whose host no Access application protects fails on its own, and keeps its
+// record of Tender's; the route without access is set.
+func TestCloudflareAccessWithoutAnApplication(t *testing.T) {
+	f, c := newFakeCloudflare(t)
+	example := f.addZone("example.com")
+	plain := gate
+	plain.Access = false
+	tun, err := c.Apply(t.Context(), "apps", []Route{web, plain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.apps = []accessApp{{AUD: "aud-1", Domain: "gatekeeper.example.com"}, {AUD: "aud-2", Domain: "example.com"}}
+	_, err = c.Apply(t.Context(), "apps", []Route{web, gate})
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"zeron-mcp/gateway"}) {
+		t.Errorf("route errors %q: %v", got, err)
+	}
+	want := "the route to gateway in zeron-mcp requires Cloudflare Access, but no Access application in the Cloudflare account protects gate.example.com. " +
+		"Add a self-hosted Access application for it, or deploy the route without access"
+	if err.Error() != want {
+		t.Errorf("error %q\nwant %q", err, want)
+	}
+	if got := f.ingress[tun.ID]; len(got) != 2 || got[0].Hostname != "blog.example.com" {
+		t.Errorf("ingress %+v", got)
+	}
+	var hosts []string
+	for _, r := range f.zoneRecords(example) {
+		hosts = append(hosts, r.Name)
+	}
+	slices.Sort(hosts)
+	if !slices.Equal(hosts, []string{"blog.example.com", "gate.example.com"}) {
+		t.Errorf("records %q", hosts)
+	}
+}
+
+// A 401 or 403 on either Access call fails only the routes with access, with the permissions the
+// token also needs. A team domain Tender can't read fails them too. A 5xx that lasts is
+// Cloudflare failing as a whole.
+func TestCloudflareAccessRefused(t *testing.T) {
+	f, c := newFakeCloudflare(t)
+	f.addZone("example.com")
+	f.addZone("shop.example.com")
+	f.apps = []accessApp{{AUD: "aud-1", Domain: "gate.example.com"}}
+	other := Route{Service: "other", Container: "web", LocalPort: 20011, Host: "other.example.com", Access: true}
+	apps, orgs := "GET /accounts/"+testAccount+"/access/apps", "GET /accounts/"+testAccount+"/access/organizations"
+	for _, call := range []string{apps, orgs} {
+		for _, status := range []int{401, 403} {
+			f.fail[call] = []int{status}
+			tun, err := c.Apply(t.Context(), "apps", []Route{web, api, gate, other})
+			if got := routeErrors(t, err); !slices.Equal(got, []string{"other/web", "zeron-mcp/gateway"}) {
+				t.Errorf("%s %d: route errors %q: %v", call, status, got, err)
+				continue
+			}
+			if call == apps && (!strings.Contains(err.Error(), fmt.Sprintf("the route to gateway in zeron-mcp requires Cloudflare Access, but Cloudflare refused to show "+
+				"the account's Access settings to the API token (%d %s). The API token also needs Access: Apps and Policies Read and "+
+				"Access: Organizations, Identity Providers, and Groups Read. Add them, or deploy the route without access", status, http.StatusText(status))) ||
+				!strings.Contains(err.Error(), "the route to web in other requires Cloudflare Access, but Cloudflare refused")) {
+				t.Errorf("%s %d: %v", call, status, err)
+			}
+			// On the organization, other already failed for want of an application.
+			if call == orgs && (!strings.Contains(err.Error(), "the route to gateway in zeron-mcp requires Cloudflare Access, but Cloudflare refused") ||
+				!strings.Contains(err.Error(), "no Access application in the Cloudflare account protects other.example.com")) {
+				t.Errorf("%s %d: %v", call, status, err)
+			}
+			if got := f.ingress[tun.ID]; len(got) != 3 || got[0].Hostname != "api.shop.example.com" || got[1].Hostname != "blog.example.com" || tun.Token == "" {
+				t.Errorf("%s %d: ingress %+v, tunnel %+v", call, status, got, tun)
+			}
+		}
+	}
+
+	f.team = "login.example.com"
+	_, err := c.Apply(t.Context(), "apps", []Route{web, gate})
+	if got := routeErrors(t, err); !slices.Equal(got, []string{"zeron-mcp/gateway"}) || !strings.Contains(err.Error(), `team domain is "login.example.com"`) {
+		t.Errorf("a team domain Tender can't read: %q %v", got, err)
+	}
+	f.team = "myteam.cloudflareaccess.com"
+
+	f.fail[apps] = []int{503, 503, 503}
+	tun, err := c.Apply(t.Context(), "apps", []Route{web, gate})
+	var re *RouteError
+	if err == nil || errors.As(err, &re) || tun.ID != "" || !strings.Contains(err.Error(), "Try again later") {
+		t.Errorf("Cloudflare down: %v %+v", err, tun)
+	}
+}
+
+// Without a route with access, neither Access endpoint is called and the ingress is as before.
+func TestCloudflareWithoutAccessCallsNoAccessEndpoint(t *testing.T) {
+	f, c := newFakeCloudflare(t)
+	f.addZone("example.com")
+	f.addZone("shop.example.com")
+	f.fail["GET /accounts/"+testAccount+"/access/apps"] = []int{403}
+	f.fail["GET /accounts/"+testAccount+"/access/organizations"] = []int{403}
+	tun, err := c.Apply(t.Context(), "apps", []Route{web, api})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := f.accessCalls(); n != 0 {
+		t.Errorf("%d calls to the Access endpoints: %q", n, f.calls)
+	}
+	want := `{"config":{"ingress":[{"hostname":"api.shop.example.com","service":"http://127.0.0.1:20002"},` +
+		`{"hostname":"blog.example.com","service":"http://127.0.0.1:20001"},{"service":"http_status:404"}]}}`
+	if raw := f.config[tun.ID]; raw != want {
+		t.Errorf("configuration\n%s\nwant\n%s", raw, want)
+	}
+	// A route with access whose zone is missing fails before any Access call.
+	if _, err := c.Apply(t.Context(), "apps", []Route{web, {Service: "x", Container: "y", LocalPort: 20012, Host: "app.example.org", Access: true}}); err == nil {
+		t.Error("a host in no zone passed")
+	}
+	if n := f.accessCalls(); n != 0 {
+		t.Errorf("%d calls to the Access endpoints for a route in no zone", n)
+	}
+}

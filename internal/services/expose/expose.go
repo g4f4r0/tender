@@ -19,6 +19,7 @@ type Route struct {
 	LocalPort          int    // 127.0.0.1 port the container is published on
 	Host               string // cloudflare and public
 	HTTPSPort          int    // tailscale
+	Access             bool   // cloudflare: the tunnel requires Cloudflare Access for the host
 }
 
 // Exposer is one exposure adapter.

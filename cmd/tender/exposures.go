@@ -84,7 +84,7 @@ func cloudflareShow(args []string, s session) error {
 func cloudflareSet(args []string, s session) error {
 	fs := newFlagSet("exposures cloudflare set", "--account-id ID [--api-token-file PATH] [--hub URL]",
 		"Set the Cloudflare account and API token that services' cloudflare routes use. The token needs "+expose.CloudflarePermissions+
-			". It asks for the token with typing hidden, or reads it from --api-token-file. The hub checks the token with Cloudflare "+
+			", and a route with access also "+expose.CloudflareAccessPermissions+". It asks for the token with typing hidden, or reads it from --api-token-file. The hub checks the token with Cloudflare "+
 			"before it stores it.")
 	hubURL := hubFlag(fs)
 	account := fs.String("account-id", "", "`ID` the Cloudflare account ID, from the dashboard's Account home")

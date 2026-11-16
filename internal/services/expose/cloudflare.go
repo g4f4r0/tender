@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,10 @@ const DNSComment = "managed by tender"
 // CloudflarePermissions are the API token's permissions Tender needs, as Cloudflare's dashboard
 // names them.
 const CloudflarePermissions = "Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read"
+
+// CloudflareAccessPermissions are the API token's permissions a route with access also needs, to
+// read the account's Access applications and its team name.
+const CloudflareAccessPermissions = "Access: Apps and Policies Read and Access: Organizations, Identity Providers, and Groups Read"
 
 var accountIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
@@ -295,8 +300,143 @@ func zoneOf(zones []zone, host string) *zone {
 }
 
 type ingressRule struct {
-	Hostname string `json:"hostname,omitempty"`
-	Service  string `json:"service"`
+	Hostname      string         `json:"hostname,omitempty"`
+	Service       string         `json:"service"`
+	OriginRequest *originRequest `json:"originRequest,omitempty"` // only on a route with access
+}
+
+// originRequest makes cloudflared check each request's Cf-Access-Jwt-Assertion against the
+// account's team and the host's Access applications before it proxies it.
+type originRequest struct {
+	Access originAccess `json:"access"`
+}
+
+type originAccess struct {
+	Required bool     `json:"required"`
+	TeamName string   `json:"teamName"`
+	AudTag   []string `json:"audTag"`
+}
+
+// accessApp is a Cloudflare Access application, as far as Tender reads it.
+type accessApp struct {
+	AUD          string              `json:"aud"`
+	Domain       string              `json:"domain"`
+	Destinations []accessDestination `json:"destinations"`
+}
+
+// accessDestination is one of the places an Access application protects. A public one is a
+// hostname, maybe with a path, in uri.
+type accessDestination struct {
+	Type string `json:"type"`
+	URI  string `json:"uri"`
+}
+
+// accessHost is the host part of an Access application's domain or destination, such as
+// app.example.com for App.Example.com./admin: in lowercase, without its path or a trailing dot.
+func accessHost(s string) string {
+	s, _, _ = strings.Cut(s, "/")
+	return strings.ToLower(strings.TrimSuffix(s, "."))
+}
+
+// protects says the application's domain, or one of its public destinations, is host.
+func (a accessApp) protects(host string) bool {
+	if a.Domain != "" && accessHost(a.Domain) == host {
+		return true
+	}
+	for _, d := range a.Destinations {
+		if d.Type == "public" && accessHost(d.URI) == host {
+			return true
+		}
+	}
+	return false
+}
+
+// accessError is the failure of route r, which requires Cloudflare Access: why it can't have it,
+// then fix, what to do.
+func accessError(r Route, why, fix string) *RouteError {
+	return &RouteError{Service: r.Service, Container: r.Container,
+		Err: fmt.Errorf("the route to %s in %s requires Cloudflare Access, but %s. %s", r.Container, r.Service, why, fix)}
+}
+
+// noAccess fails each of routes when Cloudflare refused an Access call with a 4xx, which another
+// try won't change. Any other error is Cloudflare failing as a whole, and is returned as it is.
+func noAccess(routes []Route, err error) ([]error, error) {
+	var ce *CloudflareError
+	if !errors.As(err, &ce) || ce.Retryable {
+		return nil, err
+	}
+	why := "Cloudflare refused to show the account's Access settings to the API token (" + strconv.Itoa(ce.Status) + " " + http.StatusText(ce.Status) + ")"
+	fix := "The API token also needs " + CloudflareAccessPermissions + ". Add them, or deploy the route without access"
+	if ce.Status != http.StatusUnauthorized && ce.Status != http.StatusForbidden {
+		why, fix = strings.TrimRight(ce.Error(), ". "), "Deploy the route without access, or try again once Cloudflare Access is set up for the account"
+	}
+	errs := make([]error, len(routes))
+	for i, r := range routes {
+		errs[i] = accessError(r, why, fix)
+	}
+	return errs, nil
+}
+
+// access returns the origin check of each of routes that requires Cloudflare Access, by host: the
+// account's team name, and the aud of every Access application that protects the host. A route
+// with access that can't have it gets a *RouteError. With no route with access, it calls nothing.
+func (c *Cloudflare) access(ctx context.Context, routes []Route) (map[string]*originRequest, []error, error) {
+	var want []Route
+	for _, r := range routes {
+		if r.Access {
+			want = append(want, r)
+		}
+	}
+	if len(want) == 0 {
+		return nil, nil, nil
+	}
+	apps, err := list[accessApp](ctx, c, c.account()+"/access/apps", nil)
+	if err != nil {
+		errs, err := noAccess(want, err)
+		return nil, errs, err
+	}
+	var errs []error
+	var found []Route
+	auds := map[string][]string{}
+	for _, r := range want {
+		host := strings.ToLower(r.Host)
+		var tags []string
+		for _, a := range apps {
+			if a.AUD != "" && a.protects(host) && !slices.Contains(tags, a.AUD) {
+				tags = append(tags, a.AUD)
+			}
+		}
+		if len(tags) == 0 {
+			errs = append(errs, accessError(r, "no Access application in the Cloudflare account protects "+r.Host,
+				"Add a self-hosted Access application for it, or deploy the route without access"))
+			continue
+		}
+		auds[r.Host] = tags
+		found = append(found, r)
+	}
+	if len(found) == 0 {
+		return nil, errs, nil
+	}
+	var org struct {
+		AuthDomain string `json:"auth_domain"`
+	}
+	if _, err := c.call(ctx, http.MethodGet, c.account()+"/access/organizations", nil, nil, &org); err != nil {
+		more, err := noAccess(found, err)
+		return nil, append(errs, more...), err
+	}
+	team, ok := strings.CutSuffix(strings.ToLower(strings.TrimSuffix(org.AuthDomain, ".")), ".cloudflareaccess.com")
+	if !ok || team == "" || strings.Contains(team, ".") {
+		for _, r := range found {
+			errs = append(errs, accessError(r, fmt.Sprintf("the account's Zero Trust team domain is %q, not one such as myteam.cloudflareaccess.com", org.AuthDomain),
+				"Check the team domain in Zero Trust, under Settings, or deploy the route without access"))
+		}
+		return nil, errs, nil
+	}
+	out := map[string]*originRequest{}
+	for _, r := range found {
+		out[r.Host] = &originRequest{Access: originAccess{Required: true, TeamName: team, AudTag: auds[r.Host]}}
+	}
+	return out, errs, nil
 }
 
 // Apply makes machine's tunnel serve exactly routes, each at https://<host>, and returns the
@@ -305,8 +445,14 @@ type ingressRule struct {
 // with the routes whose record is in place and a 404 for any other host, and deletes the records of
 // its own, with DNSComment and this tunnel as their target, whose host no route wants.
 //
+// A route with Access gets an ingress rule whose originRequest makes cloudflared require a valid
+// Cloudflare Access token for its host, from the account's team and the aud of each Access
+// application that protects the host. Only then does Apply read the account's Access applications
+// and organization; a route without Access keeps a plain rule.
+//
 // A route that can't be set, because its host is bad or taken by another route, is in no zone of
-// the account, has a record Tender didn't make, or Cloudflare refuses its record, gets a
+// the account, has a record Tender didn't make, Cloudflare refuses its record, or it has Access
+// but no Access application protects its host or the token may not read them, gets a
 // *RouteError and is left out of the ingress; every other route is set, and its record stays. The
 // error is those, joined, with the tunnel. Cloudflare failing as a whole, such as a 5xx after its
 // tries, a refused ingress or no token, is a plain error with no tunnel. With no route to set and
@@ -337,6 +483,16 @@ func (c *Cloudflare) Apply(ctx context.Context, machine string, routes []Route) 
 		}
 		todo = append(todo, placed{r, z})
 	}
+	toSet := make([]Route, len(todo))
+	for i, p := range todo {
+		toSet[i] = p.Route
+	}
+	origins, refused, err := c.access(ctx, toSet)
+	if err != nil {
+		return fail(err)
+	}
+	errs = append(errs, refused...)
+	todo = slices.DeleteFunc(todo, func(p placed) bool { return p.Access && origins[p.Host] == nil })
 	name := TunnelName(machine)
 	t, err := c.findTunnel(ctx, name)
 	if err != nil {
@@ -365,7 +521,7 @@ func (c *Cloudflare) Apply(ctx context.Context, machine string, routes []Route) 
 			errs = append(errs, err)
 			continue
 		}
-		ingress = append(ingress, ingressRule{Hostname: p.Host, Service: "http://127.0.0.1:" + strconv.Itoa(p.LocalPort)})
+		ingress = append(ingress, ingressRule{Hostname: p.Host, Service: "http://127.0.0.1:" + strconv.Itoa(p.LocalPort), OriginRequest: origins[p.Host]})
 	}
 	ingress = append(ingress, ingressRule{Service: "http_status:404"})
 	tunnelPath := c.account() + "/cfd_tunnel/" + url.PathEscape(t.ID)

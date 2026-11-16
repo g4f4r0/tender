@@ -2323,6 +2323,7 @@ Content-Type: application/json
           "expose": "tailscale",
           "host": null,
           "https_port": 443,
+          "access": false,
           "local_port": 20000,
           "url": "https://apps.tail1234.ts.net",
           "created_at": "2026-11-15T10:31:49Z",
@@ -2404,7 +2405,7 @@ Stores a new managed service and queues its deploy. The daemon checks the compos
 | `compose` | string | Yes | Body. The text of the docker compose file, at most 256 KiB. |
 | `files` | object | No | Body. Config files the compose file mounts, by path relative to it, such as `config/app.toml`, each with its text. At most 64 files and 1 MiB in all. |
 | `env` | object | No | Body. Values for the compose file's `${KEY}` interpolation. Keys are capital letters, digits and underscores, not starting with `COMPOSE_` or `DOCKER_`; a value can't hold a single quote or a line break. |
-| `routes` | array | No | Body. Each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` for `cloudflare` and `public` or an optional `https_port` for `tailscale`. See [Routes](exposure.md#routes). |
+| `routes` | array | No | Body. Each with `container`, `port`, `expose` (`tailscale`, `cloudflare` or `public`), and `host` for `cloudflare` and `public` or an optional `https_port` for `tailscale`. A `cloudflare` route can also have `access`, `true` to require Cloudflare Access; it defaults to `false`. See [Routes](exposure.md#routes). |
 
 #### Example request
 
@@ -2446,6 +2447,7 @@ Location: /v1/machines/apps/actions/13
         "expose": "tailscale",
         "host": null,
         "https_port": 10000,
+        "access": false,
         "local_port": 20001,
         "url": "https://apps.tail1234.ts.net:10000",
         "created_at": "2026-11-15T11:40:20Z",
@@ -2488,7 +2490,7 @@ Location: /v1/machines/apps/actions/13
 | `404` | The machine doesn't exist. |
 | `409` | The machine has a service with this name: a managed one, which `PATCH` changes, or one Tender didn't deploy, whose containers you take down first with `docker compose -p NAME down`. Or a route's host or `https_port` is taken. |
 | `413` | The body is larger than 4 MiB. |
-| `422` | A field isn't valid, such as a name with a dash, a file outside the folder, an env value of `"***"`, or a `public` route without a host. A `cloudflare` route on a hub without the Cloudflare settings. |
+| `422` | A field isn't valid, such as a name with a dash, a file outside the folder, an env value of `"***"`, a `public` route without a host, or `access` on a route that isn't `cloudflare`. A `cloudflare` route on a hub without the Cloudflare settings. |
 | `503` | The hub has no `TENDER_ENCRYPTION_KEY` to store the env with. |
 
 #### Equivalents
@@ -2578,7 +2580,7 @@ Content-Type: application/json
 
 Changes a service, as a JSON merge patch. `alerts_enabled` turns its alerts off or on, for any service, and answers `200` with the service; turning them off resolves its open problems. A change of `compose`, `files`, `env` or `routes`, for a managed service only, is stored and queues a deploy, and answers `202`.
 
-`files` and `env` merge into the stored ones: a key with `null` removes it, and `null` for the whole object removes every key. An env value of `"***"` keeps the stored one. `routes` replaces every route; a route the service keeps keeps its ports.
+`files` and `env` merge into the stored ones: a key with `null` removes it, and `null` for the whole object removes every key. An env value of `"***"` keeps the stored one. `routes` replaces every route; a route the service keeps keeps its ports. A change of a route's `access` alone is a route change too: the hub syncs the machine's tunnel again.
 
 #### Parameters
 
@@ -2632,6 +2634,7 @@ Location: /v1/machines/apps/actions/14
         "expose": "tailscale",
         "host": null,
         "https_port": 10000,
+        "access": false,
         "local_port": 20001,
         "url": "https://apps.tail1234.ts.net:10000",
         "created_at": "2026-11-15T11:40:20Z",
@@ -2758,6 +2761,7 @@ Location: /v1/machines/apps/actions/15
         "expose": "tailscale",
         "host": null,
         "https_port": 10000,
+        "access": false,
         "local_port": 20001,
         "url": "https://apps.tail1234.ts.net:10000",
         "created_at": "2026-11-15T11:40:20Z",
@@ -2876,6 +2880,7 @@ Location: /v1/machines/apps/actions/16
         "expose": "tailscale",
         "host": null,
         "https_port": 10000,
+        "access": false,
         "local_port": 20001,
         "url": "https://apps.tail1234.ts.net:10000",
         "created_at": "2026-11-15T11:40:20Z",
@@ -3001,6 +3006,7 @@ Location: /v1/machines/apps/actions/17
         "expose": "tailscale",
         "host": null,
         "https_port": 10000,
+        "access": false,
         "local_port": 20001,
         "url": "https://apps.tail1234.ts.net:10000",
         "created_at": "2026-11-15T11:40:20Z",
@@ -4198,7 +4204,7 @@ Replaces the hub's Cloudflare settings. The hub first lists the account's tunnel
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `account_id` | string | Yes | Body. The Cloudflare account ID, 32 lowercase hex digits, from the dashboard's Account home. |
-| `api_token` | string | No | Body. Secret. A Cloudflare API token with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. Required the first time; leave it out to keep the stored one. |
+| `api_token` | string | No | Body. Secret. A Cloudflare API token with Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read. A route with `access` also needs Access: Apps and Policies Read and Access: Organizations, Identity Providers, and Groups Read. Required the first time; leave it out to keep the stored one. |
 
 #### Example request
 

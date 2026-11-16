@@ -6,7 +6,7 @@ This page explains routes and the three ways to expose one. To deploy the servic
 
 ## Routes
 
-A service's routes come with its deploy: `--route CONTAINER:PORT:EXPOSE[:HOST]` on `tender services deploy`, or `routes` in the API and MCP. A route has these fields:
+A service's routes come with its deploy: `--route CONTAINER:PORT:EXPOSE[:HOST[:access]]` on `tender services deploy`, or `routes` in the API and MCP. A route has these fields:
 
 | Field | What it holds |
 | --- | --- |
@@ -15,6 +15,7 @@ A service's routes come with its deploy: `--route CONTAINER:PORT:EXPOSE[:HOST]` 
 | `expose` | `tailscale`, `cloudflare` or `public`. |
 | `host` | The full hostname for a `cloudflare` or `public` route, such as `notes.example.com`, and `null` for `tailscale`. A host routes to one service across the hub. |
 | `https_port` | For a `tailscale` route, the HTTPS port on the machine's tailnet name. Left out, the hub picks the lowest free one from `10000`. It is unique per machine. |
+| `access` | `true` when a `cloudflare` route requires Cloudflare Access at the machine. It defaults to `false`, and any other route with `true` is refused. See [Require Cloudflare Access](#require-cloudflare-access). |
 | `local_port` | The `127.0.0.1` port the container is published on, which the hub assigns per machine from `20000` to `29999`. A route the service keeps keeps its port across changes. A new route gets the next free port after the last one the machine got, and the lowest free one once `29999` is taken, so a port a route let go of isn't handed out again right away. |
 | `url` | Where the route answers, such as `https://apps.tail1234.ts.net:10000` or `https://notes.example.com`. It is `null` for a `tailscale` route until the daemon has told the hub the machine's tailnet name. |
 
@@ -103,11 +104,13 @@ A `cloudflare` route serves `https://<host>` through a Cloudflare tunnel. The ma
    1. Account, Cloudflare Tunnel, Edit, to create the machine's tunnel and set its routes.
    2. Zone, DNS, Edit, to keep a DNS record for each host.
    3. Zone, Zone, Read, to find the zone of each host.
+
+   A route that [requires Cloudflare Access](#require-cloudflare-access) also needs two more.
 3. Outbound access from the machine to Cloudflare on port 7844, TCP and UDP, which cloudflared uses.
 
 ### Set up Cloudflare
 
-1. In the Cloudflare dashboard, open My Profile, then API Tokens, and create a custom token with the three permissions above. Save it in a file, such as `cloudflare-token`.
+1. In the Cloudflare dashboard, open My Profile, then API Tokens, and create a custom token with the three permissions above, and the two Access ones if a route will require Access. Save it in a file, such as `cloudflare-token`.
 2. Copy the account ID from the dashboard's Account home.
 3. Give both to the hub. It lists the account's tunnels and zones with the token first, and stores nothing if Cloudflare refuses:
 
@@ -162,6 +165,55 @@ The hub does this through the Cloudflare API when it queues every deploy and rem
 5. It refuses a host that already has a record it didn't make. That route fails with a sentence naming the host and the route, and stays out of the tunnel's routes. Delete that record in the dashboard, or pick another host.
 
 One route's failure never touches another's. A route the hub can't set in Cloudflare fails only the deploy or remove of its own service, after its containers are done, with the route's sentence in `last_error`; the hub logs it for the other services' deploys. Cloudflare failing as a whole also fails the deploy of a service that drops its last `cloudflare` route. The hub syncs one machine's tunnel at a time, and gives each sync 1 minute; a sync that takes longer stops and fails the service's deploy, so deploy again later. It keeps the tunnel's token encrypted under `TENDER_ENCRYPTION_KEY`, so the daemon gets it without the hub asking Cloudflare again. A remove takes the service's routes out of the tunnel when it is queued; when the remove fails, the service is still there, and its routes go back in. A `cloudflare` route on a hub without the Cloudflare settings is refused with `A cloudflare route needs the hub's Cloudflare settings, and it has none yet.` and how to set them. A host in no zone of the account, a host with a record Tender didn't make, or a record Cloudflare refuses with a `4xx` fails that route alone, and every other route and record stays in place. A failing route's host also keeps its record of Tender's. A `5xx`, a `429` or no answer is tried 3 times, then fails the routes of every service on that machine; deploy again later.
+
+### Require Cloudflare Access
+
+A Cloudflare Access application checks who signs in at Cloudflare's edge. Without more, cloudflared passes on every request the tunnel brings it, so a gap in the edge check, such as a policy or path that leaves part of the host open, reaches the container. A route with `access` adds the check at the origin too: cloudflared checks each request's Access token, the `Cf-Access-Jwt-Assertion` header, against the account's team and the host's applications before it proxies the request. A request without a valid Access token for the host never reaches the container through the tunnel.
+
+The route's port on `127.0.0.1` stays open to processes on the machine itself, as with every route. The check is cloudflared's, so it doesn't cover them.
+
+It is off by default. A route without it works as before.
+
+#### What it needs
+
+1. A self-hosted Access application in the account that protects the route's host, as its domain or one of its public hostnames.
+2. Two more permissions on the API token, both Account permissions:
+   1. Access: Apps and Policies, Read, to find the applications that protect the host.
+   2. Access: Organizations, Identity Providers, and Groups, Read, to read the team name.
+
+#### Add Access to a route
+
+Give the `cloudflare` route a fifth part, the word `access`:
+
+```sh
+tender services deploy apps blog -f compose.yaml --route web:80:cloudflare:blog.example.com:access
+```
+
+In the API and MCP, the route has `"access": true`. A change of `access` alone is a route change, so the hub syncs the tunnel again. Only a `cloudflare` route can have it. Another route with it is refused, such as `--route "web:80:public:blog.example.com:access": only a cloudflare route has a fifth part, access`.
+
+#### What the hub sets
+
+The hub lists the account's Access applications, `GET /accounts/{account_id}/access/apps`, and takes the `aud` tag of every one whose domain or public hostname is the route's host. It reads the team name from the account's Zero Trust organization, `GET /accounts/{account_id}/access/organizations`, such as `myteam` for `myteam.cloudflareaccess.com`. The route's rule in the tunnel then gets:
+
+```json
+{"hostname": "blog.example.com", "service": "http://127.0.0.1:20001", "originRequest": {"access": {"required": true, "teamName": "myteam", "audTag": ["<aud>"]}}}
+```
+
+The hub calls them only while a route of the machine has `access`. Without one, it calls neither, and the tunnel's routes are as before.
+
+#### When it fails
+
+A route with `access` fails on its own, and stays out of the tunnel's routes, when the hub can't set it. Its DNS record of Tender's stays, and every other route is set as before.
+
+1. No Access application protects the host:
+
+   ```text
+   the route to web in blog requires Cloudflare Access, but no Access application in the Cloudflare account protects blog.example.com. Add a self-hosted Access application for it, or deploy the route without access
+   ```
+
+2. The API token lacks the two permissions, and Cloudflare answers `401` or `403`. The sentence says the token also needs `Access: Apps and Policies Read` and `Access: Organizations, Identity Providers, and Groups Read`.
+
+A `5xx`, a `429` or no answer from either endpoint is Cloudflare failing as a whole, as with the other calls.
 
 ### What Tender does on the machine
 

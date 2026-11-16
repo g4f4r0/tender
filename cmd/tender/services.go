@@ -253,7 +253,11 @@ func printService(s session, sv services.Service) {
 			if r.URL != nil {
 				at = *r.URL
 			}
-			rows[i] = []string{r.Container, strconv.Itoa(r.Port), r.Expose, "127.0.0.1:" + strconv.Itoa(r.LocalPort), at}
+			expose := r.Expose
+			if r.Access {
+				expose += " with access"
+			}
+			rows[i] = []string{r.Container, strconv.Itoa(r.Port), expose, "127.0.0.1:" + strconv.Itoa(r.LocalPort), at}
 		}
 		printTable(s.out, []string{"CONTAINER", "PORT", "EXPOSE", "LOCAL", "URL"}, rows)
 	}
@@ -346,19 +350,20 @@ func deref(p *int) int {
 	return *p
 }
 
-// parseRoute reads --route CONTAINER:PORT:EXPOSE[:HOST], or tailscale:HTTPS_PORT as its last part.
+// parseRoute reads --route CONTAINER:PORT:EXPOSE[:HOST], or tailscale:HTTPS_PORT as its last part,
+// or CONTAINER:PORT:cloudflare:HOST:access for a cloudflare route that requires Cloudflare Access.
 func parseRoute(fs *flag.FlagSet, v string) (services.RouteInput, error) {
 	parts := strings.Split(v, ":")
-	if len(parts) < 3 || len(parts) > 4 {
-		return services.RouteInput{}, usageError(fs, "--route %q must be CONTAINER:PORT:EXPOSE or CONTAINER:PORT:EXPOSE:HOST, such as web:80:tailscale "+
-			"or web:80:public:app.example.com", v)
+	if len(parts) < 3 || len(parts) > 5 {
+		return services.RouteInput{}, usageError(fs, "--route %q must be CONTAINER:PORT:EXPOSE, CONTAINER:PORT:EXPOSE:HOST or CONTAINER:PORT:cloudflare:HOST:access, "+
+			"such as web:80:tailscale or web:80:public:app.example.com", v)
 	}
 	port, err := strconv.Atoi(parts[1])
 	if err != nil {
 		return services.RouteInput{}, usageError(fs, "--route %q: the port %q is not a number", v, parts[1])
 	}
 	r := services.RouteInput{Container: parts[0], Port: port, Expose: parts[2]}
-	if len(parts) == 4 {
+	if len(parts) >= 4 {
 		if r.Expose == "tailscale" {
 			https, err := strconv.Atoi(parts[3])
 			if err != nil {
@@ -368,6 +373,15 @@ func parseRoute(fs *flag.FlagSet, v string) (services.RouteInput, error) {
 		} else {
 			r.Host = &parts[3]
 		}
+	}
+	if len(parts) == 5 {
+		switch {
+		case r.Expose != "cloudflare":
+			return services.RouteInput{}, usageError(fs, "--route %q: only a cloudflare route has a fifth part, access, such as web:80:cloudflare:app.example.com:access", v)
+		case parts[4] != "access":
+			return services.RouteInput{}, usageError(fs, "--route %q: a cloudflare route's fifth part can only be access, which requires Cloudflare Access at its host, got %q", v, parts[4])
+		}
+		r.Access = true
 	}
 	return r, nil
 }
@@ -403,7 +417,7 @@ func readEnvFile(path string) (map[string]string, error) {
 
 func servicesDeploy(args []string, s session) error {
 	fs := newFlagSet("services deploy", "MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] [--env KEY=VALUE ...] "+
-		"[--route CONTAINER:PORT:EXPOSE[:HOST] ...] [--no-wait] [--hub URL]",
+		"[--route CONTAINER:PORT:EXPOSE[:HOST[:access]] ...] [--no-wait] [--hub URL]",
 		"Deploy a service from a docker compose file, through the daemon on the machine, and wait for it. NAME is its compose project: "+
 			"lowercase letters, digits and dashes, starting with a letter, at most 32. The daemon checks the file against Tender's rules first "+
 			"(images only, no ports, no host namespaces, privileges or devices, mounts inside the service's folder, a memory limit on "+
@@ -411,6 +425,7 @@ func servicesDeploy(args []string, s session) error {
 			"replaces its compose file, and files, env and routes are replaced when their options are given and kept when not. "+
 			"A route publishes a container's port on 127.0.0.1 and exposes it: tailscale on the machine's tailnet name "+
 			"(CONTAINER:PORT:tailscale, or :tailscale:HTTPS_PORT for a port of your choice), cloudflare or public at a host. "+
+			"CONTAINER:PORT:cloudflare:HOST:access also requires Cloudflare Access: the tunnel lets only requests with a valid Access token reach the container. "+
 			"Env values go to the service's .env for the file's ${KEY}s; the hub keeps them encrypted.")
 	hubURL := hubFlag(fs)
 	compose := fs.String("f", "", "`FILE` the docker compose file")
@@ -418,7 +433,7 @@ func servicesDeploy(args []string, s session) error {
 	fs.Var(&files, "file", "`PATH` a config file the compose file mounts, relative to it; repeat for each")
 	envFile := fs.String("env-file", "", "`PATH` a file of KEY=VALUE lines for the env")
 	fs.Var(&envs, "env", "`KEY=VALUE` one env value, over the env file's; repeat for each")
-	fs.Var(&routes, "route", "`CONTAINER:PORT:EXPOSE[:HOST]` a route, such as web:80:tailscale; repeat for each")
+	fs.Var(&routes, "route", "`CONTAINER:PORT:EXPOSE[:HOST[:access]]` a route, such as web:80:tailscale or web:80:cloudflare:app.example.com:access; repeat for each")
 	noWait := fs.Bool("no-wait", false, "queue the deploy and return, without waiting for it")
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {
