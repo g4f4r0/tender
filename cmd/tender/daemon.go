@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -141,8 +142,10 @@ const (
 	envRcloneConfig = "TENDER_RCLONE_CONFIG"
 )
 
+// defaultState is the daemon's state folder. systemd sets STATE_DIRECTORY to the unit's state
+// folders joined with colons, the daemon's first and the services' second, so only the first is it.
 func defaultState() string {
-	if d := os.Getenv("STATE_DIRECTORY"); d != "" {
+	if d, _, _ := strings.Cut(os.Getenv("STATE_DIRECTORY"), ":"); d != "" {
 		return d
 	}
 	return "/var/lib/tender/daemon"
