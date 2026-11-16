@@ -830,7 +830,7 @@ web         ghcr.io/me/notes:1   running                   healthy   1.5 GiB / 2
 worker      ghcr.io/me/notes:1   exited (137), by Tender   -         -                 -      4          -
 ```
 
-It never shows the env values. After a failed deploy, `Why the last one failed:` follows the deploy line, with the reason and the end of compose's output. A container's `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped; while Docker is unreachable it is `unknown` alone, and a removed container shows `removed` and when. A route on the tailnet before the daemon has sent the machine's tailnet name shows `the tailnet name isn't known yet`. A service Tender didn't deploy says `Tender found it running and didn't deploy it, so it can start, stop and watch it, but not deploy it.` instead of the deploy line.
+It never shows the env values. After a failed deploy, `Why the last one failed:` follows the deploy line, with the reason and the end of compose's output. A container's `STATE` is Docker's state, with the exit code once stopped, and `by Tender` when a Tender stop left it stopped; while Docker is unreachable it is `unknown` alone, and a removed container shows `removed` and when. A route on the tailnet before the daemon has sent the machine's tailnet name shows `the tailnet name isn't known yet`. A `cloudflare` route that requires Cloudflare Access shows `cloudflare with access` under `EXPOSE`. A service Tender didn't deploy says `Tender found it running and didn't deploy it, so it can start, stop and watch it, but not deploy it.` instead of the deploy line.
 
 #### Errors
 
@@ -849,7 +849,7 @@ Deploys a service from a docker compose file, through the daemon on the machine,
 #### Usage
 
 ```sh
-tender services deploy MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] [--env KEY=VALUE ...] [--route CONTAINER:PORT:EXPOSE[:HOST] ...] [--no-wait] [--hub URL]
+tender services deploy MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] [--env KEY=VALUE ...] [--route CONTAINER:PORT:EXPOSE[:HOST[:access]] ...] [--no-wait] [--hub URL]
 ```
 
 #### Options
@@ -862,7 +862,7 @@ tender services deploy MACHINE NAME -f FILE [--file PATH ...] [--env-file PATH] 
 | `--file` | path | No | A config file the compose file mounts, in the compose file's folder; repeat for each. It goes to the same path relative to the compose file on the machine. |
 | `--env-file` | path | No | A file of `KEY=VALUE` lines for the env. Blank lines and `#` comments are skipped, `export ` is taken off, and so is one pair of quotes around a value. |
 | `--env` | `KEY=VALUE` | No | One env value, over the env file's; repeat for each. |
-| `--route` | string | No | A route, such as `web:8080:tailscale`, `web:8080:tailscale:443` for HTTPS port 443, or `web:8080:public:notes.example.com`; repeat for each. See [Routes](exposure.md#routes). |
+| `--route` | string | No | A route, such as `web:8080:tailscale`, `web:8080:tailscale:443` for HTTPS port 443, `web:8080:public:notes.example.com`, or `web:8080:cloudflare:notes.example.com:access` for a `cloudflare` route that requires Cloudflare Access; repeat for each. See [Routes](exposure.md#routes). |
 | `--no-wait` | flag | No | Queue the deploy and return, without waiting for it. |
 | `--hub` | URL | No | The hub's address. |
 
@@ -882,10 +882,11 @@ With `--no-wait`, it prints `Queued action 13. Follow it with: tender actions sh
 #### Errors
 
 1. `services deploy needs the compose file: -f compose.yaml. Run "tender services deploy --help" for usage.`
-2. `--route "web:80" must be CONTAINER:PORT:EXPOSE or CONTAINER:PORT:EXPOSE:HOST, such as web:80:tailscale or web:80:public:app.example.com. Run "tender services deploy --help" for usage.`
-3. `--file /etc/app.toml is outside the compose file's folder, .; a service's files are relative to its compose file. Run "tender services deploy --help" for usage.`
-4. `Tender didn't deploy service "redis", so it can't change it: ...` for a service Tender found running.
-5. `Could not deploy notes: ...` when the deploy failed, with the rule the compose file broke, such as `service web in the compose file publishes ports, which Tender's routes do instead: remove ports from web and add a route to its port, such as --route web:80:tailscale`, or compose's reason and the end of its output.
+2. `--route "web:80" must be CONTAINER:PORT:EXPOSE, CONTAINER:PORT:EXPOSE:HOST or CONTAINER:PORT:cloudflare:HOST:access, such as web:80:tailscale or web:80:public:app.example.com. Run "tender services deploy --help" for usage.`
+3. `--route "web:80:public:notes.example.com:access": only a cloudflare route has a fifth part, access, such as web:80:cloudflare:app.example.com:access. Run "tender services deploy --help" for usage.`
+4. `--file /etc/app.toml is outside the compose file's folder, .; a service's files are relative to its compose file. Run "tender services deploy --help" for usage.`
+5. `Tender didn't deploy service "redis", so it can't change it: ...` for a service Tender found running.
+6. `Could not deploy notes: ...` when the deploy failed, with the rule the compose file broke, such as `service web in the compose file publishes ports, which Tender's routes do instead: remove ports from web and add a route to its port, such as --route web:80:tailscale`, or compose's reason and the end of its output.
 
 #### Equivalents
 
@@ -2487,7 +2488,7 @@ Updated 2 hours ago.
 
 ### `tender exposures cloudflare set`
 
-Sets the Cloudflare account and API token. It asks for the token with typing hidden, or reads it from `--api-token-file`. The hub checks the token with Cloudflare before it stores it, and replaces the stored settings.
+Sets the Cloudflare account and API token. The token needs Account Cloudflare Tunnel Edit, Zone DNS Edit and Zone Read, and a route with access also Access: Apps and Policies Read and Access: Organizations, Identity Providers, and Groups Read. It asks for the token with typing hidden, or reads it from `--api-token-file`. The hub checks the token with Cloudflare before it stores it, and replaces the stored settings.
 
 #### Usage
 
