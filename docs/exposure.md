@@ -161,7 +161,7 @@ The hub does this through the Cloudflare API after every deploy and remove:
 4. It deletes only records with the comment `managed by tender` that point at that machine's tunnel. Your own records, and other machines' records, stay.
 5. It refuses a host that already has a record it didn't make. That route fails with a sentence naming the host and the route, and stays out of the tunnel's routes. Delete that record in the dashboard, or pick another host.
 
-One route's failure never touches another's. A host in no zone of the account, a host with a record Tender didn't make, or a record Cloudflare refuses with a `4xx` fails that route alone, and every other route and record stays in place. A failing route's host also keeps its record of Tender's. A `5xx`, a `429` or no answer is tried 3 times, then fails the routes of every service on that machine; deploy again later.
+One route's failure never touches another's. A route the hub can't set in Cloudflare fails only the deploy or remove of its own service, after its containers are done, with the route's sentence in `last_error`; the hub logs it for the other services' deploys. A `cloudflare` route on a hub without the Cloudflare settings is refused with `A cloudflare route needs the hub's Cloudflare settings, and it has none yet.` and how to set them. A host in no zone of the account, a host with a record Tender didn't make, or a record Cloudflare refuses with a `4xx` fails that route alone, and every other route and record stays in place. A failing route's host also keeps its record of Tender's. A `5xx`, a `429` or no answer is tried 3 times, then fails the routes of every service on that machine; deploy again later.
 
 ### What Tender does on the machine
 
