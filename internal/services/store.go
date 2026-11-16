@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -26,6 +27,15 @@ type Store struct {
 	Actions Actions
 	// Tunnels keeps the machines' Cloudflare tunnels; without it, cloudflare routes are refused.
 	Tunnels Tunnels
+	// Log takes what goes wrong for another service than the one asked about; slog's default when nil.
+	Log *slog.Logger
+}
+
+func (s *Store) log() *slog.Logger {
+	if s.Log == nil {
+		return slog.Default()
+	}
+	return s.Log
 }
 
 // NewStore returns a store on d.

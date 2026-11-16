@@ -30,6 +30,9 @@ type Deployment struct {
 	Routes     []Published       `json:"routes"`     // this service's routes, which the override publishes
 	Registries []Login           `json:"registries"` // the daemon uses those whose host an image is on
 	Exposures  Exposures         `json:"exposures"`
+	// CloudflareError is why the hub couldn't route this service's cloudflare routes through the
+	// machine's tunnel, or "": the deploy or remove fails with it once the containers are done.
+	CloudflareError string `json:"cloudflare_error,omitempty"`
 }
 
 // Published is a route as the override publishes it: 127.0.0.1:<local_port>:<port> on container,

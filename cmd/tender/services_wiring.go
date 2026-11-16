@@ -17,6 +17,7 @@ import (
 func newServices(d *db.DB, key []byte, as *actions.Store) *services.Store {
 	s := services.NewStore(d)
 	s.Key = key
+	s.Tunnels = hubTunnels(d, key)
 	if as != nil {
 		s.Actions = serviceActions{as}
 	}

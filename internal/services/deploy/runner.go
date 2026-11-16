@@ -132,6 +132,14 @@ func (d *Runner) expose(ctx context.Context, ex Exposures, svc string, uses map[
 	return errors.Join(mine...)
 }
 
+// hubError is what the hub couldn't do for the service's cloudflare routes, in Cloudflare, or nil.
+func hubError(dep Deployment) error {
+	if dep.CloudflareError == "" {
+		return nil
+	}
+	return fmt.Errorf("the cloudflare routes: %s", dep.CloudflareError)
+}
+
 // adapters returns the adapters routes are exposed with.
 func adapters(routes []Published) map[string]bool {
 	out := map[string]bool{}
@@ -327,7 +335,7 @@ func (d *Runner) Deploy(ctx context.Context, raw json.RawMessage) (string, error
 		strconv.Itoa(waitTimeoutSeconds))...); err != nil {
 		return out.String(), fmt.Errorf("%v: the containers did not all start and turn healthy. The end of its output:\n%s", err, out.String())
 	}
-	if err := d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)); err != nil {
+	if err := errors.Join(d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)), hubError(dep)); err != nil {
 		return out.String(), fmt.Errorf("the service runs, but its routes could not all be exposed: %w", err)
 	}
 	return out.String(), nil
@@ -373,7 +381,7 @@ func (d *Runner) Remove(ctx context.Context, raw json.RawMessage, deleteData boo
 		return out.String(), fmt.Errorf("%v: the service's containers may still run. The end of its output:\n%s", err, out.String())
 	}
 	var errs []error
-	if err := d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)); err != nil {
+	if err := errors.Join(d.expose(ctx, dep.Exposures, dep.Name, adapters(dep.Routes)), hubError(dep)); err != nil {
 		errs = append(errs, fmt.Errorf("its containers are gone, but its routes could not all be taken out: %w", err))
 	}
 	if run == dir {

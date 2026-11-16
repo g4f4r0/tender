@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/g4f4r0/tender/internal/apps/expose"
 	"github.com/g4f4r0/tender/internal/db"
@@ -14,7 +15,33 @@ import (
 func newCloudflareStore(d *db.DB, key []byte) *services.CloudflareStore {
 	s := services.NewCloudflareStore(d, key)
 	s.API = expose.CloudflareBase(os.Getenv)
+	s.InUse = services.NewStore(d).CloudflareRoutes
 	return s
+}
+
+// The hub's Cloudflare tunnels, one per database and key, so every store of the hub's shares the
+// tunnel tokens it got from Cloudflare.
+var (
+	tunnelsMu sync.Mutex
+	tunnelsOf = map[tunnelsKey]*services.CloudflareTunnels{}
+)
+
+type tunnelsKey struct {
+	d   *db.DB
+	key string
+}
+
+// hubTunnels returns the hub's Cloudflare tunnels over d, with key.
+func hubTunnels(d *db.DB, key []byte) *services.CloudflareTunnels {
+	tunnelsMu.Lock()
+	defer tunnelsMu.Unlock()
+	k := tunnelsKey{d, string(key)}
+	t, ok := tunnelsOf[k]
+	if !ok {
+		t = services.NewCloudflareTunnels(newCloudflareStore(d, key))
+		tunnelsOf[k] = t
+	}
+	return t
 }
 
 var exposuresUsage = groupUsage("exposures", "Set up how services' routes reach people. Tailscale and public routes need no settings; "+

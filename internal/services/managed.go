@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,14 +32,18 @@ type Actions interface {
 }
 
 // Tunnels is the hub's side of the cloudflare exposure: it keeps each machine's tunnel routing
-// its cloudflare routes. The cloudflare adapter implements it; without one, cloudflare routes are
+// its cloudflare routes. CloudflareTunnels implements it; without one, cloudflare routes are
 // refused.
 type Tunnels interface {
+	// Ready is a server.Error that says how to set them unless the hub has its Cloudflare settings.
+	Ready(ctx context.Context) error
 	// Apply makes the tunnel of machine route exactly routes, its cloudflare routes, with their DNS
-	// records. A server.Error is shown to the person who asked for the deploy or remove.
+	// records. It sets every route it can, and returns an *expose.RouteError for each one it
+	// couldn't; any other error is Cloudflare failing as a whole.
 	Apply(ctx context.Context, machine string, routes []expose.Route) error
-	// Token returns the token the machine's daemon runs its tunnel with, or "" when it has none.
-	Token(ctx context.Context, machine string) (string, error)
+	// Token returns the token the machine's daemon runs its tunnel with, for routes, its
+	// cloudflare routes, or "" when it has none.
+	Token(ctx context.Context, machine string, routes []expose.Route) (string, error)
 }
 
 // errNoKey is what a process without TENDER_ENCRYPTION_KEY answers when it needs a secret.
@@ -230,7 +235,7 @@ func (s *Store) Create(ctx context.Context, machineID int64, in Input) (Queued, 
 	if err := checkInput(in.Compose, in.Files, in.Env, in.Routes); err != nil {
 		return Queued{}, err
 	}
-	if err := s.canRoute(in.Routes); err != nil {
+	if err := s.canRoute(ctx, in.Routes); err != nil {
 		return Queued{}, err
 	}
 	env, err := s.sealEnv(nil, in.Env, false)
@@ -337,12 +342,17 @@ func checkRoutes(routes []RouteInput) error {
 	return nil
 }
 
-// canRoute refuses cloudflare routes on a hub without the cloudflare exposure.
-func (s *Store) canRoute(routes []RouteInput) error {
+// canRoute refuses cloudflare routes on a hub without the cloudflare exposure, or without its
+// Cloudflare settings.
+func (s *Store) canRoute(ctx context.Context, routes []RouteInput) error {
 	for _, r := range routes {
-		if r.Expose == deploy.ExposeCloudflare && s.Tunnels == nil {
+		if r.Expose != deploy.ExposeCloudflare {
+			continue
+		}
+		if s.Tunnels == nil {
 			return server.Invalid("This hub can't route through Cloudflare yet: set it up with PUT /v1/exposures/cloudflare first.")
 		}
+		return s.Tunnels.Ready(ctx)
 	}
 	return nil
 }
@@ -619,7 +629,7 @@ func (s *Store) Update(ctx context.Context, machineID int64, name string, c Chan
 	if err := checkInput(compose, files, plainCheck, routes); err != nil {
 		return Queued{}, err
 	}
-	if err := s.canRoute(routes); err != nil {
+	if err := s.canRoute(ctx, routes); err != nil {
 		return Queued{}, err
 	}
 	env, err := s.sealEnv(sealed, set, true)
@@ -682,9 +692,43 @@ func (s *Store) Act(ctx context.Context, machineID int64, name, typ, container s
 }
 
 // Exposures returns the machine's whole set of routes, for its daemon's exposure adapters: the
-// routes of every managed service on it except those being removed.
+// routes of every managed service on it except those being removed, and the token of its
+// Cloudflare tunnel when it has cloudflare routes. A tunnel token Cloudflare doesn't give is
+// logged, and the exposures go without it.
 func (s *Store) Exposures(ctx context.Context, machineID int64) (deploy.Exposures, error) {
-	out := deploy.Exposures{Routes: []deploy.Exposed{}}
+	routes, err := s.machineRoutes(ctx, machineID)
+	if err != nil {
+		return deploy.Exposures{}, err
+	}
+	out := deploy.Exposures{Routes: routes}
+	cf := deploy.ExposeRoutes(routes, deploy.ExposeCloudflare)
+	if s.Tunnels == nil || len(cf) == 0 {
+		return out, nil
+	}
+	machine, err := s.machineName(ctx, machineID)
+	if err != nil {
+		return out, err
+	}
+	token, err := s.Tunnels.Token(ctx, machine, cf)
+	if err != nil {
+		s.log().Warn("could not get the machine's Cloudflare tunnel token", "machine", machine, "error", err)
+	}
+	if token != "" {
+		out.CloudflareTunnelToken = &token
+	}
+	return out, nil
+}
+
+func (s *Store) machineName(ctx context.Context, machineID int64) (string, error) {
+	var machine string
+	err := s.db.Read.QueryRowContext(ctx, `SELECT name FROM machines WHERE id = ?`, machineID).Scan(&machine)
+	return machine, err
+}
+
+// machineRoutes returns the routes of every managed service on the machine, except those being
+// removed.
+func (s *Store) machineRoutes(ctx context.Context, machineID int64) ([]deploy.Exposed, error) {
+	out := []deploy.Exposed{}
 	rs, err := s.db.Read.QueryContext(ctx, `SELECT s.name, r.container, r.expose, r.local_port, r.host, r.https_port
 		FROM service_routes r JOIN services s ON s.id = r.service_id
 		WHERE s.machine_id = ? AND s.deploy_status != 'removing' ORDER BY s.name, r.id`, machineID)
@@ -696,30 +740,17 @@ func (s *Store) Exposures(ctx context.Context, machineID int64) (deploy.Exposure
 		if err := rs.Scan(&e.Service, &e.Container, &e.Expose, &e.LocalPort, &e.Host, &e.HTTPSPort); err != nil {
 			return out, errors.Join(err, rs.Close())
 		}
-		out.Routes = append(out.Routes, e)
+		out = append(out, e)
 	}
-	if err := errors.Join(rs.Err(), rs.Close()); err != nil {
-		return out, err
-	}
-	if s.Tunnels != nil {
-		var machine string
-		if err := s.db.Read.QueryRowContext(ctx, `SELECT name FROM machines WHERE id = ?`, machineID).Scan(&machine); err != nil {
-			return out, err
-		}
-		token, err := s.Tunnels.Token(ctx, machine)
-		if err != nil {
-			return out, err
-		}
-		if token != "" {
-			out.CloudflareTunnelToken = &token
-		}
-	}
-	return out, nil
+	return out, errors.Join(rs.Err(), rs.Close())
 }
 
 // Deployment returns what the daemon needs to deploy or remove the machine's managed service, as
-// JSON: the service with its env opened, the registries' logins and the machine's exposures. For a
-// machine with cloudflare routes, it brings the tunnel up to date first.
+// JSON: the service with its env opened, the registries' logins and the machine's exposures. It
+// brings the machine's Cloudflare tunnel up to date first. A route of this service's that the
+// tunnel couldn't take, or Cloudflare failing while the service has cloudflare routes, goes to the
+// daemon as cloudflare_error, which fails the deploy or remove once the containers are done; the
+// other services' failed routes are only logged, so they never fail this one.
 func (s *Store) Deployment(ctx context.Context, machineID int64, name string) (json.RawMessage, error) {
 	sv, err := s.row(ctx, machineID, name)
 	if err != nil {
@@ -741,12 +772,17 @@ func (s *Store) Deployment(ctx context.Context, machineID int64, name string) (j
 		return nil, err
 	}
 	if s.Tunnels != nil {
-		ex, err := s.Exposures(ctx, machineID)
+		routes, err := s.machineRoutes(ctx, machineID)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.Tunnels.Apply(ctx, sv.Machine, deploy.ExposeRoutes(ex.Routes, deploy.ExposeCloudflare)); err != nil {
-			return nil, err
+		uses := slices.ContainsFunc(sv.Routes, func(r Route) bool { return r.Expose == deploy.ExposeCloudflare })
+		mine, others := expose.For(s.Tunnels.Apply(ctx, sv.Machine, deploy.ExposeRoutes(routes, deploy.ExposeCloudflare)), sv.Name, uses)
+		if others != nil {
+			s.log().Warn("could not route all of the machine's cloudflare routes", "machine", sv.Machine, "error", others)
+		}
+		if mine != nil {
+			d.CloudflareError = mine.Error()
 		}
 	}
 	if d.Exposures, err = s.Exposures(ctx, machineID); err != nil {
@@ -827,4 +863,31 @@ func (s *Store) CheckKey(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// CloudflareRoutes counts the cloudflare routes of every service, which need the hub's Cloudflare
+// settings.
+func (s *Store) CloudflareRoutes(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.Read.QueryRowContext(ctx, `SELECT count(*) FROM service_routes WHERE expose = 'cloudflare'`).Scan(&n)
+	return n, err
+}
+
+// PublicMachines returns the IDs of the machines that have public routes, except those of services
+// being removed: their Caddy listens on 80/tcp and 443/tcp.
+func (s *Store) PublicMachines(ctx context.Context) (map[int64]bool, error) {
+	rs, err := s.db.Read.QueryContext(ctx, `SELECT DISTINCT s.machine_id FROM service_routes r JOIN services s ON s.id = r.service_id
+		WHERE r.expose = 'public' AND s.deploy_status != 'removing'`)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]bool{}
+	for rs.Next() {
+		var id int64
+		if err := rs.Scan(&id); err != nil {
+			return nil, errors.Join(err, rs.Close())
+		}
+		out[id] = true
+	}
+	return out, errors.Join(rs.Err(), rs.Close())
 }

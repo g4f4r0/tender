@@ -385,4 +385,21 @@ func TestOneRouteFailsOnlyItsService(t *testing.T) {
 	}
 }
 
+// The hub's failure to route the service's cloudflare routes fails the deploy, after the
+// containers run, with the hub's sentence.
+func TestDeployFailsWithTheHubsCloudflareError(t *testing.T) {
+	docker, _ := fakeDocker(t, goodRendered, "never")
+	r, _ := newRunner(t, docker, nil)
+	dep := Deployment{Name: "blog", Compose: "services: {}\n", CloudflareError: "no zone of the Cloudflare account holds blog.example.org"}
+	out, err := r.Deploy(context.Background(), deployment(t, dep))
+	if err == nil || err.Error() != "the service runs, but its routes could not all be exposed: the cloudflare routes: no zone of the Cloudflare account holds blog.example.org" ||
+		!strings.Contains(out, "compose 300 done") {
+		t.Errorf("deploy = %v, %q", err, out)
+	}
+	_, err = r.Remove(context.Background(), deployment(t, dep), false)
+	if err == nil || !strings.Contains(err.Error(), "its containers are gone, but its routes could not all be taken out: the cloudflare routes: no zone") {
+		t.Errorf("remove = %v", err)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }
