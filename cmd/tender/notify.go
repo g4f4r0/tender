@@ -118,6 +118,10 @@ func loadMachines(ms *machines.Store, bs *backups.Store, ss *services.Store, ls 
 			}
 			out[i] = m
 		}
-		return out, systemRules(ctx, overviews, sec, up, out, now)
+		allowed, err := withPublicPorts(ctx, ss, overviews)
+		if err != nil {
+			return nil, err
+		}
+		return out, systemRules(ctx, allowed, sec, up, out, now)
 	}
 }
