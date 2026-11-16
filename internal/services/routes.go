@@ -160,8 +160,15 @@ func (s *Store) patch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if !c.empty() && !sv.Managed {
-		return unmanaged(name, "change")
+	if !c.empty() {
+		// The name's rules come first, so tender, the project of Tender's own containers, says why
+		// it is refused rather than that Tender didn't deploy it.
+		if err := deploy.CheckName(name); err != nil {
+			return err
+		}
+		if !sv.Managed {
+			return unmanaged(name, "change")
+		}
 	}
 	if raw.AlertsEnabled != nil {
 		if sv, err = s.SetAlerts(r.Context(), id, name, *raw.AlertsEnabled); err != nil {

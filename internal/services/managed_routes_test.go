@@ -24,7 +24,7 @@ func newManagedHub(t *testing.T) (*hub, *Store, *fakeActions) {
 
 func TestManagedRoutes(t *testing.T) {
 	h, s, fa := newManagedHub(t)
-	if err := s.Replace(t.Context(), 1, []ContainerInput{running("proxy", "c1")}); err != nil {
+	if err := s.Replace(t.Context(), 1, []ContainerInput{running("proxy", "c1"), running("tender", "c2")}); err != nil {
 		t.Fatal(err)
 	}
 	big := strings.Repeat("x", 900<<10) // with the compose file, the body is over 1 MiB
@@ -46,6 +46,7 @@ func TestManagedRoutes(t *testing.T) {
 		{"PATCH", "/v1/machines/a/services/notes", "", map[string]any{"alerts_enabled": false}, 200, `"alerts_enabled":false`},
 		{"PATCH", "/v1/machines/a/services/proxy", "", map[string]any{"compose": notesCompose}, 409, `Tender didn't deploy service \"proxy\"`},
 		{"PATCH", "/v1/machines/a/services/proxy", "", map[string]any{"alerts_enabled": false}, 200, `"managed":false`},
+		{"PATCH", "/v1/machines/a/services/tender", "", map[string]any{"compose": notesCompose}, 422, "the compose project of Tender's own containers"},
 		{"POST", "/v1/machines/a/services/notes/deploy", "", nil, 202, `"action":`},
 		{"POST", "/v1/machines/a/services/proxy/deploy", "", nil, 409, "can't deploy it"},
 		{"POST", "/v1/machines/a/services/proxy/restart", "", nil, 202, `"name":"proxy"`},
