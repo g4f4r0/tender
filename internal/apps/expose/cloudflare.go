@@ -420,7 +420,7 @@ func (c *Cloudflare) keepRecord(ctx context.Context, z *zone, r Route, target st
 			continue
 		}
 		if !x.ours() || x.Type != "CNAME" || mine != nil {
-			return routeError(r, fmt.Sprintf("%s already has a %s record in Cloudflare that Tender didn't make", host, x.Type),
+			return routeError(r, fmt.Sprintf("%s already has a DNS record of type %s in Cloudflare that Tender didn't make", host, x.Type),
 				"Delete that record in the Cloudflare dashboard, or pick another host")
 		}
 		mine = &recs[i]

@@ -346,7 +346,7 @@ func TestCloudflareDeletesOnlyItsOwnRecords(t *testing.T) {
 	}
 
 	_, err = c.Apply(t.Context(), "apps", []Route{web, {Service: "w", Container: "s", LocalPort: 20005, Host: "www.example.com"}})
-	if err == nil || !strings.Contains(err.Error(), "www.example.com already has a A record in Cloudflare that Tender didn't make") {
+	if err == nil || !strings.Contains(err.Error(), "www.example.com already has a DNS record of type A in Cloudflare that Tender didn't make") {
 		t.Errorf("a foreign record: %v", err)
 	}
 	for _, r := range f.zoneRecords(example) {
@@ -513,7 +513,7 @@ func TestCloudflareSetsTheGoodRoutesBesideBadOnes(t *testing.T) {
 		t.Errorf("route errors %q: %v", got, err)
 	}
 	for _, want := range []string{"no zone of the Cloudflare account holds app.example.org, so the route to web in org can't have it. Add its domain",
-		"www.example.com already has a A record in Cloudflare that Tender didn't make, so the route to web in www can't have it. Delete that record"} {
+		"www.example.com already has a DNS record of type A in Cloudflare that Tender didn't make, so the route to web in www can't have it. Delete that record"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error lacks %q:\n%v", want, err)
 		}
