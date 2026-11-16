@@ -166,6 +166,9 @@ func TestCheckFilesAndEnv(t *testing.T) {
 			t.Errorf("name %s refused", n)
 		}
 	}
+	if err := CheckName("tender"); err == nil || !strings.Contains(err.Error(), "the compose project of Tender's own containers") {
+		t.Errorf("the name tender: %v", err)
+	}
 	for _, n := range []string{"", "Notes", "my-app", "2app", strings.Repeat("a", 33)} {
 		if CheckName(n) == nil {
 			t.Errorf("name %q taken", n)

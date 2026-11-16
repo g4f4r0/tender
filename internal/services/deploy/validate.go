@@ -42,6 +42,9 @@ var reserved = []string{"compose.yaml", "compose.tender.yaml", ".env", manifestN
 // are gone.
 const manifestName = ".tender-files.json"
 
+// TenderProject is the compose project of Tender's own containers, which no service may be.
+const TenderProject = "tender"
+
 // ValidName reports whether s can be a managed service's name: the compose project name, lowercase
 // letters and digits, starting with a letter, at most 32.
 func ValidName(s string) bool { return namePattern.MatchString(s) }
@@ -51,6 +54,9 @@ func ValidContainer(s string) bool { return containerPattern.MatchString(s) }
 
 // CheckName is an error unless name can be a managed service's name.
 func CheckName(name string) error {
+	if name == TenderProject {
+		return server.Invalid("name can't be %s: it is the compose project of Tender's own containers, Caddy and cloudflared. Give the service another name.", name)
+	}
 	if !ValidName(name) {
 		return server.Invalid("name must be lowercase letters and digits, starting with a letter, at most %d, with no dashes: "+
 			"it is the compose project name. Got %q.", MaxNameLength, name)
