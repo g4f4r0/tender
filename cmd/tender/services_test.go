@@ -473,7 +473,7 @@ func TestServicesDeploy(t *testing.T) {
 	}
 
 	mustFail(t, h, a, `services deploy needs the compose file: -f compose.yaml. Run "tender services deploy --help" for usage.`, "services", "deploy", "apps", "notes")
-	mustFail(t, h, a, `--route "web:80" must be CONTAINER:PORT:EXPOSE or CONTAINER:PORT:EXPOSE:HOST, such as web:80:tailscale or web:80:public:app.example.com. Run "tender services deploy --help" for usage.`,
+	mustFail(t, h, a, `--route "web:80" must be CONTAINER:PORT:EXPOSE, CONTAINER:PORT:EXPOSE:HOST or CONTAINER:PORT:cloudflare:HOST:access, such as web:80:tailscale or web:80:public:app.example.com. Run "tender services deploy --help" for usage.`,
 		"services", "deploy", "apps", "notes", "-f", compose, "--route", "web:80")
 	outside := filepath.Join(t.TempDir(), "x.toml")
 	if err := os.WriteFile(outside, nil, 0o600); err != nil {
