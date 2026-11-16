@@ -67,6 +67,9 @@ type Exposed struct {
 	LocalPort int     `json:"local_port"`
 	Host      *string `json:"host"`
 	HTTPSPort *int    `json:"https_port"`
+	// Access says a cloudflare route requires Cloudflare Access. Only the hub's sync of the tunnel
+	// uses it, so the daemon never gets it.
+	Access bool `json:"-"`
 }
 
 // ExposureStatus is the body of PUT /v1/machines/{machine}/exposures/status: what the daemon
@@ -82,7 +85,7 @@ func ExposeRoutes(list []Exposed, typ string) []expose.Route {
 		if r.Expose != typ {
 			continue
 		}
-		er := expose.Route{Service: r.Service, Container: r.Container, LocalPort: r.LocalPort}
+		er := expose.Route{Service: r.Service, Container: r.Container, LocalPort: r.LocalPort, Access: r.Access}
 		if r.Host != nil {
 			er.Host = *r.Host
 		}

@@ -77,8 +77,8 @@ func rows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 func TestSchemaAppliesTwice(t *testing.T) {
 	d := schema(t)
-	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 25 {
-		t.Fatalf("migrations rows = %d, want 25 (machines twice, backups three times, notifications five times, services five times, actions four times, "+
+	if n := rows(t, d, `SELECT count(*) FROM migrations`); n != 26 {
+		t.Fatalf("migrations rows = %d, want 26 (machines twice, backups three times, notifications five times, services six times, actions four times, "+
 			"logs, security, updates, tokens, server twice)", n)
 	}
 	for _, table := range []string{"machines", "machine_usage", "backup_destinations", "backup_settings",

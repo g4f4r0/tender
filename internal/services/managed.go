@@ -150,8 +150,8 @@ type storedRoute struct {
 }
 
 func (s *Store) routes(ctx context.Context, where string, args ...any) ([]storedRoute, error) {
-	rs, err := s.db.Read.QueryContext(ctx, `SELECT r.id, r.service_id, r.container, r.port, r.expose, r.host, r.https_port, r.local_port, r.created_at,
-		r.updated_at FROM service_routes r WHERE `+where+` ORDER BY r.service_id, r.id`, args...)
+	rs, err := s.db.Read.QueryContext(ctx, `SELECT r.id, r.service_id, r.container, r.port, r.expose, r.host, r.https_port, r.access, r.local_port,
+		r.created_at, r.updated_at FROM service_routes r WHERE `+where+` ORDER BY r.service_id, r.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ func (s *Store) routes(ctx context.Context, where string, args ...any) ([]stored
 	for rs.Next() {
 		var r storedRoute
 		var created, updated int64
-		if err := rs.Scan(&r.ID, &r.serviceID, &r.Container, &r.Port, &r.Expose, &r.Host, &r.HTTPSPort, &r.LocalPort, &created, &updated); err != nil {
+		if err := rs.Scan(&r.ID, &r.serviceID, &r.Container, &r.Port, &r.Expose, &r.Host, &r.HTTPSPort, &r.Access, &r.LocalPort, &created, &updated); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.UpdatedAt = at(created), at(updated)
@@ -423,6 +423,10 @@ func checkRoutes(routes []RouteInput) error {
 		default:
 			return at("expose must be tailscale, cloudflare or public, got %q.", r.Expose)
 		}
+		if r.Access && r.Expose != deploy.ExposeCloudflare {
+			return at("access is only for a cloudflare route, whose tunnel checks Cloudflare Access, so the %s route to %s can't have it. "+
+				"Expose it through cloudflare, or leave access out.", r.Expose, r.Container)
+		}
 	}
 	return nil
 }
@@ -634,8 +638,8 @@ func saveRoutes(ctx context.Context, tx *sql.Tx, machineID, serviceID int64, rou
 		return err
 	}
 	for _, p := range plan {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO service_routes (service_id, container, port, expose, host, https_port, local_port, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, serviceID, p.Container, p.Port, p.Expose, p.Host, p.HTTPSPort, p.local, p.createdAt, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO service_routes (service_id, container, port, expose, host, https_port, access, local_port, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, serviceID, p.Container, p.Port, p.Expose, p.Host, p.HTTPSPort, p.Access, p.local, p.createdAt, now); err != nil {
 			return err
 		}
 	}
@@ -798,7 +802,7 @@ func (s *Store) Update(ctx context.Context, machineID int64, name string, c Chan
 	}
 	routes := make([]RouteInput, len(sv.Routes))
 	for i, r := range sv.Routes {
-		routes[i] = RouteInput{Container: r.Container, Port: r.Port, Expose: r.Expose, Host: r.Host, HTTPSPort: r.HTTPSPort}
+		routes[i] = RouteInput{Container: r.Container, Port: r.Port, Expose: r.Expose, Host: r.Host, HTTPSPort: r.HTTPSPort, Access: r.Access}
 	}
 	if c.Routes != nil {
 		routes = *c.Routes
@@ -913,7 +917,7 @@ func (s *Store) machineName(ctx context.Context, machineID int64) (string, error
 // removed.
 func (s *Store) machineRoutes(ctx context.Context, machineID int64) ([]deploy.Exposed, error) {
 	out := []deploy.Exposed{}
-	rs, err := s.db.Read.QueryContext(ctx, `SELECT s.name, r.container, r.expose, r.local_port, r.host, r.https_port
+	rs, err := s.db.Read.QueryContext(ctx, `SELECT s.name, r.container, r.expose, r.local_port, r.host, r.https_port, r.access
 		FROM service_routes r JOIN services s ON s.id = r.service_id
 		WHERE s.machine_id = ? AND s.deploy_status != 'removing' ORDER BY s.name, r.id`, machineID)
 	if err != nil {
@@ -921,7 +925,7 @@ func (s *Store) machineRoutes(ctx context.Context, machineID int64) ([]deploy.Ex
 	}
 	for rs.Next() {
 		var e deploy.Exposed
-		if err := rs.Scan(&e.Service, &e.Container, &e.Expose, &e.LocalPort, &e.Host, &e.HTTPSPort); err != nil {
+		if err := rs.Scan(&e.Service, &e.Container, &e.Expose, &e.LocalPort, &e.Host, &e.HTTPSPort, &e.Access); err != nil {
 			return out, errors.Join(err, rs.Close())
 		}
 		out = append(out, e)

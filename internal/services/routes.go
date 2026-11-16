@@ -136,7 +136,7 @@ func parsePatch(raw rawPatch) (Change, error) {
 		dec := json.NewDecoder(bytes.NewReader(raw.Routes))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&routes); err != nil {
-			return c, server.Invalid("routes must be a list of routes, each with container, port, expose and maybe host or https_port: %v.", err)
+			return c, server.Invalid("routes must be a list of routes, each with container, port, expose and maybe host, https_port or access: %v.", err)
 		}
 		if routes == nil {
 			routes = []RouteInput{}

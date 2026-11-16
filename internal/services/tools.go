@@ -56,7 +56,7 @@ const ServiceFields = "A service is a compose project on a machine, or a contain
 	"deployed), state (running when every container that should run does, degraded when some do, stopped when none do, unknown while " +
 	"Docker is unreachable), deploy_status (deploying, deployed, failed or removing; null when unmanaged), last_error (why the last " +
 	"deploy or remove failed), deployed_at, action_id, compose, files, env (every key, each value ***), routes (each with container, port, " +
-	"expose, host, https_port, local_port and url, where it answers), alerts_enabled (one switch for all its containers), containers, " +
+	"expose, host, https_port, access (a cloudflare route that requires Cloudflare Access), local_port and url, where it answers), alerts_enabled (one switch for all its containers), containers, " +
 	"created_at and updated_at. Each container has name (its compose service, such as web, with -2 and up for later replicas, or the " +
 	"container name for a lone container), runtime, container_id, image, state (created, running, paused, restarting, exited, removing, " +
 	"dead, unknown while Docker is unreachable, or removed once Docker no longer has it), health (healthy, unhealthy, starting, or null), " +

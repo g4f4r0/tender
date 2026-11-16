@@ -219,7 +219,10 @@ type Route struct {
 	Expose    string  `json:"expose"`     // tailscale, cloudflare or public
 	Host      *string `json:"host"`       // the full hostname for cloudflare and public; null for tailscale
 	HTTPSPort *int    `json:"https_port"` // tailscale only: the HTTPS port on the machine's tailnet name
-	LocalPort int     `json:"local_port"` // the 127.0.0.1 port the container is published on
+	// Access says a cloudflare route requires Cloudflare Access: the tunnel lets a request through
+	// only with a valid Access token for the host.
+	Access    bool `json:"access"`
+	LocalPort int  `json:"local_port"` // the 127.0.0.1 port the container is published on
 	// URL is where the route answers: https://<host>, or https://<tailnet name>:<https_port>. It is
 	// null for a tailscale route until the machine's daemon has said its tailnet name.
 	URL       *string   `json:"url"`
@@ -235,6 +238,7 @@ type RouteInput struct {
 	Expose    string  `json:"expose" jsonschema:"tailscale (on the machine's tailnet name), cloudflare (through a Cloudflare tunnel) or public (the machine's own Caddy, ports 80 and 443)"`
 	Host      *string `json:"host,omitempty" jsonschema:"the full hostname, such as app.example.com: required for cloudflare and public, and not for tailscale"`
 	HTTPSPort *int    `json:"https_port,omitempty" jsonschema:"tailscale only: the HTTPS port on the machine's tailnet name; left out, the hub picks the lowest free one from 10000"`
+	Access    bool    `json:"access,omitempty" jsonschema:"cloudflare only: true makes the machine's Cloudflare tunnel require Cloudflare Access, so a request without a valid Access token for the host never reaches the container. A self-hosted Access application must protect the host, and the hub's API token also needs Access: Apps and Policies Read and Access: Organizations, Identity Providers, and Groups Read. Default false"`
 }
 
 // Input is the body of POST /v1/machines/{machine}/services: a new managed service.
