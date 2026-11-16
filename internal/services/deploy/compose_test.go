@@ -56,6 +56,10 @@ func TestCheckRules(t *testing.T) {
 	if err := CheckRules(rendered(t, common, commonRest), dir); err != nil {
 		t.Errorf("a common rendered file: %v", err)
 	}
+	// Compose v5 renders an empty ipam on every network, also on the default one a file doesn't name.
+	if err := CheckRules(rendered(t, `{"image":"x","mem_limit":"1"}`, `"networks":{"default":{"name":"notes_default","ipam":{}}}`), dir); err != nil {
+		t.Errorf("the empty ipam compose v5 renders: %v", err)
+	}
 	if err := CheckRules(rendered(t, `{"image":"x","mem_limit":"1","network_mode":"service:web","ipc":"service:web","pid":"service:web"}`, ""), dir); err != nil {
 		t.Errorf("namespaces of a service in the same file: %v", err)
 	}
