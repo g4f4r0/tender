@@ -98,8 +98,7 @@ func runDaemon(args []string, log *slog.Logger) error {
 	ad.System = systemActions{Job: updates.Job{Binary: filepath.Join(root, "/usr/local/bin/tender"), StateDir: *state}, collect: sec.Collect}
 	dep := deploy.NewRunner(hub, cfg.Machine, filepath.Join(root, servicesDir), log)
 	dep.Socket = socket
-	ts := &expose.Tailscale{StateDir: *state}
-	dep.Exposers, dep.TailnetName = []expose.Exposer{ts}, ts.DNSName
+	dep.Exposers, dep.TailnetName = daemonExposers(*state, socket)
 	ad.Deployer, sd.Compose = dep, dep
 	ld := logs.NewDaemon(hub, cfg.Machine, *state, socket, log)
 	wg.Add(5)
@@ -187,4 +186,15 @@ func postUsage(ctx context.Context, hub *client.Client, machine, state string, l
 			send()
 		}
 	}
+}
+
+// daemonExposers returns the daemon's three exposure adapters, which keep their state in state and
+// run Tender's own containers through the Docker socket, and the tailnet name's reader.
+func daemonExposers(state, socket string) ([]expose.Exposer, func(context.Context) (string, error)) {
+	ts := &expose.Tailscale{StateDir: state}
+	return []expose.Exposer{
+		ts,
+		&expose.Public{Dir: filepath.Join(state, "caddy"), Socket: socket},
+		&expose.Cloudflared{Dir: filepath.Join(state, "cloudflared"), Socket: socket},
+	}, ts.DNSName
 }

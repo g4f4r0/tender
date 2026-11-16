@@ -17,6 +17,7 @@ type Cloudflared struct {
 	// Dir holds the compose file; it is /var/lib/tender/daemon/cloudflared on a machine.
 	Dir    string
 	Docker string // the docker program; docker when empty
+	Socket string // the Docker socket; Docker's own when empty
 	// Token is the tunnel token the hub sent with the routes. It reaches cloudflared through the
 	// environment of docker compose, never an argument or a file.
 	Token string
@@ -26,8 +27,11 @@ type Cloudflared struct {
 func (c *Cloudflared) Name() string { return "cloudflare" }
 
 func (c *Cloudflared) service() service {
-	return service{docker: orDefault(c.Docker, "docker"), file: filepath.Join(c.Dir, "compose.yaml"), name: "cloudflared"}
+	return service{docker: orDefault(c.Docker, "docker"), socket: c.Socket, file: filepath.Join(c.Dir, "compose.yaml"), name: "cloudflared"}
 }
+
+// SetTunnelToken sets the tunnel token the hub sent with the machine's exposures, for the next Apply.
+func (c *Cloudflared) SetTunnelToken(token string) { c.Token = token }
 
 // cloudflaredCompose is cloudflared's compose file. TUNNEL_TOKEN, with no value, comes from the
 // environment docker compose runs in. The metrics listen on a loopback port the kernel picks, so

@@ -41,6 +41,7 @@ type Public struct {
 	// /var/lib/tender/daemon/caddy on a machine.
 	Dir    string
 	Docker string // the docker program; docker when empty
+	Socket string // the Docker socket; Docker's own when empty
 	UFW    string // the ufw program; ufw when empty
 }
 
@@ -48,7 +49,7 @@ type Public struct {
 func (p *Public) Name() string { return "public" }
 
 func (p *Public) service() service {
-	return service{docker: orDefault(p.Docker, "docker"), file: filepath.Join(p.Dir, "compose.yaml"), name: "caddy"}
+	return service{docker: orDefault(p.Docker, "docker"), socket: p.Socket, file: filepath.Join(p.Dir, "compose.yaml"), name: "caddy"}
 }
 
 // Apply makes Caddy serve exactly routes, each on https://<host>. A bad route gets a *RouteError

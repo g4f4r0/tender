@@ -67,11 +67,15 @@ func run(ctx context.Context, env []string, name string, args ...string) (string
 // service is one of Tender's own containers: one service in its own compose file of project tender.
 type service struct {
 	docker string // the docker program
+	socket string // the Docker socket compose talks to; Docker's own when empty
 	file   string // its compose.yaml
 	name   string // caddy or cloudflared
 }
 
 func (s service) compose(ctx context.Context, env []string, args ...string) (string, error) {
+	if s.socket != "" {
+		env = append([]string{"DOCKER_HOST=unix://" + s.socket}, env...)
+	}
 	return run(ctx, env, s.docker, append([]string{"compose", "-p", project, "-f", s.file}, args...)...)
 }
 
