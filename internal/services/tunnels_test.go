@@ -330,3 +330,85 @@ func TestPublicMachines(t *testing.T) {
 		t.Errorf("public machines = %v, %v", got, err)
 	}
 }
+
+// A cloudflare route's access is stored, shown and passed to the tunnel. A change of access alone
+// is a route change: it keeps the route's local port and syncs the tunnel again. A change that
+// leaves the routes out keeps access.
+func TestRouteAccess(t *testing.T) {
+	s, _ := managedStore(t)
+	ft := &fakeTunnels{}
+	s.Tunnels = ft
+	ctx := context.Background()
+	route := RouteInput{Container: "web", Port: 80, Expose: deploy.ExposeCloudflare, Host: ptr("blog.example.com"), Access: true}
+	q, err := s.Create(ctx, 1, Input{Name: "blog", Compose: notesCompose, Routes: []RouteInput{route}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Service.Routes) != 1 || !q.Service.Routes[0].Access {
+		t.Fatalf("created routes = %+v", q.Service.Routes)
+	}
+	local := q.Service.Routes[0].LocalPort
+	if got := ft.lastApplied(); len(got) != 1 || !got[0].Access || got[0].Host != "blog.example.com" {
+		t.Errorf("the tunnel got %+v; want the route with access", got)
+	}
+	var stored int
+	if err := s.db.Read.QueryRow(`SELECT access FROM service_routes`).Scan(&stored); err != nil || stored != 1 {
+		t.Errorf("stored access = %d, %v", stored, err)
+	}
+	sv, err := s.Get(ctx, 1, "blog")
+	if b, _ := json.Marshal(sv.Routes); err != nil || !strings.Contains(string(b), `"access":true`) {
+		t.Errorf("the API's routes = %s, %v", b, err)
+	}
+	// The daemon's exposures never carry it.
+	if ex, err := s.Exposures(ctx, 1); err != nil || len(ex.Routes) != 1 || !ex.Routes[0].Access {
+		t.Errorf("exposures = %+v, %v", ex, err)
+	} else if b, _ := json.Marshal(ex); strings.Contains(string(b), "access") {
+		t.Errorf("the daemon's exposures show access: %s", b)
+	}
+
+	applies := ft.applies()
+	if _, err := s.Update(ctx, 1, "blog", Change{Compose: ptr(notesCompose)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ft.lastApplied(); ft.applies() != applies+1 || len(got) != 1 || !got[0].Access {
+		t.Errorf("a compose change dropped access: %+v", got)
+	}
+	route.Access = false
+	q, err = s.Update(ctx, 1, "blog", Change{Routes: &[]RouteInput{route}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ft.lastApplied(); ft.applies() != applies+2 || len(got) != 1 || got[0].Access {
+		t.Errorf("turning access off synced %d times, with %+v", ft.applies()-applies-1, got)
+	}
+	if r := q.Service.Routes; len(r) != 1 || r[0].Access || r[0].LocalPort != local {
+		t.Errorf("routes after access went off = %+v; want local port %d kept", r, local)
+	}
+
+	// The schema refuses access on any other route, as the input does.
+	if _, err := s.db.Write.Exec(`UPDATE service_routes SET expose = 'public', access = 1`); err == nil {
+		t.Error("the schema took access on a public route")
+	}
+}
+
+// Only a cloudflare route can require Cloudflare Access.
+func TestAccessIsOnlyForCloudflare(t *testing.T) {
+	s, fa := managedStore(t)
+	s.Tunnels = &fakeTunnels{}
+	ctx := context.Background()
+	for _, r := range []RouteInput{
+		{Container: "web", Port: 80, Expose: deploy.ExposeTailscale, Access: true},
+		{Container: "web", Port: 80, Expose: deploy.ExposePublic, Host: ptr("blog.example.com"), Access: true},
+	} {
+		_, err := s.Create(ctx, 1, Input{Name: "blog", Compose: notesCompose, Routes: []RouteInput{r}})
+		want := "routes[0]: access is only for a cloudflare route, whose tunnel checks Cloudflare Access, so the " + r.Expose +
+			" route to web can't have it. Expose it through cloudflare, or leave access out."
+		var e *server.Error
+		if !errors.As(err, &e) || e.Status != 422 || e.Detail != want {
+			t.Errorf("%s with access: %v, want %q", r.Expose, err, want)
+		}
+	}
+	if len(fa.list) != 0 {
+		t.Error("a refused deploy was queued")
+	}
+}

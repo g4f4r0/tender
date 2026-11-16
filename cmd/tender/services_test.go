@@ -504,6 +504,34 @@ func TestServicesDeploy(t *testing.T) {
 		"services", "deploy", "apps", "proxy", "-f", compose)
 }
 
+// A cloudflare route's fifth part, access, requires Cloudflare Access; any other fifth part, or one
+// on another expose, is refused.
+func TestParseRouteAccess(t *testing.T) {
+	fs := newFlagSet("services deploy", "", "")
+	r, err := parseRoute(fs, "web:80:cloudflare:app.example.com:access")
+	if err != nil || r.Container != "web" || r.Port != 80 || r.Expose != "cloudflare" || r.Host == nil || *r.Host != "app.example.com" || !r.Access {
+		t.Errorf("an access route = %+v, %v", r, err)
+	}
+	if r, err := parseRoute(fs, "web:80:cloudflare:app.example.com"); err != nil || r.Access {
+		t.Errorf("a route without access = %+v, %v", r, err)
+	}
+	for v, want := range map[string]string{
+		"web:80:cloudflare:app.example.com:acess": `--route "web:80:cloudflare:app.example.com:acess": a cloudflare route's fifth part can only be access, ` +
+			`which requires Cloudflare Access at its host, got "acess". Run "tender services deploy --help" for usage.`,
+		"web:80:public:app.example.com:access": `--route "web:80:public:app.example.com:access": only a cloudflare route has a fifth part, access, ` +
+			`such as web:80:cloudflare:app.example.com:access. Run "tender services deploy --help" for usage.`,
+		"web:80:tailscale:443:access": `--route "web:80:tailscale:443:access": only a cloudflare route has a fifth part, access, ` +
+			`such as web:80:cloudflare:app.example.com:access. Run "tender services deploy --help" for usage.`,
+		"web:80:cloudflare:app.example.com:access:x": `--route "web:80:cloudflare:app.example.com:access:x" must be CONTAINER:PORT:EXPOSE, ` +
+			`CONTAINER:PORT:EXPOSE:HOST or CONTAINER:PORT:cloudflare:HOST:access, such as web:80:tailscale or web:80:public:app.example.com. ` +
+			`Run "tender services deploy --help" for usage.`,
+	} {
+		if _, err := parseRoute(fs, v); err == nil || err.Error() != want {
+			t.Errorf("%s: %v, want %q", v, err, want)
+		}
+	}
+}
+
 func TestServicesRemove(t *testing.T) {
 	h := newFakeHub(t)
 	a := &answers{}
