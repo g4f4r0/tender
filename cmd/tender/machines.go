@@ -180,15 +180,16 @@ func (l *listFlag) String() string { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 func machinesSet(args []string, s session) error {
-	fs := newFlagSet("machines set", "NAME [--updates inherit|auto|manual] [--allow-port PORT ...]\n[--deny-port PORT ...] [--security-alerts on|off] [--hub URL]",
+	fs := newFlagSet("machines set", "NAME [--updates inherit|auto|manual] [--allow-port PORT|PROGRAM ...]\n[--deny-port PORT|PROGRAM ...] [--security-alerts on|off] [--hub URL]",
 		"Change a machine's settings. --updates gives it its own update mode, or inherit to follow the hub's (tender updates set). "+
-			"--allow-port puts a port, such as 41641/udp, on its security allowlist, so it doesn't alert as exposed; --deny-port "+
-			"takes one off. --security-alerts turns its security alert emails on or off.")
+			"--allow-port puts a port, such as 41641/udp, on its security allowlist, so it doesn't alert as exposed, or a program "+
+			"as ss names it, such as cloudflared, so none of its ports do; --deny-port takes one off. --security-alerts turns its security alert emails on or off.")
 	hubURL := hubFlag(fs)
 	mode := fs.String("updates", "", "`MODE` inherit, auto or manual")
 	var allow, deny listFlag
-	fs.Var(&allow, "allow-port", "`PORT` a port with its protocol, such as 41641/udp, that may listen on a public address; repeat for more")
-	fs.Var(&deny, "deny-port", "`PORT` a port to take off the allowlist; repeat for more")
+	fs.Var(&allow, "allow-port", "`PORT|PROGRAM` a port with its protocol, such as 41641/udp, or a program, such as cloudflared, "+
+		"that may listen on a public address; repeat for more")
+	fs.Var(&deny, "deny-port", "`PORT|PROGRAM` a port or program to take off the allowlist; repeat for more")
 	alerts := fs.String("security-alerts", "", "`on|off` the machine's security alert emails")
 	rest, err := parseWithArgs(fs, args, s.out)
 	if err != nil {

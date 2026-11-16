@@ -24,7 +24,7 @@ type machineInput struct {
 type updateMachineInput struct {
 	Machine              string    `json:"machine" jsonschema:"machine name, as list_machines shows it"`
 	Updates              *string   `json:"updates,omitempty" jsonschema:"inherit (follow the hub's update mode), auto or manual; leave out to keep it"`
-	SecurityAllowedPorts *[]string `json:"security_allowed_ports,omitempty" jsonschema:"the whole list of ports that may listen on a public address without a port_exposed alert, such as [\"41641/udp\"]; it replaces the list; leave out to keep it"`
+	SecurityAllowedPorts *[]string `json:"security_allowed_ports,omitempty" jsonschema:"the whole list of ports, such as 41641/udp, and programs as ss names them, such as cloudflared, whose every port is allowed, that may listen on a public address without a port_exposed alert, such as [\"41641/udp\", \"cloudflared\"]; it replaces the list; leave out to keep it"`
 	SecurityAlerts       *bool     `json:"security_alerts,omitempty" jsonschema:"turn the machine's security alerts on or off; leave out to keep it"`
 }
 
@@ -89,8 +89,8 @@ func (s *Store) RegisterTools(m *mcp.Server) {
 
 	mcp.AddWrite(m, "update_machine", "Update a machine's settings",
 		"Change a machine's settings: updates (inherit, auto or manual: whether Tender updates itself on it with the hub's mode, always "+
-			"automatically, or only when asked), security_allowed_ports (the whole list of ports, such as 41641/udp, that may listen on "+
-			"a public address without a port_exposed alert) and security_alerts (on or off). Fields left out keep their value. "+
+			"automatically, or only when asked), security_allowed_ports (the whole list of ports, such as 41641/udp, and of programs as ss "+
+			"names them, such as cloudflared, whose every port is allowed, that may listen on a public address without a port_exposed alert) and security_alerts (on or off). Fields left out keep their value. "+
 			"The result is the machine, as list_machines shows it.",
 		mcp.WriteOptions{Idempotent: true},
 		func(ctx context.Context, in updateMachineInput) (Overview, error) {

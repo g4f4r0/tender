@@ -8,7 +8,7 @@ type Machine struct {
 	Name                 string    `json:"name"`
 	Version              *string   `json:"version"`                // the Tender version its daemon last reported, or null
 	Updates              string    `json:"updates"`                // inherit, auto or manual
-	SecurityAllowedPorts []string  `json:"security_allowed_ports"` // ports that may listen on a public address, such as 41641/udp
+	SecurityAllowedPorts []string  `json:"security_allowed_ports"` // ports such as 41641/udp, and programs such as cloudflared, that may listen on a public address
 	SecurityAlerts       bool      `json:"security_alerts"`        // whether its security alerts are on
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`

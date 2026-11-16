@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/g4f4r0/tender/internal/notifications"
+	"github.com/g4f4r0/tender/internal/security"
 )
 
 // The events of a machine's own system: its security checks and Tender's updates.
@@ -63,7 +64,7 @@ var updateEvents = []notifications.EventType{
 // machineSecurity is what the security rules know about a machine's checks.
 type machineSecurity struct {
 	Enabled              bool     // the machine's security notifications are on
-	AllowedPorts         []string // ports such as 41641/udp that may listen on a public address
+	AllowedPorts         []string // ports such as 41641/udp, and programs such as cloudflared, that may listen on a public address
 	Latest, Previous     *securityFacts
 	SecurityUpdatesSince *time.Time // since when the reports have found security updates pending
 }
@@ -127,7 +128,7 @@ func securityFindings(machine string, s *machineSecurity, now time.Time) []notif
 	}
 	if s.Latest.ListenersChecked && s.Previous.ListenersChecked {
 		for _, l := range s.Latest.Listeners {
-			if slices.Contains(s.AllowedPorts, l.Port) || !slices.ContainsFunc(s.Previous.Listeners, func(p listener) bool { return p.Port == l.Port }) {
+			if security.AllowedBy(s.AllowedPorts, l.Port, l.Process) || !slices.ContainsFunc(s.Previous.Listeners, func(p listener) bool { return p.Port == l.Port }) {
 				continue
 			}
 			add(eventPortExposed, notifications.SeverityWarning, portText(machine, l), l.Port)

@@ -294,8 +294,8 @@ Changes a machine's settings: its own update mode, its security allowlist and it
 #### Usage
 
 ```sh
-tender machines set NAME [--updates inherit|auto|manual] [--allow-port PORT ...]
-                         [--deny-port PORT ...] [--security-alerts on|off] [--hub URL]
+tender machines set NAME [--updates inherit|auto|manual] [--allow-port PORT|PROGRAM ...]
+                         [--deny-port PORT|PROGRAM ...] [--security-alerts on|off] [--hub URL]
 ```
 
 #### Options
@@ -304,8 +304,8 @@ tender machines set NAME [--updates inherit|auto|manual] [--allow-port PORT ...]
 | --- | --- | --- | --- |
 | `NAME` | string | Yes | The machine's name. |
 | `--updates` | string | No | `auto` or `manual` for the machine's own update mode, or `inherit` for the hub's. |
-| `--allow-port` | string | No | A port with its protocol, such as `41641/udp`, that may listen on a public address without a `security.port_exposed` notification. Repeat it for more. |
-| `--deny-port` | string | No | A port to take off the allowlist. Repeat it for more. |
+| `--allow-port` | string | No | A port with its protocol, such as `41641/udp`, that may listen on a public address without a `security.port_exposed` notification, or a program's name as `ss` shows it, such as `cloudflared`, whose every port may. A name is 1 to 32 letters, digits, dots, dashes and underscores, not digits only. Repeat it for more. |
+| `--deny-port` | string | No | A port or program to take off the allowlist. Repeat it for more. |
 | `--security-alerts` | string | No | `on` or `off` for the machine's security alerts. |
 | `--hub` | URL | No | The hub's address. |
 
@@ -322,7 +322,7 @@ apps: updates inherit, allowed ports 41641/udp, security alerts on.
 #### Errors
 
 1. `machines set needs --updates, --allow-port, --deny-port or --security-alerts. Run "tender machines set --help" for usage.`
-2. `"41641" is not a port. Write each port with its protocol, such as 41641/udp or 443/tcp.`
+2. `"41641" is not a port or a program. Write a port with its protocol, such as 41641/udp or 443/tcp, or a program's name as ss shows it, such as cloudflared, to allow every port it listens on.`
 3. `updates must be inherit, auto or manual.`
 
 #### Equivalents

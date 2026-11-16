@@ -167,7 +167,11 @@ func (s *Store) Get(ctx context.Context, machineID int64) (State, error) {
 			return st, err
 		}
 		for i, l := range st.Listeners.Ports {
-			st.Listeners.Ports[i].Allowed = slices.Contains(allowed, l.Key())
+			process := ""
+			if l.Process != nil {
+				process = *l.Process
+			}
+			st.Listeners.Ports[i].Allowed = AllowedBy(allowed, l.Key(), process)
 		}
 	}
 	return st, nil
