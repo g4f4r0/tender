@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/g4f4r0/tender/internal/config"
 	"github.com/g4f4r0/tender/internal/db"
 	"github.com/g4f4r0/tender/internal/install"
+	"github.com/g4f4r0/tender/internal/server"
 	"github.com/g4f4r0/tender/internal/tokens"
 )
 
@@ -143,6 +146,38 @@ func addTokenToDatabase(ctx context.Context, path, name string) (tokens.TokenCre
 		return tokens.NewStore(d).Create(ctx, name)
 	}()
 	return created, errors.Join(err, d.Close())
+}
+
+// ownerWait is how long "install hub" waits for the hub it started to make its database.
+var ownerWait = time.Minute
+
+// makeOwnerToken waits up to ownerWait for the hub that "install hub" just started to make its
+// database at path with the current schema, then makes the API token owner in it, or owner-2 and
+// up when that name is taken, and returns its name and value.
+func makeOwnerToken(ctx context.Context, path string) (string, string, error) {
+	deadline := time.Now().Add(ownerWait)
+	for n := 1; ; {
+		name := "owner"
+		if n > 1 {
+			name += "-" + strconv.Itoa(n)
+		}
+		created, err := addTokenToDatabase(ctx, path, name)
+		var e *server.Error
+		switch {
+		case err == nil:
+			return created.Name, created.Value, nil
+		case errors.As(err, &e) && e.Status == http.StatusConflict && n < 9:
+			n++
+			continue
+		case errors.As(err, &e) || !time.Now().Before(deadline):
+			return "", "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // giveToOwner gives the database's WAL and shared-memory files to the owner of the database, fi,

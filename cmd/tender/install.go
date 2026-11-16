@@ -134,6 +134,7 @@ func runInstall(args []string, stdin io.Reader, s session) error {
 		return err
 	}
 	in.CheckHub = checkHub
+	in.MakeToken, in.SudoUser = makeOwnerToken, os.Getenv("SUDO_USER")
 	ctx := context.Background()
 	switch args[0] {
 	case "check":

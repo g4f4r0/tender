@@ -305,3 +305,25 @@ func TestAPITokenSources(t *testing.T) {
 		t.Errorf("~/.config = %q %v", got, err)
 	}
 }
+
+// install hub's token: owner in the hub's database, then owner-2 when owner is taken. It waits for
+// the hub to make its database, and gives up after ownerWait.
+func TestMakeOwnerToken(t *testing.T) {
+	d := schema(t)
+	path := hubDatabasePath(t, d)
+	ctx := context.Background()
+	name, value, err := makeOwnerToken(ctx, path)
+	if err != nil || name != "owner" || !strings.HasPrefix(value, "tender_") {
+		t.Fatalf("first = %q %q %v", name, value, err)
+	}
+	if name, _, err := makeOwnerToken(ctx, path); err != nil || name != "owner-2" {
+		t.Errorf("owner taken = %q %v", name, err)
+	}
+	defer func(w time.Duration) { ownerWait = w }(ownerWait)
+	ownerWait = 600 * time.Millisecond
+	start := time.Now()
+	if _, _, err := makeOwnerToken(ctx, filepath.Join(t.TempDir(), "tender.db")); err == nil || !strings.Contains(err.Error(), "no hub database at") ||
+		time.Since(start) < ownerWait {
+		t.Errorf("no database: %v after %s", err, time.Since(start))
+	}
+}
