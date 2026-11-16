@@ -64,7 +64,7 @@ func tokensList(args []string, s session) error {
 
 func tokensAdd(args []string, s session) error {
 	fs := newFlagSet("tokens add", "NAME [--hub URL] [--database PATH]",
-		"Make an API token and print it, once. Save it, then set TENDER_TOKEN to it, or give it to an AI client.\n\n"+
+		"Make an API token and print it, once. Save it in ~/.config/tender/token, set TENDER_TOKEN to it, or give it to an AI client.\n\n"+
 			"Run as root on the hub machine with no token, as \"sudo tender tokens add NAME\", it writes to the hub's database "+
 			"directly: that is how the first token is made. Otherwise it asks the hub, with the token you have.")
 	hubURL := hubFlag(fs)
@@ -77,8 +77,12 @@ func tokensAdd(args []string, s session) error {
 	if err != nil {
 		return err
 	}
+	token, _, err := apiToken(fs)
+	if err != nil {
+		return err
+	}
 	var created tokens.TokenCreated
-	if apiToken(fs) == "" && isRoot() {
+	if token == "" && isRoot() {
 		path := *database
 		if path == "" {
 			path = os.Getenv(config.EnvDatabase)
@@ -105,8 +109,16 @@ func tokensAdd(args []string, s session) error {
 	say(s.out, "The token, shown only now. Save it before you go on:")
 	say(s.out, "  %s\n", created.Value)
 	say(s.out, "Use it from the tender command:")
-	say(s.out, "  export %s=%s", envToken, created.Value)
+	say(s.out, "  export %s=%s\n", envToken, created.Value)
+	say(s.out, "Or save it for the tender command on another machine:")
+	say(s.out, "  %s", saveTokenLine(created.Value))
 	return nil
+}
+
+// saveTokenLine is a shell line that saves token as the tender command's token file, readable by
+// its owner only.
+func saveTokenLine(token string) string {
+	return "mkdir -p ~/.config/tender && (umask 077; printf %s '" + token + "' > ~/.config/tender/token)"
 }
 
 // addTokenToDatabase makes a token in the hub's database at path, without the hub. The database

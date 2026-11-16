@@ -22,7 +22,17 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv(envToken, testToken); err != nil {
 		panic(err)
 	}
-	os.Exit(m.Run())
+	// No test reads the API token file of whoever runs them.
+	config, err := os.MkdirTemp("", "tender-config-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_CONFIG_HOME", config); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(config)
+	os.Exit(code)
 }
 
 // The channels commands against a real hub, with a fake Slack and a fake webhook receiver.

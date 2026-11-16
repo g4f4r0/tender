@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -42,29 +43,69 @@ func say(w io.Writer, format string, a ...any) {
 const envToken = "TENDER_TOKEN"
 
 // hubFlag adds --hub and --token to fs. TENDER_HUB sets the default of --hub; newHubAPI reads
-// TENDER_TOKEN when --token is not passed, so the token never shows in a usage text.
+// TENDER_TOKEN, then the token file, when --token is not passed, so the token never shows in a
+// usage text.
 func hubFlag(fs *flag.FlagSet) *string {
 	def := os.Getenv("TENDER_HUB")
 	if def == "" {
 		def = defaultHub
 	}
-	fs.String("token", "", "`TOKEN` the API token (default: $"+envToken+")")
+	fs.String("token", "", "`TOKEN` the API token (default: $"+envToken+", else ~/.config/tender/token)")
 	return fs.String("hub", def, "`URL` the hub's address (default: $TENDER_HUB, else "+defaultHub+")")
 }
 
-// apiToken is the API token for a command: --token when passed, else TENDER_TOKEN.
-func apiToken(fs *flag.FlagSet) string {
-	if f := fs.Lookup("token"); f != nil && f.Value.String() != "" {
-		return f.Value.String()
+// tokenFile is where the tender command keeps its API token: tender/token in $XDG_CONFIG_HOME, or
+// in ~/.config without it. It is "" when the home folder is unknown.
+func tokenFile() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if !filepath.IsAbs(dir) { // the XDG spec ignores a relative path
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".config")
 	}
-	return os.Getenv(envToken)
+	return filepath.Join(dir, "tender", "token")
+}
+
+// apiToken is the API token for a command, and where it came from: --token when passed, else
+// TENDER_TOKEN, else the token file, trimmed. It refuses a token file that other users can read.
+// No token at all is "".
+func apiToken(fs *flag.FlagSet) (token, from string, err error) {
+	if f := fs.Lookup("token"); f != nil && f.Value.String() != "" {
+		return f.Value.String(), "--token", nil
+	}
+	if v := os.Getenv(envToken); v != "" {
+		return v, envToken, nil
+	}
+	path := tokenFile()
+	if path == "" {
+		return "", "", nil
+	}
+	fi, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("cannot read the API token in %s: %w", path, err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		return "", "", fmt.Errorf("the API token file %s can be read by other users (mode %04o), so the tender command won't use it. "+
+			"Make it yours alone with: chmod 600 %s", path, perm, path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot read the API token in %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(b)), path, nil
 }
 
 // hubAPI is a connection to the hub for one command.
 type hubAPI struct {
-	c     *client.Client
-	url   string
-	token bool // whether the command has an API token to send
+	c         *client.Client
+	url       string
+	token     bool   // whether the command has an API token to send
+	tokenFrom string // where that token came from: --token, TENDER_TOKEN or the token file
 }
 
 // newHubAPI checks the hub's address and returns a client for it, which sends the API token.
@@ -74,8 +115,11 @@ func newHubAPI(fs *flag.FlagSet, raw string) (*hubAPI, error) {
 		return nil, usageError(fs, "the hub address %q is not an http or https URL, such as %s", raw, defaultHub)
 	}
 	raw = strings.TrimRight(raw, "/")
-	token := apiToken(fs)
-	return &hubAPI{c: client.New(raw, token), url: raw, token: token != ""}, nil
+	token, from, err := apiToken(fs)
+	if err != nil {
+		return nil, err
+	}
+	return &hubAPI{c: client.New(raw, token), url: raw, token: token != "", tokenFrom: from}, nil
 }
 
 // do sends one request. in and out may be nil.
@@ -105,10 +149,10 @@ func (h *hubAPI) explain(err error) error {
 	case err == nil:
 		return nil
 	case errors.As(err, &answer) && answer.Status == http.StatusUnauthorized && !h.token:
-		return &hubAnswer{answer.Status, "the hub at " + h.url + " needs an API token. Set " + envToken + " to one, or pass --token TOKEN. " +
-			"Make the first one on the hub machine with: sudo tender tokens add NAME"}
+		return &hubAnswer{answer.Status, "the hub at " + h.url + " needs an API token. Save one in ~/.config/tender/token, set " + envToken +
+			" to one, or pass --token TOKEN. Make one on the hub machine with: sudo tender tokens add NAME"}
 	case errors.As(err, &answer) && answer.Status == http.StatusUnauthorized:
-		return &hubAnswer{answer.Status, "the hub at " + h.url + " refused the API token in " + envToken + " or --token: it was deleted or mistyped. " +
+		return &hubAnswer{answer.Status, "the hub at " + h.url + " refused the API token from " + h.tokenFrom + ": it was deleted or mistyped. " +
 			"List the tokens on the hub machine with: sudo tender tokens list, and make a new one with: sudo tender tokens add NAME"}
 	case errors.As(err, &answer):
 		if answer.Detail != "" {
