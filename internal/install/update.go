@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -222,7 +223,17 @@ func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 			return err
 		}
 	}
+	saved := ""
+	if hub {
+		if saved, err = in.saveDatabase(ctx, want); err != nil {
+			_, _ = in.Run(ctx, "systemctl", "start", "tenderhub")
+			return fmt.Errorf("could not save the hub's database before the update, so nothing was changed: %w", err)
+		}
+	}
 	if err := os.Rename(in.path(newBinaryPath), in.path(binaryPath)); err != nil {
+		if hub {
+			_, _ = in.Run(ctx, "systemctl", "start", "tenderhub")
+		}
 		return err
 	}
 	in.say("Installed Tender %s at %s", tag, in.path(binaryPath))
@@ -239,11 +250,96 @@ func (in *Installer) swap(ctx context.Context, tag string, byHand bool) error {
 		return nil
 	}
 	in.say("Tender %s is not healthy. Rolling back to Tender %s.", tag, in.Version)
-	if rerr := in.rollback(ctx, previous); rerr != nil {
+	if rerr := in.rollback(ctx, previous, saved); rerr != nil {
+		fix := fmt.Sprintf("Put %s back at %s", in.path(previousBinaryPath), in.path(binaryPath))
+		if saved != "" {
+			fix = fmt.Sprintf("Stop the hub, put %s back at %s, put %s back at %s", saved, HubDatabase(in.Root), in.path(previousBinaryPath), in.path(binaryPath))
+		}
 		return fmt.Errorf("Tender %s failed its health check (%v), and rolling back to Tender %s failed too: %w. "+
-			"Put %s back at %s and run \"sudo tender install refresh\"", tag, err, in.Version, rerr, in.path(previousBinaryPath), in.path(binaryPath))
+			"%s, and run \"sudo tender install refresh\"", tag, err, in.Version, rerr, fix)
+	}
+	if saved != "" {
+		return fmt.Errorf("Tender %s %s, so it rolled back to Tender %s and put back the hub's database as it was before the update: %w",
+			tag, HealthCheckFailed, in.Version, err)
 	}
 	return fmt.Errorf("Tender %s %s, so it rolled back to Tender %s: %w", tag, HealthCheckFailed, in.Version, err)
+}
+
+// keptDatabases is how many copies of the hub's database from before an update stay.
+const keptDatabases = 2
+
+// databaseFiles are the suffixes of a SQLite database's files: the database, its write-ahead log
+// and its shared memory.
+var databaseFiles = []string{"", "-wal", "-shm"}
+
+// saveDatabase stops the hub, so nothing writes its database, and copies it with its -wal and
+// -shm files to <database>.before-<version>, owned by tender with mode 0600: the new version
+// migrates it when it starts, and the old one can't read it after. Only the last keptDatabases
+// copies stay. It returns the copy, or "" when the hub has no database yet.
+func (in *Installer) saveDatabase(ctx context.Context, version string) (string, error) {
+	database := HubDatabase(in.Root)
+	if _, err := in.run(ctx, "systemctl", "stop", "tenderhub"); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(database); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	saved := database + ".before-" + version
+	if err := in.copyDatabase(ctx, database, saved); err != nil {
+		return "", err
+	}
+	in.say("Stopped the hub and saved its database as %s", saved)
+	in.pruneDatabases(database)
+	return saved, nil
+}
+
+// copyDatabase copies the files of the database from to to, owned by tender with mode 0600. A
+// file from doesn't have is removed at to.
+func (in *Installer) copyDatabase(ctx context.Context, from, to string) error {
+	for _, suffix := range databaseFiles {
+		if err := os.Remove(to + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		b, err := os.ReadFile(from + suffix)
+		if errors.Is(err, os.ErrNotExist) && suffix != "" {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(to+suffix, b, 0o600); err != nil {
+			return err
+		}
+		if _, err := in.run(ctx, "chown", userName+":"+userName, to+suffix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pruneDatabases deletes the copies of database from before an update, all but the newest
+// keptDatabases. A copy it can't delete stays.
+func (in *Installer) pruneDatabases(database string) {
+	matches, _ := filepath.Glob(database + ".before-*")
+	type copied struct {
+		path string
+		at   time.Time
+	}
+	var list []copied
+	for _, m := range matches {
+		if strings.HasSuffix(m, "-wal") || strings.HasSuffix(m, "-shm") {
+			continue
+		}
+		if fi, err := os.Stat(m); err == nil {
+			list = append(list, copied{m, fi.ModTime()})
+		}
+	}
+	slices.SortFunc(list, func(a, b copied) int { return b.at.Compare(a.at) })
+	for _, c := range list[min(len(list), keptDatabases):] {
+		for _, suffix := range databaseFiles {
+			_ = os.Remove(c.path + suffix)
+		}
+	}
 }
 
 // NoTokensYet is what an update of a hub with no API token says, in one sentence.
@@ -275,8 +371,19 @@ func (in *Installer) waitIdle(ctx context.Context, byHand bool) (func(), error) 
 	return config.WaitIdle(ctx, dir, in.BusyWait, min(busyEvery, in.BusyWait))
 }
 
-// rollback puts the previous binary back and restarts the services on it.
-func (in *Installer) rollback(ctx context.Context, previous []byte) error {
+// rollback puts the previous binary back and restarts the services on it. With saved, the copy of
+// the hub's database from before the update, it stops the hub and puts the copy back first, so the
+// old binary reads the database it knows.
+func (in *Installer) rollback(ctx context.Context, previous []byte, saved string) error {
+	if saved != "" {
+		if _, err := in.run(ctx, "systemctl", "stop", "tenderhub"); err != nil {
+			return err
+		}
+		if err := in.copyDatabase(ctx, saved, HubDatabase(in.Root)); err != nil {
+			return fmt.Errorf("could not put back the hub's database from %s: %w", saved, err)
+		}
+		in.say("Put back the hub's database from %s", saved)
+	}
 	if _, err := in.write(ctx, binaryPath, previous, 0o755, ""); err != nil {
 		return err
 	}

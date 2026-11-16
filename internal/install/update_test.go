@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -712,5 +714,122 @@ func TestRefreshOnlyTouchesWhatIsInstalled(t *testing.T) {
 	}
 	if err := newEnv(t).in.Refresh(context.Background()); err == nil {
 		t.Error("refresh on a machine without tender succeeded")
+	}
+}
+
+// writeDatabase puts files of the hub's database in place, by suffix: "" for the database, -wal
+// and -shm.
+func writeDatabase(t *testing.T, e *env, files map[string]string) string {
+	t.Helper()
+	database := e.path(config.DefaultDatabase)
+	if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for suffix, content := range files {
+		if err := os.WriteFile(database+suffix, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return database
+}
+
+// An update of the hub's machine stops the hub before the new binary starts, and copies its
+// database, -wal and -shm files and all, to <database>.before-<version>, tender's and mode 0600.
+// Only the last two copies stay.
+func TestUpdateSavesTheHubDatabase(t *testing.T) {
+	e := newEnv(t)
+	installBoth(t, e)
+	newRelease(t, e, goodSums)
+	database := writeDatabase(t, e, map[string]string{"": "v0.1 schema", "-wal": "v0.1 log"})
+	for i, v := range []string{"0.0.7", "0.0.8", "0.0.9"} {
+		old := writeDatabase(t, e, nil) + ".before-" + v
+		for _, suffix := range []string{"", "-wal"} {
+			if err := os.WriteFile(old+suffix, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().Add(time.Duration(i-10) * time.Hour)
+			if err := os.Chtimes(old+suffix, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := e.in.Update(context.Background(), ""); err != nil {
+		t.Fatalf("%v\n%s", err, e.out.String())
+	}
+	saved := database + ".before-0.2.0"
+	for suffix, want := range map[string]string{"": "v0.1 schema", "-wal": "v0.1 log"} {
+		if b, err := os.ReadFile(saved + suffix); err != nil || string(b) != want {
+			t.Errorf("copy%s = %q, %v", suffix, b, err)
+		}
+		if fi, err := os.Stat(saved + suffix); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("copy%s mode: %v", suffix, err)
+		}
+	}
+	if exists(e, config.DefaultDatabase+".before-0.2.0-shm") {
+		t.Error("a -shm the hub didn't have was copied")
+	}
+	cmds := e.commands()
+	stop, refresh := slices.Index(cmds, "systemctl stop tenderhub"), slices.Index(cmds, e.path(binaryPath)+" install refresh")
+	if stop < 0 || refresh < stop || !slices.Contains(cmds, "chown tender:tender "+saved) || !slices.Contains(cmds, "chown tender:tender "+saved+"-wal") {
+		t.Errorf("the hub didn't stop before the new binary started, or the copy isn't tender's:\n%s", strings.Join(cmds, "\n"))
+	}
+	left, _ := filepath.Glob(database + ".before-*")
+	slices.Sort(left)
+	if want := []string{database + ".before-0.0.9", database + ".before-0.0.9-wal", saved, saved + "-wal"}; !slices.Equal(left, want) {
+		t.Errorf("copies left:\n%s\nwant the last two:\n%s", strings.Join(left, "\n"), strings.Join(want, "\n"))
+	}
+	if !strings.Contains(e.out.String(), "Stopped the hub and saved its database as "+saved) {
+		t.Errorf("output = %q", e.out.String())
+	}
+}
+
+// A rollback stops the hub and puts its database back as it was before the new version migrated
+// it, then starts the old binary; the failure says the database was put back.
+func TestRollbackPutsTheHubDatabaseBack(t *testing.T) {
+	e := newEnv(t)
+	installBoth(t, e)
+	newRelease(t, e, goodSums)
+	e.fake.unhealthy = true
+	database := writeDatabase(t, e, map[string]string{"": "v0.1 schema", "-wal": "v0.1 log"})
+	next := e.fake.respond
+	e.fake.respond = func(name string, args []string) ([]byte, bool, error) {
+		// The new binary's hub migrates the database when it starts.
+		if name == e.path(binaryPath) && strings.Join(args, " ") == "install refresh" && e.read(t, binaryPath) == newBinary {
+			writeDatabase(t, e, map[string]string{"": "v0.2 schema", "-wal": "v0.2 log", "-shm": "v0.2 shm"})
+		}
+		return next(name, args)
+	}
+	err := e.in.Apply(context.Background(), "v0.2.0")
+	if err == nil || !strings.Contains(err.Error(), HealthCheckFailed) ||
+		!strings.Contains(err.Error(), "rolled back to Tender 0.1.0 and put back the hub's database as it was before the update") {
+		t.Fatalf("err = %v", err)
+	}
+	for suffix, want := range map[string]string{"": "v0.1 schema", "-wal": "v0.1 log"} {
+		if b, _ := os.ReadFile(database + suffix); string(b) != want {
+			t.Errorf("database%s after the rollback = %q, want %q", suffix, b, want)
+		}
+	}
+	if exists(e, config.DefaultDatabase+"-shm") {
+		t.Error("the new version's -shm stayed")
+	}
+	cmds := e.commands()
+	var refreshes []int
+	for i, c := range cmds {
+		if c == e.path(binaryPath)+" install refresh" {
+			refreshes = append(refreshes, i)
+		}
+	}
+	lastStop := -1
+	for i, c := range cmds {
+		if c == "systemctl stop tenderhub" {
+			lastStop = i
+		}
+	}
+	if len(refreshes) != 2 || lastStop < refreshes[0] || lastStop > refreshes[1] {
+		t.Errorf("the hub didn't stop between the new binary and the old:\n%s", strings.Join(cmds, "\n"))
+	}
+	res, _, _ := config.ReadUpdateResult(e.path(config.DefaultStateDir))
+	if !strings.Contains(res.Output, "put back the hub's database") {
+		t.Errorf("result = %+v", res)
 	}
 }
