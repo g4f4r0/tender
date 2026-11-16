@@ -15,7 +15,11 @@ import (
 
 // Rendered is the part of "docker compose config --format json" that Tender's rules and override
 // read. Compose has resolved it: interpolated, merged, with relative paths made absolute, and each
-// $ written as $$. CheckRules checks every key of it against the keys Tender allows.
+// $ written as $$. CheckRules checks every key of it against the keys Tender allows. Compose also
+// writes defaults the file never set, which every rule must let through: the default network as
+// {"name": "<project>_default", "ipam": {}}, each service's "networks": {"default": null} and
+// "entrypoint": null, "bind": {} or "volume": {} on each mount, sizes such as mem_limit as a string
+// of bytes, environment as a map and command as a list.
 type Rendered struct {
 	Name     string                     `json:"name"`
 	Services map[string]renderedService `json:"services"`
@@ -24,6 +28,7 @@ type Rendered struct {
 		External json.RawMessage `json:"external"`
 		Name     string          `json:"name"`
 		Driver   string          `json:"driver"`
+		Ipam     *ipam           `json:"ipam"`
 	} `json:"networks"`
 	Secrets map[string]fileRef `json:"secrets"`
 	Configs map[string]fileRef `json:"configs"`
@@ -61,6 +66,14 @@ type renderedService struct {
 	Logging *struct {
 		Driver string `json:"driver"`
 	} `json:"logging"`
+}
+
+// ipam is a network's address management. Compose renders "ipam": {} on every network; only a
+// driver other than the default, config with subnets, or options set anything.
+type ipam struct {
+	Driver  string            `json:"driver"`
+	Config  []json.RawMessage `json:"config"`
+	Options map[string]json.RawMessage `json:"options"`
 }
 
 type mount struct {
@@ -125,7 +138,8 @@ var (
 	tmpfsMountKeys   = keys("size", "mode")
 	serviceNetKeys   = keys("aliases", "ipv4_address", "ipv6_address", "priority", "gw_priority")
 	volumeKeys       = keys("name", "labels", "external", "driver", "driver_opts")
-	networkKeys      = keys("name", "driver", "internal", "attachable", "enable_ipv4", "enable_ipv6", "labels", "external")
+	networkKeys      = keys("name", "driver", "internal", "attachable", "enable_ipv4", "enable_ipv6", "labels", "external", "ipam")
+	ipamKeys         = keys("driver", "config", "options")
 	fileRefKeys      = keys("name", "file", "environment", "content", "external")
 	logDrivers       = keys("", "json-file", "local", "journald", "none")
 )
@@ -145,24 +159,66 @@ func object(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	return m, err
 }
 
-// unknownKey returns the first key of raw, an object, that allowed doesn't have, in order.
+// unknownKey returns the first key of raw, an object, that allowed doesn't have, in order. A key
+// whose value isn't set (see set) is skipped: compose writes some keys with their default, such
+// as "entrypoint": null, and the default is Docker's own.
 func unknownKey(raw json.RawMessage, allowed map[string]bool) (string, error) {
 	m, err := object(raw)
 	if err != nil {
 		return "", err
 	}
 	for _, k := range SortedKeys(m) {
-		if !allowed[k] && !strings.HasPrefix(k, "x-") {
+		if !allowed[k] && !strings.HasPrefix(k, "x-") && set(m[k]) {
 			return k, nil
 		}
 	}
 	return "", nil
 }
 
-// set reports whether a value compose rendered is there and not false, empty or zero.
+// set reports whether a value compose rendered is there and not null, false, "", 0, "0", or an
+// empty object or list, which is how compose renders a default. A value it can't read is set.
 func set(raw json.RawMessage) bool {
-	v := string(bytes.TrimSpace(raw))
-	return v != "" && v != "null" && v != "false" && v != `""` && v != "0" && v != `"0"` && v != "{}"
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return false
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return true
+	}
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != "" && x != "0"
+	case float64:
+		return x != 0
+	case map[string]any:
+		return len(x) > 0
+	case []any:
+		return len(x) > 0
+	}
+	return true
+}
+
+// ipamSets names what a network's ipam sets beyond compose's default, or "" when it sets nothing.
+func ipamSets(raw json.RawMessage, n *ipam) (string, error) {
+	if n == nil {
+		return "", nil
+	}
+	if k, err := unknownKey(raw, ipamKeys); err != nil || k != "" {
+		return "ipam." + k, err
+	}
+	switch {
+	case n.Driver != "" && n.Driver != "default":
+		return "ipam.driver " + n.Driver, nil
+	case len(n.Config) > 0:
+		return "ipam.config", nil
+	case len(n.Options) > 0:
+		return "ipam.options", nil
+	}
+	return "", nil
 }
 
 // memBytes reads a memory size as compose renders it, a number of bytes as a string or a number,
@@ -275,6 +331,11 @@ func CheckRules(r Rendered, dir string) error {
 		}
 		if k, err := unknownKey(nets[name], networkKeys); err != nil || k != "" {
 			return errors.Join(err, fmt.Errorf("network %s sets %s, which Tender's rules don't allow: remove %s from it", name, k, k))
+		}
+		netKeys, _ := object(nets[name])
+		if what, err := ipamSets(netKeys["ipam"], n.Ipam); err != nil || what != "" {
+			return errors.Join(err, fmt.Errorf("network %s sets %s, which picks its own addresses and could take the machine's or the tailnet's: "+
+				"remove ipam from it, and Docker picks them", name, what))
 		}
 	}
 	for _, refs := range []struct {

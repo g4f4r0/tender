@@ -1,0 +1,45 @@
+{
+  "name": "whoami",
+  "networks": {
+    "default": {
+      "name": "whoami_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": [
+        "--port",
+        "8080"
+      ],
+      "entrypoint": null,
+      "environment": {
+        "A": "b"
+      },
+      "image": "traefik/whoami:v1.10",
+      "mem_limit": "67108864",
+      "networks": {
+        "default": null
+      },
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "/tmp/tmp.qMPRXK8zd5/data",
+          "target": "/data",
+          "bind": {}
+        },
+        {
+          "type": "volume",
+          "source": "cache",
+          "target": "/cache",
+          "volume": {}
+        }
+      ]
+    }
+  },
+  "volumes": {
+    "cache": {
+      "name": "whoami_cache"
+    }
+  }
+}

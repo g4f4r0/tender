@@ -50,8 +50,8 @@ func TestCheckRules(t *testing.T) {
 		"secrets":[{"source":"key"}],"configs":["c"],
 		"volumes":[{"type":"bind","source":"` + dir + `/data","target":"/data","bind":{"create_host_path":true}},
 			{"type":"volume","source":"db","target":"/db","volume":{"nocopy":true}},{"type":"tmpfs","target":"/run","tmpfs":{"size":1}}]}`
-	commonRest := `"name":"notes","x-common":{},"volumes":{"db":{"name":"notes_db"}},"networks":{"default":{"name":"notes_default"},
-		"back":{"name":"notes_back","internal":true}},"secrets":{"key":{"name":"notes_key","file":"` + dir + `/key.txt"}},
+	commonRest := `"name":"notes","x-common":{},"volumes":{"db":{"name":"notes_db"}},"networks":{"default":{"name":"notes_default","ipam":{}},
+		"back":{"name":"notes_back","internal":true,"ipam":{}}},"secrets":{"key":{"name":"notes_key","file":"` + dir + `/key.txt"}},
 		"configs":{"c":{"name":"notes_c","content":"x"}}`
 	if err := CheckRules(rendered(t, common, commonRest), dir); err != nil {
 		t.Errorf("a common rendered file: %v", err)
@@ -85,7 +85,11 @@ func TestCheckRules(t *testing.T) {
 		{"cap syslog", `{"image":"x","mem_limit":"1","cap_add":["CAP_SYSLOG"]}`, "", "adds the capability SYSLOG"},
 		{"cap sys_resource", `{"image":"x","mem_limit":"1","cap_add":["sys_resource"]}`, "", "adds the capability SYS_RESOURCE"},
 		{"network ipam", `{"image":"x","mem_limit":"1"}`, `"networks":{"lan":{"ipam":{"config":[{"subnet":"100.64.0.0/10"}]}}}`,
-			"network lan sets ipam, which Tender's rules don't allow: remove ipam from it"},
+			"network lan sets ipam.config, which picks its own addresses and could take the machine's or the tailnet's: remove ipam from it, and Docker picks them"},
+		{"network ipam driver", `{"image":"x","mem_limit":"1"}`, `"networks":{"default":{"name":"notes_default","ipam":{"driver":"other"}}}`,
+			"network default sets ipam.driver other, which picks its own addresses"},
+		{"network ipam options", `{"image":"x","mem_limit":"1"}`, `"networks":{"lan":{"ipam":{"options":{"x":"y"}}}}`, "network lan sets ipam.options"},
+		{"network ipam key", `{"image":"x","mem_limit":"1"}`, `"networks":{"lan":{"ipam":{"weird":1}}}`, "network lan sets ipam.weird"},
 		{"cap_add", `{"image":"x","mem_limit":"1","cap_add":["CAP_SYS_ADMIN"]}`, "", "adds the capability SYS_ADMIN"},
 		{"cap_add all", `{"image":"x","mem_limit":"1","cap_add":["all"]}`, "", "adds the capability ALL"},
 		{"docker socket", `{"image":"x","mem_limit":"1","volumes":[{"type":"bind","source":"` + dir + `/docker.sock","target":"/var/run/docker.sock"}]}`, "",
@@ -124,7 +128,7 @@ func TestCheckRules(t *testing.T) {
 		{"reserved devices", `{"image":"x","mem_limit":"1","deploy":{"resources":{"reservations":{"devices":[{"capabilities":["gpu"]}]}}}}`, "", "has devices"},
 		{"deploy generic resources", `{"image":"x","mem_limit":"1","deploy":{"resources":{"reservations":{"generic_resources":[{}]}}}}`, "",
 			"sets deploy.resources.reservations.generic_resources, which Tender's rules don't allow"},
-		{"deploy placement", `{"image":"x","mem_limit":"1","deploy":{"placement":{}}}`, "", "sets deploy.placement, which Tender's rules don't allow"},
+		{"deploy placement", `{"image":"x","mem_limit":"1","deploy":{"placement":{"constraints":["node.role==manager"]}}}`, "", "sets deploy.placement, which Tender's rules don't allow"},
 		{"label disable", `{"image":"x","mem_limit":"1","security_opt":["label=disable"]}`, "", "has security_opt label=disable"},
 		{"cap bpf", `{"image":"x","mem_limit":"1","cap_add":["BPF"]}`, "", "adds the capability BPF"},
 		{"sysctl kernel", `{"image":"x","mem_limit":"1","sysctls":{"kernel.shmmax":"1"}}`, "", "sets sysctl kernel.shmmax, and Tender allows only net.*"},
@@ -172,6 +176,58 @@ func TestCheckRules(t *testing.T) {
 	}
 	if _, err := ParseRendered([]byte(`not json`)); err == nil {
 		t.Error("output that isn't JSON was read")
+	}
+}
+
+// realDir is where the service of testdata/compose-v5.7.1-config.json would be on the machine.
+const realDir = "/var/lib/tender/services/whoami"
+
+// realConfig is what Compose v5.7.1 printed for "docker compose -p whoami config --format json", on a
+// file with one service web: image, command, environment, mem_limit: 64m, a bind ./data and a named
+// volume cache. It ran in a temporary folder, which becomes the service's folder here.
+func realConfig(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("testdata/compose-v5.7.1-config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []byte(strings.ReplaceAll(string(b), "/tmp/tmp.qMPRXK8zd5", realDir))
+}
+
+// Real compose output passes every rule, with the defaults compose writes that the file never set:
+// the default network's ipam: {}, networks: {default: null}, entrypoint: null, bind: {}, volume: {},
+// mem_limit as a string of bytes.
+func TestRealComposeConfig(t *testing.T) {
+	r, err := ParseRendered(realConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRules(r, realDir); err != nil {
+		t.Fatalf("Compose v5.7.1's output for a minimal file: %v", err)
+	}
+	if n, ok := memBytes(r.Services["web"].MemLimit); !ok || n != 64<<20 {
+		t.Errorf("mem_limit = %d %v, want 64 MiB", n, ok)
+	}
+	if _, err := Override(r, "whoami", realDir, []Published{{Container: "web", Port: 8080, LocalPort: 20000}}); err != nil {
+		t.Errorf("override: %v", err)
+	}
+	// Other shapes of the same defaults, and older Compose v2's, pass too.
+	for name, c := range map[string]struct{ web, rest string }{
+		"ipam default driver":    {`{"image":"x","mem_limit":"1"}`, `"networks":{"default":{"name":"notes_default","ipam":{"driver":"default"}}}`},
+		"ipam null config":       {`{"image":"x","mem_limit":"1"}`, `"networks":{"default":{"name":"notes_default","ipam":{"config":null,"options":{}}}}`},
+		"ipam empty config":      {`{"image":"x","mem_limit":"1"}`, `"networks":{"back":{"ipam":{"config":[]}}}`},
+		"external false":         {`{"image":"x","mem_limit":"1"}`, `"networks":{"default":{"external":false,"ipam":{}}},"volumes":{"db":{"external":false}}`},
+		"empty with spaces":      {`{"image":"x","mem_limit":"1","volumes":[{"type":"bind","source":"` + dir + `/data","target":"/d","bind":{ }}]}`, ""},
+		"create_host_path":       {`{"image":"x","mem_limit":"1","volumes":[{"type":"bind","source":"` + dir + `/data","target":"/d","bind":{"create_host_path":true}}]}`, ""},
+		"empty lists":            {`{"image":"x","mem_limit":"1","devices":[],"ports":[],"cap_add":[],"security_opt":[],"sysctls":[],"deploy":{}}`, ""},
+		"unset defaults":         {`{"image":"x","mem_limit":"1","privileged":false,"uts":"","userns_mode":"","volumes_from":[],"develop":null}`, `"models":null`},
+		"deploy memory string":   {`{"image":"x","deploy":{"resources":{"limits":{"memory":"67108864"},"reservations":{}}}}`, ""},
+		"mem_limit number":       {`{"image":"x","mem_limit":67108864}`, ""},
+		"environment null value": {`{"image":"x","mem_limit":"1","environment":{"A":null},"command":["a","b"],"entrypoint":null,"pull_policy":"missing"}`, ""},
+	} {
+		if err := CheckRules(rendered(t, c.web, c.rest), dir); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 
